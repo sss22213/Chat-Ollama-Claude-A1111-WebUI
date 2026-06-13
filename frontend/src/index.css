@@ -1,0 +1,106 @@
+/* highlight.js 深色主題（須在所有其他語句之前 import） */
+@import "highlight.js/styles/github-dark.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #0f0f0f;
+  color: #ececec;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+}
+
+/* 捲軸 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* markdown 內容基本排版 */
+.markdown {
+  line-height: 1.7;
+  word-break: break-word;
+}
+.markdown p {
+  margin: 0.5em 0;
+}
+.markdown ul,
+.markdown ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+.markdown ul {
+  list-style: disc;
+}
+.markdown ol {
+  list-style: decimal;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+}
+.markdown h1 {
+  font-size: 1.3em;
+}
+.markdown h2 {
+  font-size: 1.15em;
+}
+.markdown h3 {
+  font-size: 1.05em;
+}
+.markdown a {
+  color: #6ab0ff;
+  text-decoration: underline;
+}
+.markdown code:not(pre code) {
+  background: #2e2e2e;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.markdown pre {
+  background: #171717;
+  border: 1px solid #2e2e2e;
+  border-radius: 8px;
+  padding: 0.8em 1em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.markdown pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.88em;
+}
+.markdown blockquote {
+  border-left: 3px solid #3a3a3a;
+  padding-left: 0.8em;
+  color: #b0b0b0;
+  margin: 0.5em 0;
+}
+.markdown table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid #2e2e2e;
+  padding: 0.4em 0.7em;
+}

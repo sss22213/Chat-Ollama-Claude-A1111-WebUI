@@ -1,0 +1,19 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# 生成的圖片
+backend/data/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# env
+.env
+
+# 編輯器
+.vscode/
+.idea/
+.DS_Store

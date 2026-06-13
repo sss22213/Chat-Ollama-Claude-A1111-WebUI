@@ -1,0 +1,43 @@
+# Chat + Ollama + A1111 WebUI
+#
+# 注意：ollama 與 A1111 已在「另外的」docker 容器中執行、且 port 發佈到主機
+# (11434 / 7860)。本 compose 只負責 WebUI 自身（backend + frontend），
+# 透過 host.docker.internal 連回主機上那兩個服務。
+#
+# 啟動：  docker compose up -d --build
+# 開啟：  http://localhost:5273
+services:
+  backend:
+    build: ./backend
+    environment:
+      # 經由 host-gateway 連到主機上（ollama/A1111 容器發佈的）port
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      A1111_URL: ${A1111_URL:-http://host.docker.internal:7860}
+      DATA_DIR: /data
+      HTTP_TIMEOUT: ${HTTP_TIMEOUT:-600}
+      # Claude CLI 引擎（與 ollama 二選一）。binary 已裝在映像內；
+      # 可選模型別名與 claude 路徑可覆寫。
+      CLAUDE_BIN: ${CLAUDE_BIN:-claude}
+      CLAUDE_MODELS: ${CLAUDE_MODELS:-sonnet,opus,haiku}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # 綁定主機資料夾：生成圖片與設定直接出現在主機 backend/data/
+      # （images 在 backend/data/images/，設定在 backend/data/app_settings.json）
+      - ./backend/data:/data
+      # 唯讀掛載 docker socket：讓設定頁的「Docker 容器」來源能自動列出容器。
+      # 不需要此功能可移除這行（手動輸入容器名仍可用）。
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Claude CLI 認證：把主機「已登入」的 ~/.claude 掛進容器（rw 供 token 更新）。
+      # 在 .env 設 CLAUDE_CREDS_DIR=/home/<你>/.claude 啟用；未設則掛空目錄、
+      # claude 引擎顯示為不可用（不影響 ollama）。sudo 執行時請用「絕對路徑」。
+      - ${CLAUDE_CREDS_DIR:-./backend/.claude-empty}:/root/.claude
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${WEBUI_PORT:-5273}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
