@@ -2,13 +2,15 @@
 
 An Open WebUI–style chat interface that wires together a local **Ollama** LLM and
 **A1111 (Stable Diffusion WebUI)**. The model decides on its own when to generate an
-image (via native function-calling, or a directive protocol on the Claude engine),
-and the result is rendered inline in the conversation. You can also switch the AI
-engine between **Ollama** and your logged-in **Claude CLI**.
+image (via native function-calling, a directive protocol on the Claude engine, or
+structured output on the Codex engine), and the result is rendered inline in the
+conversation. You can also switch the AI engine between **Ollama**, your logged-in
+**Claude CLI**, and your logged-in **OpenAI Codex CLI**.
 
 ![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
 ![chat: ollama](https://img.shields.io/badge/chat-ollama-blue)
 ![chat: claude--cli](https://img.shields.io/badge/chat-claude--cli-orange)
+![chat: codex--cli](https://img.shields.io/badge/chat-codex--cli-black)
 ![image: A1111](https://img.shields.io/badge/image-A1111-green)
 
 > **Built by a human and AI, together.** This project was designed and implemented
@@ -53,8 +55,9 @@ engine between **Ollama** and your logged-in **Claude CLI**.
   한국어, switchable live.
 - ⚙️ **Settings panel** — SD checkpoint, sampler, width/height, steps, CFG, seed,
   denoising strength, default negative prompt, system prompt.
-- 💾 Conversations and settings persist in `localStorage` (images live on the backend;
-  only URLs are stored).
+- 💾 **Server-side persistence** — conversations (SQLite) and settings are stored on the
+  backend for cross-device, long-term history, with a `localStorage` cache for speed;
+  images live on the backend and only their URLs are stored.
 - ⌨️ `/image <prompt>` generates directly, skipping the LLM (a manual fallback).
 
 ## Requirements
@@ -64,6 +67,9 @@ engine between **Ollama** and your logged-in **Claude CLI**.
 - **A1111** at `localhost:7860`, started with `--api`.
 - For the **Claude CLI engine** (optional): the `claude` CLI installed and logged in.
   The Docker image installs it for you; you only mount your credentials (see below).
+- For the **Codex CLI engine** (optional): the `codex` CLI logged in on the host. Its whole
+  `~/.codex` (static binary + credentials + model cache) is mounted into the container — no
+  in-image install needed (see below).
 - Python 3.10+ and Node 18+ for local development.
 
 > Ollama and A1111 can run anywhere as long as their ports are reachable; this WebUI
@@ -88,7 +94,8 @@ docker compose down         # stop
 ```
 
 Optional: copy `.env.example` → `.env` to set `WEBUI_PORT`, override
-`OLLAMA_URL` / `A1111_URL`, or enable the Claude engine (`CLAUDE_CREDS_DIR`).
+`OLLAMA_URL` / `A1111_URL`, or enable the Claude (`CLAUDE_CREDS_DIR`) / Codex
+(`CODEX_CREDS_DIR`) engines.
 
 > **Linux note:** the backend uses `extra_hosts: host.docker.internal:host-gateway`
 > to reach the host (requires Docker 20.10+). To instead put this WebUI on the same
@@ -151,7 +158,7 @@ npm run dev
 > **Tip:** these are SDXL / Pony / Illustrious anime checkpoints — comma-separated English
 > danbooru-style tags work best. The system prompt already nudges the model to write them.
 
-## AI engines: Ollama / Claude CLI
+## AI engines: Ollama / Claude CLI / Codex CLI
 
 The top-bar selector switches the **AI engine**:
 
@@ -251,7 +258,7 @@ their `images` stripped automatically.
 ## Configuration
 
 Copy `.env.example` and override via environment variables (addresses, default model,
-timeouts, Claude credentials). In dev mode the frontend proxy target is in
+timeouts, Claude / Codex credentials). In dev mode the frontend proxy target is in
 `frontend/vite.config.js` (`BACKEND_URL`, default `127.0.0.1:8000`); in Docker mode
 `frontend/nginx.conf` proxies `/api` and `/images` to `backend:8000`.
 
