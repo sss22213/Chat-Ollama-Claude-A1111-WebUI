@@ -37,10 +37,10 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
   };
 
   return (
-    <header className="flex items-center gap-3 border-b border-ink-700 bg-ink-850 px-3 py-2">
+    <header className="flex items-center gap-1.5 border-b border-ink-700 bg-ink-850 px-2 py-2 sm:gap-3 sm:px-3">
       <button
         onClick={onToggleSidebar}
-        className="rounded-lg p-2 text-gray-400 hover:bg-ink-750"
+        className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750"
         title={t("sidebar")}
       >
         <PanelLeftOpen size={18} />
@@ -51,7 +51,7 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
         value={settings.engine}
         onChange={(e) => setEngine(e.target.value)}
         title={t("engine")}
-        className="rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500"
+        className="shrink-0 rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500"
       >
         <option value="ollama">Ollama</option>
         <option value="claude_cli" disabled={!engines.claude_cli}>
@@ -60,11 +60,11 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
       </select>
 
       {/* 模型選擇 */}
-      <div className="relative">
+      <div className="relative min-w-0">
         <select
           value={activeModel}
           onChange={(e) => onChangeModel(e.target.value)}
-          className="max-w-[20rem] truncate rounded-lg border border-ink-600 bg-ink-800 px-3 py-1.5 text-sm outline-none focus:border-ink-500"
+          className="w-full max-w-[36vw] truncate rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500 sm:max-w-[20rem] sm:px-3"
         >
           {models.length === 0 && <option>{t("modelLoading")}</option>}
           {models.map((m) => (
@@ -78,12 +78,12 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
         </select>
       </div>
 
-      {/* 圖片工具開關 */}
+      {/* 圖片工具開關（小螢幕只顯示圖示） */}
       <button
         onClick={() => setSettings({ toolsEnabled: !settings.toolsEnabled })}
         disabled={!toolsAvailable}
         title={toolsAvailable ? t("imageToolOn") : t("imageToolUnavailable")}
-        className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm transition ${
+        className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-sm transition sm:px-3 ${
           !toolsAvailable
             ? "cursor-not-allowed border-ink-700 text-gray-600"
             : settings.toolsEnabled
@@ -92,16 +92,18 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
         }`}
       >
         <Wand2 size={15} />
-        {t("imageTool")}{" "}
-        {settings.toolsEnabled && toolsAvailable ? t("on") : t("off")}
+        <span className="hidden sm:inline">
+          {t("imageTool")}{" "}
+          {settings.toolsEnabled && toolsAvailable ? t("on") : t("off")}
+        </span>
       </button>
 
-      {/* Web 搜尋開關 */}
+      {/* Web 搜尋開關（小螢幕只顯示圖示） */}
       <button
         onClick={() => setSettings({ webEnabled: !settings.webEnabled })}
         disabled={!toolsAvailable}
         title={toolsAvailable ? t("webToolOn") : t("imageToolUnavailable")}
-        className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm transition ${
+        className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-sm transition sm:px-3 ${
           !toolsAvailable
             ? "cursor-not-allowed border-ink-700 text-gray-600"
             : settings.webEnabled
@@ -110,8 +112,10 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
         }`}
       >
         <Globe size={15} />
-        {t("webTool")}{" "}
-        {settings.webEnabled && toolsAvailable ? t("on") : t("off")}
+        <span className="hidden sm:inline">
+          {t("webTool")}{" "}
+          {settings.webEnabled && toolsAvailable ? t("on") : t("off")}
+        </span>
       </button>
 
       <div className="flex-1" />
@@ -128,7 +132,7 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
           onClick={compact}
           disabled={compacting}
           title={t("compactHint")}
-          className="flex items-center gap-1.5 rounded-lg border border-ink-600 px-2.5 py-1.5 text-xs text-gray-300 hover:bg-ink-750 disabled:opacity-60"
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-2.5 py-1.5 text-xs text-gray-300 hover:bg-ink-750 disabled:opacity-60"
         >
           {compacting ? (
             <Loader2 size={14} className="animate-spin" />
@@ -149,7 +153,7 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
 
       <button
         onClick={onOpenSettings}
-        className="rounded-lg p-2 text-gray-400 hover:bg-ink-750"
+        className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750"
         title={t("settings")}
       >
         <Settings size={18} />
