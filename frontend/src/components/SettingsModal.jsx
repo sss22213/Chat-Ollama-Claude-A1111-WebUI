@@ -95,7 +95,7 @@ export default function SettingsModal({ onClose }) {
               onChange={(v) => setSettings({ think: v })}
               hint={t("showThinkingHint")}
             />
-            {settings.engine !== "claude_cli" && (
+            {settings.engine === "ollama" && (
               <Field label={t("numCtx")}>
                 <input
                   type="number"

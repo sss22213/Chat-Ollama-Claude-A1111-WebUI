@@ -136,6 +136,54 @@ export async function readPngInfo(image) {
   return r.json();
 }
 
+// ---- 前端 UI 設定（後端持久化、跨裝置同步）----
+export async function fetchUiSettings() {
+  const r = await fetch("/api/ui-settings");
+  if (!r.ok) throw new Error("無法取得設定");
+  return r.json();
+}
+
+export async function saveUiSettings(settings) {
+  const r = await fetch("/api/ui-settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!r.ok) throw new Error("儲存設定失敗");
+  return r.json();
+}
+
+// ---- 對話紀錄（後端持久化、跨裝置）----
+export async function listConversations() {
+  const r = await fetch("/api/conversations");
+  if (!r.ok) throw new Error("無法取得對話清單");
+  return r.json();
+}
+
+export async function getConversation(id) {
+  const r = await fetch(`/api/conversations/${encodeURIComponent(id)}`);
+  if (!r.ok) throw new Error("無法取得對話");
+  return r.json();
+}
+
+export async function putConversation(conv) {
+  const r = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(conv),
+  });
+  if (!r.ok) throw new Error("儲存對話失敗");
+  return r.json();
+}
+
+export async function deleteConversationRemote(id) {
+  const r = await fetch(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  if (!r.ok) throw new Error("刪除對話失敗");
+  return r.json();
+}
+
 export async function fetchHealth() {
   try {
     const r = await fetch("/api/health");

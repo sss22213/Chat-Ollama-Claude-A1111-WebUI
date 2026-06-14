@@ -57,6 +57,9 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
         <option value="claude_cli" disabled={!engines.claude_cli}>
           {engines.claude_cli ? "Claude CLI" : `Claude CLI · ${t("engineUnavailable")}`}
         </option>
+        <option value="codex" disabled={!engines.codex}>
+          {engines.codex ? "Codex CLI" : `Codex CLI · ${t("engineUnavailable")}`}
+        </option>
       </select>
 
       {/* 模型選擇 */}

@@ -19,9 +19,10 @@ engine between **Ollama** and your logged-in **Claude CLI**.
 
 ## Features
 
-- 🔀 **Switchable AI engine** — toggle in the top bar between **Ollama** (local models)
-  and **Claude CLI** (your already-logged-in Claude Code). Claude can also generate
-  images on its own (a directive protocol drives A1111) and see images (vision).
+- 🔀 **Switchable AI engine** — toggle in the top bar between **Ollama** (local models),
+  **Claude CLI** (your logged-in Claude Code), and **OpenAI Codex CLI** (your logged-in
+  `codex`). All three can generate images on their own (Ollama via native tools, Claude via
+  a directive protocol, Codex via structured output) and see images (vision).
 - 💬 **Multi-conversation chat** — streaming replies, Markdown / code highlighting,
   collapsible reasoning (thinking) blocks.
 - 🎨 **Autonomous image generation** — the model calls `generate_image` (txt2img) →
@@ -186,12 +187,37 @@ your **logged-in credentials**:
 If the backend runs directly on the host and `claude` is on `PATH` and logged in,
 **no configuration is needed** — `/api/engines` auto-detects it and the option appears.
 
+### OpenAI Codex CLI
+
+Uses your **logged-in `codex` (OpenAI Codex CLI)**. It's launched with
+`codex exec --json -s read-only --ephemeral`, the assistant message is parsed from the
+JSONL stream, and attachments are passed via `-i` (vision). For image generation, Codex
+(a coding agent that won't reliably emit a free-text marker) is driven with **structured
+output** (`--output-schema`): when the image tool is on, the model returns
+`{reply, image_prompt, edit_attached_image}`, and a non-empty `image_prompt` triggers
+A1111 (txt2img, or img2img when an image is attached). The model dropdown is populated
+automatically from the models your Codex account supports (read from
+`~/.codex/models_cache.json`). You can also type `/image <prompt>` on any engine.
+
+**Docker:** the `codex` binary is a static executable, so the whole `~/.codex` (binary +
+auth + model cache) is mounted into the container — set an **absolute path** in `.env`:
+
+```bash
+CODEX_CREDS_DIR=/home/youruser/.codex
+```
+
+Then `docker compose up -d --build` and pick **Codex CLI** in the top bar. If Codex errors
+about sandbox/landlock inside the container, set `CODEX_SANDBOX_MODE=bypass` in `.env`
+(the container is already the isolation boundary). **Local dev:** if `codex` is on `PATH`
+and logged in, it's auto-detected — no config needed.
+
 ## Architecture
 
 ```
 Frontend (React/Vite)  ──/api proxy──▶  Backend (FastAPI)
-                                         ├─▶ Ollama     /api/chat (stream + tools + vision)
+                                         ├─▶ Ollama      /api/chat (stream + tools + vision)
                                          ├─▶ Claude CLI  claude -p (stream-json subprocess)
+                                         ├─▶ Codex CLI   codex exec --json (subprocess)
                                          └─▶ A1111       /sdapi/v1/{txt2img,img2img,progress,png-info}
 Images are saved to backend/data/images/ and served by the backend at /images/
 ```
@@ -212,6 +238,7 @@ their `images` stripped automatically.
 | `backend/tools.py` | tool schemas: `generate_image` / `edit_image` / `read_png_info` / `web_search` / `fetch_url` |
 | `backend/ollama_client.py` | Ollama engine (chat stream, models, capabilities, context length) |
 | `backend/claude_client.py` | Claude CLI engine (subprocess `claude -p` stream-json; images via directives) |
+| `backend/codex_client.py` | OpenAI Codex CLI engine (subprocess `codex exec --json`; chat + vision via `-i`) |
 | `backend/a1111_client.py` | A1111: txt2img / img2img / progress / models / samplers / png-info |
 | `backend/web_tools.py` | web search (DuckDuckGo/SearXNG) + page extraction (with SSRF guard) |
 | `backend/settings_store.py` | persisted settings: image dir + service sources + web provider |

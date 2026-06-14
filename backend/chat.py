@@ -7,10 +7,11 @@ from typing import Any, AsyncIterator
 
 import a1111_client
 import claude_client
+import codex_client
 import ollama_client
 import tools as tools_mod
 import web_tools
-from config import CLAUDE_CONTEXT_LENGTH
+from config import CLAUDE_CONTEXT_LENGTH, CODEX_CONTEXT_LENGTH
 
 MAX_TOOL_ROUNDS = 6  # 防止無限呼叫工具（足夠 搜尋→抓頁→回答 多步）
 POLL_INTERVAL = 0.4  # 進度輪詢秒數
@@ -94,7 +95,14 @@ async def run_chat(
     事件型別：thinking / token / tool_call / progress / image / sources / usage / error / done
     """
     if engine == "claude_cli":
-        async for s in _run_claude(
+        async for s in _run_cli_engine(
+            claude_client, CLAUDE_CONTEXT_LENGTH,
+            model, messages, tools_enabled, image_settings, bool(think)
+        ):
+            yield s
+        return
+    if engine == "codex":
+        async for s in _run_codex(
             model, messages, tools_enabled, image_settings, bool(think)
         ):
             yield s
@@ -198,11 +206,11 @@ async def run_chat(
         yield _sse({"type": "done"})
 
 
-# ============================ Claude CLI 引擎 ============================
+# ===================== CLI 引擎（Claude CLI / OpenAI Codex）=====================
 #
-# Claude CLI 的 --tools "" 關閉了所有內建工具，所以「生圖」不走原生 function
-# calling，而是請 Claude 在文字裡輸出一段指令標記（directive），由後端邊串流
-# 邊解析出來、跑 A1111、把圖塞回對話。
+# 這些 CLI agent 不開放外部工具給我們，所以「生圖」不走原生 function calling，
+# 而是請模型在文字裡輸出一段指令標記（directive），由後端邊串流邊解析出來、
+# 跑 A1111、把圖塞回對話。Claude 與 Codex 共用同一條解析路徑。
 
 _OPENERS = {"[[GENIMG]]": "genimg", "[[EDITIMG]]": "editimg"}
 _CLOSERS = {"genimg": "[[/GENIMG]]", "editimg": "[[/EDITIMG]]"}
@@ -262,41 +270,48 @@ class _DirectiveParser:
         return []
 
 
-def _claude_system(
-    messages: list[dict[str, Any]], tools_enabled: bool, has_init_image: bool
-) -> str:
+def _base_system(messages: list[dict[str, Any]]) -> str:
     base_parts = [
         m["content"]
         for m in messages
         if m.get("role") == "system" and m.get("content")
     ]
-    base = "\n\n".join(base_parts) or (
+    return "\n\n".join(base_parts) or (
         "You are a helpful assistant. Reply in the user's language."
     )
+
+
+def _directive_system(
+    messages: list[dict[str, Any]], tools_enabled: bool, has_init_image: bool
+) -> str:
+    base = _base_system(messages)
     if not tools_enabled:
         return base
 
     instr = [
         "",
-        "# Image generation",
-        "You can generate images via a local Stable Diffusion (A1111) engine.",
-        "When the user wants you to draw / paint / create / generate an image, "
-        "output a directive on its own line in EXACTLY this form:",
+        "# Image generation (IMPORTANT)",
+        "You are a chat assistant with NO file system and NO shell. Do NOT run "
+        "commands, do NOT create or edit files, do NOT use any tools. You cannot "
+        "save an image to disk.",
+        "The ONLY way to show the user an image is to print this marker inline in "
+        "your reply (the app intercepts it, runs Stable Diffusion / A1111, and "
+        "replaces it with the rendered image):",
         '[[GENIMG]]{"prompt": "comma, separated, english, danbooru, tags", '
         '"negative_prompt": "optional", "width": 1024, "height": 1024}[[/GENIMG]]',
-        "Rules: the prompt MUST be comma-separated English tags (these are "
-        "SDXL / Pony / Illustrious anime models, not full sentences). width/height "
-        "are optional (multiples of 64). Do NOT include steps/sampler/seed/cfg — "
-        "the app controls those.",
-        "Write a short natural sentence to the user first, THEN the directive. "
-        "The directive is parsed out and replaced by the rendered image — never "
-        "explain the directive markers to the user, and never wrap them in code "
-        "fences.",
+        "So whenever the user asks you to draw / paint / create / generate / show "
+        "an image, you MUST output that marker. Rules: the prompt MUST be "
+        "comma-separated English tags (these are SDXL / Pony / Illustrious anime "
+        "models, not full sentences). width/height optional (multiples of 64). Do "
+        "NOT include steps/sampler/seed/cfg — the app controls those.",
+        "Write one short natural sentence first, THEN the marker on its own line. "
+        "Never explain the marker, never wrap it in code fences, and never claim "
+        "you cannot generate images — emitting the marker IS how you generate them.",
     ]
     if has_init_image:
         instr += [
-            "To redraw / restyle / edit the image the user just attached, use "
-            "img2img instead of GENIMG:",
+            "To redraw / restyle / edit the image the user just attached, use this "
+            "marker instead of GENIMG:",
             '[[EDITIMG]]{"prompt": "desired result as english tags", '
             '"negative_prompt": "optional", "denoising_strength": 0.6}[[/EDITIMG]]',
         ]
@@ -327,22 +342,23 @@ async def _run_directive(
         yield {"type": "error", "message": f"圖片生成失敗：{e}"}
 
 
-async def _run_claude(
+async def _run_cli_engine(
+    client,
+    ctx_len: int,
     model: str,
     messages: list[dict[str, Any]],
     tools_enabled: bool,
     image_settings: dict[str, Any] | None,
     think: bool,
 ) -> AsyncIterator[str]:
+    """通用 CLI 引擎路徑：串流文字 + 解析生圖指令。client 為 claude_client / codex_client。"""
     init_image = _last_init_image(messages)
-    system = _claude_system(messages, tools_enabled, bool(init_image))
+    system = _directive_system(messages, tools_enabled, bool(init_image))
     parser = _DirectiveParser()
     prompt_tokens = 0
 
     try:
-        async for ev in claude_client.chat_stream(
-            model, messages, system, think=think
-        ):
+        async for ev in client.chat_stream(model, messages, system, think=think):
             kind = ev.get("type")
             if kind == "error":
                 yield _sse({"type": "error", "message": ev["message"]})
@@ -370,7 +386,82 @@ async def _run_claude(
                 {
                     "type": "usage",
                     "prompt_tokens": prompt_tokens,
-                    "num_ctx": CLAUDE_CONTEXT_LENGTH,
+                    "num_ctx": ctx_len,
+                }
+            )
+        yield _sse({"type": "done"})
+    except Exception as e:
+        yield _sse({"type": "error", "message": str(e)})
+        yield _sse({"type": "done"})
+
+
+# --- Codex 專用：用結構化輸出（--output-schema）可靠取得生圖意圖 ---
+# Codex 是程式碼 agent，不肯穩定輸出文字標記，但會乖乖遵守 JSON schema。
+# codex_client 在 use_schema 模式回 {reply, image_prompt, edit} → 這裡轉成生圖。
+
+def _codex_image_instructions(has_init_image: bool) -> str:
+    s = (
+        "\n\nYou are a chat assistant connected to a local Stable Diffusion (A1111) "
+        "image generator. Respond via the structured output: put your natural-language "
+        "reply in 'reply'. If the user asks you to draw / paint / create / generate / "
+        "show an image, put comma-separated English danbooru-style tags describing it in "
+        "'image_prompt' (these are SDXL/Pony/Illustrious anime models); otherwise leave "
+        "'image_prompt' empty. Do not include steps/sampler/seed. "
+    )
+    if has_init_image:
+        s += (
+            "Set 'edit_attached_image' to true only when the user wants to modify / "
+            "redraw the image they attached."
+        )
+    else:
+        s += "Set 'edit_attached_image' to false."
+    return s
+
+
+async def _run_codex(
+    model: str,
+    messages: list[dict[str, Any]],
+    tools_enabled: bool,
+    image_settings: dict[str, Any] | None,
+    think: bool,
+) -> AsyncIterator[str]:
+    init_image = _last_init_image(messages)
+    use_schema = bool(tools_enabled)
+    system = _base_system(messages)
+    if use_schema:
+        system += _codex_image_instructions(bool(init_image))
+
+    prompt_tokens = 0
+    try:
+        async for ev in codex_client.chat_stream(
+            model,
+            messages,
+            system,
+            think=think,
+            use_schema=use_schema,
+            has_init_image=bool(init_image),
+        ):
+            kind = ev.get("type")
+            if kind == "error":
+                yield _sse({"type": "error", "message": ev["message"]})
+                yield _sse({"type": "done"})
+                return
+            if kind == "usage":
+                prompt_tokens = ev["prompt_tokens"]
+            elif kind == "text":
+                if ev.get("delta"):
+                    yield _sse({"type": "token", "delta": ev["delta"]})
+            elif kind == "image_request":
+                async for out in _run_directive(
+                    ev["name"], json.dumps(ev["args"]), image_settings, init_image
+                ):
+                    yield _sse(out)
+        if prompt_tokens:
+            yield _sse(
+                {
+                    "type": "usage",
+                    "prompt_tokens": prompt_tokens,
+                    "num_ctx": CODEX_CONTEXT_LENGTH,
                 }
             )
         yield _sse({"type": "done"})

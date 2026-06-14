@@ -178,6 +178,20 @@ def set_source(service: str, cfg: dict) -> dict:
     return {**updated, "effective_url": effective_url(updated)}
 
 
+# ---- 前端 UI 設定（語言、引擎、SD 參數、system prompt 等）----
+# 後端只當不透明的 JSON blob 保存，schema 由前端定義；用於跨裝置同步。
+def get_ui() -> dict:
+    return _settings.get("ui") or {}
+
+
+def set_ui(cfg: dict) -> dict:
+    if not isinstance(cfg, dict):
+        raise ValueError("設定必須是物件")
+    _settings["ui"] = cfg
+    _save()
+    return _settings["ui"]
+
+
 # ---- Web 搜尋設定 ----
 def get_web() -> dict:
     return _settings.get("web") or _default_web()

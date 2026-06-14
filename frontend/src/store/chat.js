@@ -10,7 +10,44 @@ import {
   streamChat,
   generateImage,
   compactConversation,
+  listConversations,
+  getConversation,
+  putConversation,
+  deleteConversationRemote,
+  fetchUiSettings,
+  saveUiSettings,
 } from "../lib/api";
+
+// engine / chatModel 是「裝置本機」設定，不跨裝置同步：
+// 各裝置可用的引擎與模型不同，同步會導致某裝置切了引擎、其他裝置的模型清單也被換掉。
+const DEVICE_LOCAL_SETTINGS = ["engine", "chatModel"];
+function _syncableSettings(settings) {
+  const out = { ...settings };
+  for (const k of DEVICE_LOCAL_SETTINGS) delete out[k];
+  return out;
+}
+
+// 設定變更後 debounce 寫回後端（跨裝置同步），避免每次微調都打一次。
+let _settingsTimer = null;
+function _debouncedSaveSettings(settings) {
+  if (_settingsTimer) clearTimeout(_settingsTimer);
+  _settingsTimer = setTimeout(() => {
+    saveUiSettings(_syncableSettings(settings)).catch(() => {
+      /* 後端不可用：保留本機，下次變更再試 */
+    });
+  }, 600);
+}
+
+// 一次性：把舊版（純前端）localStorage 裡的對話搬到後端。搬過就設旗標，避免重搬／復活已刪對話。
+const MIGRATED_KEY = "webui-conv-migrated";
+function readLocalConversations() {
+  try {
+    const raw = localStorage.getItem("webui-gen-image");
+    return JSON.parse(raw || "{}")?.state?.conversations || [];
+  } catch {
+    return [];
+  }
+}
 
 const uid = () =>
   (crypto.randomUUID && crypto.randomUUID()) ||
@@ -66,7 +103,8 @@ const newConversation = (model) => ({
   id: uid(),
   title: "新對話",
   model,
-  messages: [],
+  messages: [], // messages 為陣列 = 已載入；summary（未載入）時為 undefined
+  created_at: Date.now() / 1000,
 });
 
 export const useChat = create(
@@ -91,7 +129,7 @@ export const useChat = create(
       models: [],
       sdModels: [],
       samplers: [],
-      engines: { ollama: true, claude_cli: false },
+      engines: { ollama: true, claude_cli: false, codex: false },
       health: { ollama: true, a1111: true },
       streaming: false,
       _abort: null,
@@ -121,13 +159,38 @@ export const useChat = create(
 
       // ---- 初始化：抓資源 ----
       async loadResources() {
+        // 先套用後端保存的 UI 設定（跨裝置同步）；localStorage 仍當首屏快取
+        let serverSettings = null;
+        try {
+          serverSettings = await fetchUiSettings();
+        } catch {
+          serverSettings = null;
+        }
+        const hadServerSettings =
+          serverSettings && Object.keys(serverSettings).length > 0;
+        if (hadServerSettings) {
+          // 套用後端設定，但忽略 engine / chatModel（裝置本機，避免引擎被其他裝置帶歪）
+          const incoming = _syncableSettings(serverSettings);
+          set((st) => ({
+            settings: {
+              ...st.settings,
+              ...incoming,
+              imageSettings: {
+                ...st.settings.imageSettings,
+                ...(incoming.imageSettings || {}),
+              },
+            },
+          }));
+        }
+
         const engines = await fetchEngines().catch(() => ({
           ollama: true,
           claude_cli: false,
+          codex: false,
         }));
-        // 持久化的引擎若已不可用（例如 claude 未掛載）→ 退回 ollama
+        // 持久化的引擎若已不可用（例如 claude/codex 未掛載）→ 退回 ollama
         let engine = get().settings.engine || "ollama";
-        if (engine === "claude_cli" && !engines.claude_cli) engine = "ollama";
+        if (engine !== "ollama" && !engines[engine]) engine = "ollama";
         if (engine !== get().settings.engine) {
           set((st) => ({ settings: { ...st.settings, engine } }));
         }
@@ -152,12 +215,93 @@ export const useChat = create(
           set({ settings: { ...get().settings, chatModel: pref } });
         }
 
-        // 若沒有任何對話，建一個
-        if (get().conversations.length === 0) {
-          get().createConversation();
-        } else if (!get().currentId) {
-          set({ currentId: get().conversations[0].id });
+        // 後端尚無設定 → 用本機現有設定種子化（不含 engine/chatModel）
+        if (!hadServerSettings) {
+          saveUiSettings(_syncableSettings(get().settings)).catch(() => {});
         }
+
+        // 對話改由後端載入（跨裝置、長期保存）
+        await get().loadConversations();
+      },
+
+      // 從後端載入對話摘要清單（messages 採懶載入：點開才抓）
+      async loadConversations() {
+        let summaries = null;
+        try {
+          summaries = await listConversations();
+        } catch {
+          summaries = null; // 後端連不上
+        }
+
+        // 後端連不上：保留現有（可能來自舊 localStorage rehydrate 的）對話，不動作
+        if (summaries === null) {
+          if (get().conversations.length === 0) get().createConversation();
+          return;
+        }
+
+        // 一次性遷移：後端是空的、且本機有舊對話 → 上傳
+        if (summaries.length === 0 && !localStorage.getItem(MIGRATED_KEY)) {
+          // 來源：原始 localStorage；若已被覆寫則退回 rehydrate 進記憶體的舊對話
+          const raw = readLocalConversations();
+          const source = raw.length ? raw : get().conversations;
+          const toMigrate = source.filter((c) => (c.messages?.length || 0) > 0);
+          for (const c of toMigrate) {
+            try {
+              await putConversation(c);
+            } catch {
+              /* 個別失敗略過 */
+            }
+          }
+          if (toMigrate.length) summaries = await listConversations().catch(() => []);
+        }
+        localStorage.setItem(MIGRATED_KEY, "1");
+
+        // summary → 對話物件（messages: undefined 代表尚未載入）
+        const conversations = summaries.map((sm) => ({
+          ...sm,
+          messages: undefined,
+        }));
+        let currentId = get().currentId;
+        if (!conversations.some((c) => c.id === currentId)) {
+          currentId = conversations[0]?.id || null;
+        }
+        set({ conversations, currentId });
+
+        if (conversations.length === 0) {
+          get().createConversation();
+        } else if (currentId) {
+          get()._ensureLoaded(currentId);
+        }
+      },
+
+      // 確保某對話的 messages 已從後端載入（messages 為陣列即視為已載入）
+      async _ensureLoaded(id) {
+        const c = get().conversations.find((x) => x.id === id);
+        if (!c || Array.isArray(c.messages)) return;
+        try {
+          const full = await getConversation(id);
+          set((st) => ({
+            conversations: st.conversations.map((x) =>
+              x.id === id ? { ...x, ...full, messages: full.messages || [] } : x
+            ),
+          }));
+        } catch {
+          // 載入失敗：標記為空陣列避免無限重試
+          set((st) => ({
+            conversations: st.conversations.map((x) =>
+              x.id === id ? { ...x, messages: [] } : x
+            ),
+          }));
+        }
+      },
+
+      // 把某對話（需已載入且有內容）寫回後端
+      _syncConversation(id) {
+        const c = get().conversations.find((x) => x.id === id);
+        if (!c || !Array.isArray(c.messages) || c.messages.length === 0) return;
+        putConversation(c).catch(() => {
+          /* 同步失敗：下次互動會再試 */
+        });
       },
 
       // 切換 AI 引擎（ollama / claude_cli）：重抓該引擎的模型清單並選預設
@@ -182,7 +326,9 @@ export const useChat = create(
               c.id === st.currentId ? { ...c, model: pref } : c
             ),
           }));
+          get()._syncConversation(get().currentId);
         }
+        _debouncedSaveSettings(get().settings); // 同步 engine + chatModel 到後端
       },
 
       modelSupportsTools(name) {
@@ -199,6 +345,7 @@ export const useChat = create(
       },
       selectConversation(id) {
         set({ currentId: id });
+        get()._ensureLoaded(id); // 懶載入該對話的訊息
       },
       deleteConversation(id) {
         set((st) => {
@@ -207,7 +354,9 @@ export const useChat = create(
           if (currentId === id) currentId = conversations[0]?.id || null;
           return { conversations, currentId };
         });
+        deleteConversationRemote(id).catch(() => {});
         if (get().conversations.length === 0) get().createConversation();
+        else get()._ensureLoaded(get().currentId);
       },
       renameConversation(id, title) {
         set((st) => ({
@@ -215,11 +364,13 @@ export const useChat = create(
             c.id === id ? { ...c, title } : c
           ),
         }));
+        get()._syncConversation(id);
       },
 
-      // ---- 設定 ----
+      // ---- 設定 ----（本機即時更新 + debounce 同步到後端）
       setSettings(patch) {
         set((st) => ({ settings: { ...st.settings, ...patch } }));
+        _debouncedSaveSettings(get().settings);
       },
       setImageSettings(patch) {
         set((st) => ({
@@ -228,6 +379,7 @@ export const useChat = create(
             imageSettings: { ...st.settings.imageSettings, ...patch },
           },
         }));
+        _debouncedSaveSettings(get().settings);
       },
 
       // 內部：更新目前對話
@@ -263,6 +415,10 @@ export const useChat = create(
           get().createConversation();
           convo = get().currentConversation();
         }
+        // 確保訊息已從後端載入後再附加（避免 messages 為 undefined）
+        await get()._ensureLoaded(convo.id);
+        convo = get().currentConversation();
+        const convId = convo.id;
 
         const { settings } = get();
         const model = convo.model || settings.chatModel;
@@ -403,6 +559,7 @@ export const useChat = create(
               progress: null,
             });
             set({ streaming: false, _abort: null });
+            get()._syncConversation(convId); // 保存到後端（跨裝置）
           },
           (err) => {
             get()._patchMessage(assistantMsg.id, {
@@ -412,6 +569,7 @@ export const useChat = create(
               progress: null,
             });
             set({ streaming: false, _abort: null });
+            get()._syncConversation(convId);
           }
         );
 
@@ -458,6 +616,7 @@ export const useChat = create(
           });
         } finally {
           set({ streaming: false });
+          get()._syncConversation(get().currentId);
         }
       },
 
@@ -499,6 +658,7 @@ export const useChat = create(
             messages: [summaryMsg, ...keep],
           }));
           set({ usage: null });
+          get()._syncConversation(get().currentId);
         } catch (e) {
           /* 摘要失敗：保持原樣 */
         } finally {
@@ -509,8 +669,8 @@ export const useChat = create(
     {
       name: "webui-gen-image",
       storage: createJSONStorage(() => debouncedLocalStorage),
+      // 對話改存後端（跨裝置、長期保存）；localStorage 只留裝置本機偏好。
       partialize: (st) => ({
-        conversations: st.conversations,
         currentId: st.currentId,
         settings: st.settings,
       }),

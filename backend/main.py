@@ -15,6 +15,8 @@ from pydantic import BaseModel
 import a1111_client
 import chat as chat_mod
 import claude_client
+import codex_client
+import conversations_store
 import docker_probe
 import ollama_client
 import settings_store
@@ -30,8 +32,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 載入持久化設定（圖片儲存目錄等）
+# 載入持久化設定（圖片儲存目錄等）+ 初始化對話資料庫
 settings_store.load()
+conversations_store.init()
 
 
 @app.get("/images/{filename}")
@@ -75,6 +78,8 @@ async def health() -> dict[str, Any]:
 async def models(engine: str = "ollama") -> list[dict[str, Any]]:
     if engine == "claude_cli":
         return claude_client.list_models()
+    if engine == "codex":
+        return codex_client.list_models()
     try:
         return await ollama_client.list_models()
     except Exception as e:
@@ -87,6 +92,7 @@ async def engines() -> dict[str, Any]:
     return {
         "ollama": True,
         "claude_cli": claude_client.available(),
+        "codex": codex_client.available(),
     }
 
 
@@ -371,6 +377,12 @@ async def compact(req: CompactRequest) -> dict[str, Any]:
                 [{"role": "user", "content": "\n\n".join(lines)}],
                 system,
             )
+        elif req.engine == "codex":
+            summary = await codex_client.chat_once(
+                req.model,
+                [{"role": "user", "content": "\n\n".join(lines)}],
+                system,
+            )
         else:
             messages = [
                 {"role": "system", "content": system},
@@ -380,6 +392,51 @@ async def compact(req: CompactRequest) -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(502, f"摘要失敗：{e}")
     return {"summary": summary.strip()}
+
+
+# ---- 前端 UI 設定（跨裝置同步；存於 app_settings.json 的 ui blob）----
+@app.get("/api/ui-settings")
+def get_ui_settings() -> dict[str, Any]:
+    return settings_store.get_ui()
+
+
+@app.put("/api/ui-settings")
+def put_ui_settings(body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return settings_store.set_ui(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---- 對話紀錄（跨裝置、長期保存；存於 SQLite）----
+@app.get("/api/conversations")
+def list_conversations() -> list[dict[str, Any]]:
+    """側欄用的對話摘要清單（不含 messages）。"""
+    return conversations_store.list_summaries()
+
+
+@app.get("/api/conversations/{conv_id}")
+def get_conversation(conv_id: str) -> dict[str, Any]:
+    conv = conversations_store.get(conv_id)
+    if not conv:
+        raise HTTPException(404, "找不到對話")
+    return conv
+
+
+@app.put("/api/conversations/{conv_id}")
+def put_conversation(conv_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """新增或更新整則對話（含 messages）。"""
+    body = {**body, "id": conv_id}
+    try:
+        return conversations_store.upsert(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/conversations/{conv_id}")
+def delete_conversation(conv_id: str) -> dict[str, bool]:
+    conversations_store.delete(conv_id)
+    return {"ok": True}
 
 
 class ImageRequest(BaseModel):

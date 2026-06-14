@@ -47,6 +47,24 @@ CLAUDE_MODELS = [
 ]
 CLAUDE_CONTEXT_LENGTH = int(os.getenv("CLAUDE_CONTEXT_LENGTH", "200000"))
 
+# ---- OpenAI Codex CLI 引擎 ----
+# 後端可選用本地已登入的 `codex`（OpenAI Codex CLI）當 AI 引擎。
+# 執行檔在容器內由 compose 掛載 ~/.codex（含 static binary 與 auth.json）；
+# 路徑會自動在 CODEX_HOME/packages 下解析，也可用 CODEX_BIN 指定。
+CODEX_BIN = os.getenv("CODEX_BIN", "")  # 空字串=自動解析（PATH 或 ~/.codex/packages）
+CODEX_TIMEOUT = float(os.getenv("CODEX_TIMEOUT", "300"))
+CODEX_EXTRA_ARGS = os.getenv("CODEX_EXTRA_ARGS", "").split()
+# 平常會自動讀 ~/.codex/models_cache.json；這裡只是「cache 也讀不到」時的最終後備。
+CODEX_MODELS = [
+    m.strip()
+    for m in os.getenv("CODEX_MODELS", "gpt-5.5").split(",")
+    if m.strip()
+]
+CODEX_CONTEXT_LENGTH = int(os.getenv("CODEX_CONTEXT_LENGTH", "272000"))
+# 沙箱模式：read-only / workspace-write / danger-full-access / bypass
+# 容器內若因 landlock 不可用導致沙箱建立失敗，可改成 bypass（容器本身即隔離邊界）。
+CODEX_SANDBOX_MODE = os.getenv("CODEX_SANDBOX_MODE", "read-only")
+
 # CORS 允許來源（Vite dev server）
 CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",

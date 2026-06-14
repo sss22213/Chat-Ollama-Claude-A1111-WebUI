@@ -19,6 +19,9 @@ services:
       # 可選模型別名與 claude 路徑可覆寫。
       CLAUDE_BIN: ${CLAUDE_BIN:-claude}
       CLAUDE_MODELS: ${CLAUDE_MODELS:-sonnet,opus,haiku}
+      # OpenAI Codex CLI 引擎。binary 與認證由下方掛載的 ~/.codex 提供（static 可跨發行版）。
+      # 容器內若沙箱建立失敗（landlock 不可用）可改成 bypass。
+      CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-read-only}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -32,6 +35,9 @@ services:
       # 在 .env 設 CLAUDE_CREDS_DIR=/home/<你>/.claude 啟用；未設則掛空目錄、
       # claude 引擎顯示為不可用（不影響 ollama）。sudo 執行時請用「絕對路徑」。
       - ${CLAUDE_CREDS_DIR:-./backend/.claude-empty}:/root/.claude
+      # Codex CLI：把主機「已登入」的 ~/.codex 掛進容器（含 static binary + auth + 模型快取，rw）。
+      # 在 .env 設 CODEX_CREDS_DIR=/home/<你>/.codex 啟用；未設則掛空目錄、codex 顯示為不可用。
+      - ${CODEX_CREDS_DIR:-./backend/.codex-empty}:/root/.codex
     restart: unless-stopped
 
   frontend:
