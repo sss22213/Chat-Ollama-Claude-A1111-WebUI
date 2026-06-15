@@ -14,9 +14,18 @@ import { useT } from "../i18n";
 /**
  * 伺服器端資料夾選擇器：可逐層點選、直接輸入路徑、或新增資料夾。
  * onPick(path) 在按「選擇此資料夾」時呼叫。
+ * requireWritable=false 時可選唯讀資料夾（如歷史目錄常是唯讀掛載）。
+ * title 可覆寫標題（不同用途）。
  */
-export default function DirectoryPicker({ initialPath, onPick, onClose }) {
+export default function DirectoryPicker({
+  initialPath,
+  onPick,
+  onClose,
+  requireWritable = true,
+  title,
+}) {
   const t = useT();
+  const canPick = (c) => !!c && (!requireWritable || c.writable);
   const [cur, setCur] = useState(null); // {path, parent, dirs, writable}
   const [pathInput, setPathInput] = useState(initialPath || "");
   const [loading, setLoading] = useState(false);
@@ -66,7 +75,7 @@ export default function DirectoryPicker({ initialPath, onPick, onClose }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-ink-700 px-5 py-3">
-          <h2 className="text-base font-semibold">{t("pickerTitle")}</h2>
+          <h2 className="text-base font-semibold">{title || t("pickerTitle")}</h2>
           <button
             onClick={onClose}
             className="rounded-lg p-1.5 text-gray-400 hover:bg-ink-750"
@@ -175,9 +184,9 @@ export default function DirectoryPicker({ initialPath, onPick, onClose }) {
             {t("cancel")}
           </button>
           <button
-            onClick={() => cur && onPick(cur.path)}
-            disabled={!cur?.writable}
-            title={cur?.writable ? "" : t("folderNotWritable")}
+            onClick={() => canPick(cur) && onPick(cur.path)}
+            disabled={!canPick(cur)}
+            title={canPick(cur) ? "" : t("folderNotWritable")}
             className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-ink-600 disabled:text-gray-500"
           >
             <Check size={15} /> {t("chooseThis")}

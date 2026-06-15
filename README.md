@@ -44,6 +44,11 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   image, with one-click **"apply to settings"** to reproduce it. The model can also call
   `read_png_info` to answer "how was this image made?". *(Only works on images that still
   carry A1111/ComfyUI metadata — screenshots or recompressed images won't have any.)*
+- 🕘 **Prompt history** — if you run the A1111 `sd-webui-prompt-history` extension, browse
+  its recorded generations right here: a searchable, paginated thumbnail grid (read straight
+  from the extension's `data.json`), and one click to **apply to settings** or **generate
+  now** (re-render with the original seed/params). *(Optional — point it at the extension's
+  data folder; see [Prompt history](#prompt-history-sd-webui-prompt-history).)*
 - 📊 **Live progress bar** — percentage, step count, and a live preview during generation.
 - 📂 **Selectable image storage location** — pick the output folder with a server-side
   directory picker (browse / type a path / create a folder); old images still resolve
@@ -70,6 +75,8 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
 - For the **Codex CLI engine** (optional): the `codex` CLI logged in on the host. Its whole
   `~/.codex` (static binary + credentials + model cache) is mounted into the container — no
   in-image install needed (see below).
+- For **Prompt history** (optional): the A1111 `sd-webui-prompt-history` extension; mount its
+  `data` folder into the container (read-only) so the WebUI can read your past generations.
 - Python 3.10+ and Node 18+ for local development.
 
 > Ollama and A1111 can run anywhere as long as their ports are reachable; this WebUI
@@ -145,6 +152,11 @@ npm run dev
 8. The ⚙️ gear opens settings: SD model & parameters, denoising strength, system prompt,
    image storage location, service sources, web provider, and language.
 9. You can also type `/image 1girl, solar punk city, masterpiece` to generate directly.
+10. **Prompt history:** if enabled, the 🕘 button (top bar, left of ⚙️) opens a searchable
+    grid of your past A1111 generations — click one to apply it to settings or re-generate.
+
+> **Keyboard:** **Shift + Enter** sends a message; **Enter** inserts a newline. (This keeps
+> Enter from sending mid-composition when typing with an IME.)
 
 > **Storage location in Docker mode:** the picker browses the **backend container's**
 > filesystem. By default images go to the bind-mounted `backend/data/images`. To store
@@ -218,6 +230,37 @@ about sandbox/landlock inside the container, set `CODEX_SANDBOX_MODE=bypass` in 
 (the container is already the isolation boundary). **Local dev:** if `codex` is on `PATH`
 and logged in, it's auto-detected — no config needed.
 
+## Prompt history (sd-webui-prompt-history)
+
+If you use the A1111 **`sd-webui-prompt-history`** extension, the WebUI can browse and reuse
+the generations it has recorded — even though that extension exposes no API. It reads the
+extension's data folder directly (`data.json` + per-record `<id>.jpg`), parses each record's
+embedded parameters (the **same A1111 format as PNG Info**), and shows a searchable,
+paginated thumbnail grid (the 🕘 button in the top bar). Click any record to:
+
+- **Apply to settings** — load its parameters (negative / steps / sampler / seed / size /
+  checkpoint) and drop the prompt into the composer as `/image …` for review/editing; or
+- **Generate now** — one-click re-render with the record's original prompt and parameters.
+
+Checkpoints not currently loaded in A1111 are skipped automatically. Thumbnails are
+downscaled on the fly and cached under `backend/data/history_thumbs/`.
+
+**Enable it** by pointing the backend at that `data` folder — either way works:
+
+- **`PROMPT_HISTORY_DIR`** (env) — set it to the extension's `data` folder. In Docker it is
+  bind-mounted **read-only** to a fixed in-container path:
+  ```bash
+  PROMPT_HISTORY_DIR=/home/youruser/.../extensions/sd-webui-prompt-history/data
+  ```
+- **Settings panel** — ⚙️ → *Prompt history* → choose the folder. This overrides the env
+  default and is persisted server-side. The 🕘 button appears as soon as a folder containing
+  `data.json` is detected.
+
+> **Docker note:** the folder picker (and the backend) can only see paths **mounted into the
+> container**. Your history lives on the host, so it must be mounted in first — which is
+> exactly what setting `PROMPT_HISTORY_DIR` in `.env` does. The in-UI override is mainly for
+> local dev, or for switching between several already-mounted folders.
+
 ## Architecture
 
 ```
@@ -248,17 +291,18 @@ their `images` stripped automatically.
 | `backend/codex_client.py` | OpenAI Codex CLI engine (subprocess `codex exec --json`; chat + vision via `-i`) |
 | `backend/a1111_client.py` | A1111: txt2img / img2img / progress / models / samplers / png-info |
 | `backend/web_tools.py` | web search (DuckDuckGo/SearXNG) + page extraction (with SSRF guard) |
-| `backend/settings_store.py` | persisted settings: image dir + service sources + web provider |
+| `backend/settings_store.py` | persisted settings: image dir + service sources + web provider + prompt-history dir |
+| `backend/prompt_history_store.py` | reads the `sd-webui-prompt-history` extension's `data.json` + thumbnails (cached, paginated, searchable) |
 | `backend/docker_probe.py` | best-effort container listing via the docker socket |
 | `frontend/src/store/chat.js` | zustand state + streaming coordination + persistence |
 | `frontend/src/lib/api.js` | SSE parsing, storage/browse/sources/engine calls |
 | `frontend/src/i18n.js` | 5-language dictionary + `useT()` hook |
-| `frontend/src/components/` | UI components (TopBar, Composer, Message, ImageBlock, PngInfoModal, pickers, panels) |
+| `frontend/src/components/` | UI components (TopBar, Composer, Message, ImageBlock, PngInfoModal, HistoryModal, pickers, panels) |
 
 ## Configuration
 
 Copy `.env.example` and override via environment variables (addresses, default model,
-timeouts, Claude / Codex credentials). In dev mode the frontend proxy target is in
+timeouts, Claude / Codex credentials, prompt-history folder). In dev mode the frontend proxy target is in
 `frontend/vite.config.js` (`BACKEND_URL`, default `127.0.0.1:8000`); in Docker mode
 `frontend/nginx.conf` proxies `/api` and `/images` to `backend:8000`.
 

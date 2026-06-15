@@ -65,6 +65,11 @@ CODEX_CONTEXT_LENGTH = int(os.getenv("CODEX_CONTEXT_LENGTH", "272000"))
 # 容器內若因 landlock 不可用導致沙箱建立失敗，可改成 bypass（容器本身即隔離邊界）。
 CODEX_SANDBOX_MODE = os.getenv("CODEX_SANDBOX_MODE", "read-only")
 
+# ---- 提示詞歷史（sd-webui-prompt-history 擴充）----
+# 指向該擴充的 data 目錄（含 data.json 與 <id>.jpg）。空字串＝功能停用。
+# docker 模式由 compose 固定掛到 /data/prompt-history；本機開發可直接指主機路徑。
+PROMPT_HISTORY_DIR = os.getenv("PROMPT_HISTORY_DIR", "").strip()
+
 # CORS 允許來源（Vite dev server）
 CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",

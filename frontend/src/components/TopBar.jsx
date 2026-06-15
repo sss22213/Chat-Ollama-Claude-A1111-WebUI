@@ -1,13 +1,22 @@
-import { Settings, PanelLeftOpen, Wand2, Globe, Combine, Loader2 } from "lucide-react";
+import {
+  Settings,
+  PanelLeftOpen,
+  Wand2,
+  Globe,
+  Combine,
+  Loader2,
+  History,
+} from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
 
-export default function TopBar({ onToggleSidebar, onOpenSettings }) {
+export default function TopBar({ onToggleSidebar, onOpenSettings, onOpenHistory }) {
   const t = useT();
   const models = useChat((s) => s.models);
   const settings = useChat((s) => s.settings);
   const setSettings = useChat((s) => s.setSettings);
   const engines = useChat((s) => s.engines);
+  const features = useChat((s) => s.features);
   const setEngine = useChat((s) => s.setEngine);
   const health = useChat((s) => s.health);
   const usage = useChat((s) => s.usage);
@@ -153,6 +162,16 @@ export default function TopBar({ onToggleSidebar, onOpenSettings }) {
         <StatusDot ok={health.ollama} label="Ollama" />
         <StatusDot ok={health.a1111} label="A1111" />
       </div>
+
+      {features?.promptHistory && (
+        <button
+          onClick={onOpenHistory}
+          className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750"
+          title={t("history")}
+        >
+          <History size={18} />
+        </button>
+      )}
 
       <button
         onClick={onOpenSettings}

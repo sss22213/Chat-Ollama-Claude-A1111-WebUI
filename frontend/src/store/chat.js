@@ -16,6 +16,7 @@ import {
   deleteConversationRemote,
   fetchUiSettings,
   saveUiSettings,
+  savePromptHistoryDir,
 } from "../lib/api";
 
 // engine / chatModel 是「裝置本機」設定，不跨裝置同步：
@@ -130,12 +131,14 @@ export const useChat = create(
       sdModels: [],
       samplers: [],
       engines: { ollama: true, claude_cli: false, codex: false },
+      features: { promptHistory: false }, // 後端可用的選用功能（依掛載/設定而定）
       health: { ollama: true, a1111: true },
       streaming: false,
       _abort: null,
       attachments: [], // 待送出的附件圖 [{id, dataUrl}]
       usage: null, // {prompt_tokens, num_ctx} 上一輪 context 用量
       compacting: false,
+      composerDraft: null, // 要塞進輸入框的草稿（如「套用歷史」帶入 prompt）
 
       // ---- 附件（上傳/重繪共用）----
       // dataUrl：縮圖後（給預覽/vision/img2img、會持久化）；
@@ -204,7 +207,14 @@ export const useChat = create(
             fetchHealth(),
           ]);
 
-        set({ models, sdModels, samplers, health, engines });
+        set({
+          models,
+          sdModels,
+          samplers,
+          health,
+          engines,
+          features: { promptHistory: !!defaults?.prompt_history },
+        });
 
         // 首次（或目前模型已不在清單中）：挑一個支援工具的模型當預設
         const s = get().settings;
@@ -576,8 +586,8 @@ export const useChat = create(
         set({ _abort: abort });
       },
 
-      // /image 手動路徑
-      async _handleSlashImage(prompt) {
+      // /image 手動路徑（settingsOverride：歷史「直接生成」時帶入該筆自己的參數）
+      async _handleSlashImage(prompt, settingsOverride = null) {
         if (!prompt) return;
         const userMsg = {
           id: uid(),
@@ -601,7 +611,7 @@ export const useChat = create(
         try {
           const result = await generateImage(
             prompt,
-            get().settings.imageSettings
+            settingsOverride || get().settings.imageSettings
           );
           get()._patchMessage(assistantMsg.id, {
             toolRunning: false,
@@ -618,6 +628,56 @@ export const useChat = create(
           set({ streaming: false });
           get()._syncConversation(get().currentId);
         }
+      },
+
+      // ---- 提示詞歷史（sd-webui-prompt-history 整合）----
+      // 把要塞進輸入框的草稿交給 Composer 取用（取用後 Composer 會清回 null）
+      setComposerDraft(text) {
+        set({ composerDraft: text });
+      },
+
+      // checkpoint 對不上目前 A1111 已載入的清單時就拿掉，避免生成報錯／下拉變空
+      _historySettings(record, mergeCurrent) {
+        const base = mergeCurrent ? { ...get().settings.imageSettings } : {};
+        const s = { ...base, ...(record.settings || {}) };
+        const sdModels = get().sdModels;
+        if (
+          s.sd_model_checkpoint &&
+          !sdModels.find((m) => m.model_name === s.sd_model_checkpoint)
+        ) {
+          delete s.sd_model_checkpoint;
+        }
+        return s;
+      },
+
+      // 設定歷史資料目錄（空字串＝回到 env 預設）；同步更新「歷史」按鈕的顯示
+      async setPromptHistoryDir(dir) {
+        const info = await savePromptHistoryDir(dir);
+        set((st) => ({
+          features: { ...st.features, promptHistory: !!info.available },
+        }));
+        return info;
+      },
+
+      // 套用到設定：套用該筆參數 + 把 prompt 以 /image 帶入輸入框（檢查／編輯後可直接生成）
+      applyHistory(record) {
+        get().setImageSettings(get()._historySettings(record, false));
+        get().setComposerDraft(record.prompt ? `/image ${record.prompt}` : "");
+      },
+
+      // 直接生成：用該筆自己的 prompt + 參數立刻重生一張（不改動目前的生成設定）
+      async generateFromHistory(record) {
+        if (get().streaming || !record.prompt) return;
+        let convo = get().currentConversation();
+        if (!convo) {
+          get().createConversation();
+          convo = get().currentConversation();
+        }
+        await get()._ensureLoaded(convo.id);
+        await get()._handleSlashImage(
+          record.prompt,
+          get()._historySettings(record, true)
+        );
       },
 
       stopStreaming() {

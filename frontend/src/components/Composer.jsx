@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Square, ImagePlus, X, FileText } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
@@ -51,9 +51,26 @@ export default function Composer() {
   const attachments = useChat((s) => s.attachments);
   const addAttachment = useChat((s) => s.addAttachment);
   const removeAttachment = useChat((s) => s.removeAttachment);
+  const composerDraft = useChat((s) => s.composerDraft);
+  const setComposerDraft = useChat((s) => s.setComposerDraft);
   const taRef = useRef(null);
   const fileRef = useRef(null);
   const [pngFor, setPngFor] = useState(null); // 正在看 PNG Info 的附件原圖
+
+  // 外部（如「套用歷史」）要帶入輸入框的草稿：填入後清回 null，並聚焦／調整高度
+  useEffect(() => {
+    if (composerDraft == null) return;
+    setText(composerDraft);
+    setComposerDraft(null);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (!el) return;
+      el.focus();
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, [composerDraft, setComposerDraft]);
 
   const submit = () => {
     if ((!text.trim() && attachments.length === 0) || streaming) return;
@@ -64,7 +81,8 @@ export default function Composer() {
   };
 
   const onKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    // Shift+Enter 送出；Enter 換行
+    if (e.key === "Enter" && e.shiftKey) {
       e.preventDefault();
       submit();
     }

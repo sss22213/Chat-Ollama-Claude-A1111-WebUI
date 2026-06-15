@@ -19,6 +19,7 @@ import codex_client
 import conversations_store
 import docker_probe
 import ollama_client
+import prompt_history_store
 import settings_store
 import web_tools
 from config import CORS_ORIGINS, DEFAULT_IMAGE_SETTINGS
@@ -120,6 +121,8 @@ async def defaults() -> dict[str, Any]:
         "image_settings": DEFAULT_IMAGE_SETTINGS,
         "current_sd_model": current,
         "storage": settings_store.info(),
+        # 是否有掛載 sd-webui-prompt-history 的資料目錄（決定前端是否顯示「歷史」按鈕）
+        "prompt_history": prompt_history_store.available(),
     }
 
 
@@ -321,6 +324,50 @@ async def png_info(req: PngInfoRequest) -> dict[str, Any]:
         return await a1111_client.png_info(req.image)
     except Exception as e:
         raise HTTPException(502, f"讀取 PNG 參數失敗：{e}")
+
+
+# ---- 提示詞歷史（讀取 sd-webui-prompt-history 擴充的紀錄）----
+@app.get("/api/prompt-history")
+def prompt_history(page: int = 1, q: str = "", page_size: int = 24) -> dict[str, Any]:
+    if not prompt_history_store.available():
+        raise HTTPException(404, "未設定提示詞歷史目錄（PROMPT_HISTORY_DIR）")
+    return prompt_history_store.list_items(page=page, q=q, page_size=page_size)
+
+
+@app.get("/api/prompt-history/{rec_id}/thumb")
+def prompt_history_thumb(rec_id: str, size: int = 256):
+    fp = prompt_history_store.thumb_file(rec_id, size)
+    if not fp:
+        raise HTTPException(404, "找不到縮圖")
+    return FileResponse(fp)
+
+
+def _prompt_history_dir_info() -> dict[str, Any]:
+    info = settings_store.prompt_history_info()
+    if info["available"]:
+        try:
+            info["count"] = prompt_history_store.list_items(page=1, page_size=1)["total"]
+        except Exception:
+            info["count"] = 0
+    return info
+
+
+@app.get("/api/prompt-history-dir")
+def prompt_history_dir_get() -> dict[str, Any]:
+    return _prompt_history_dir_info()
+
+
+class PromptHistoryDirRequest(BaseModel):
+    dir: str = ""
+
+
+@app.put("/api/prompt-history-dir")
+def prompt_history_dir_set(req: PromptHistoryDirRequest) -> dict[str, Any]:
+    try:
+        settings_store.set_prompt_history_dir(req.dir)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _prompt_history_dir_info()
 
 
 @app.post("/api/chat")

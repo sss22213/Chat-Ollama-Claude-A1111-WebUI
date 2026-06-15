@@ -22,6 +22,8 @@ services:
       # OpenAI Codex CLI 引擎。binary 與認證由下方掛載的 ~/.codex 提供（static 可跨發行版）。
       # 容器內若沙箱建立失敗（landlock 不可用）可改成 bypass。
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-read-only}
+      # 提示詞歷史：容器內固定讀此掛載點；實際主機目錄由下方 volume 的 PROMPT_HISTORY_DIR 決定。
+      PROMPT_HISTORY_DIR: /data/prompt-history
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -38,6 +40,10 @@ services:
       # Codex CLI：把主機「已登入」的 ~/.codex 掛進容器（含 static binary + auth + 模型快取，rw）。
       # 在 .env 設 CODEX_CREDS_DIR=/home/<你>/.codex 啟用；未設則掛空目錄、codex 顯示為不可用。
       - ${CODEX_CREDS_DIR:-./backend/.codex-empty}:/root/.codex
+      # 提示詞歷史：唯讀掛載 sd-webui-prompt-history 擴充的 data 目錄（data.json + <id>.jpg）。
+      # 在 .env 設 PROMPT_HISTORY_DIR=/home/<你>/.../extensions/sd-webui-prompt-history/data 啟用；
+      # 未設則掛空目錄、頂欄不顯示「歷史」按鈕。用「絕對路徑」。
+      - ${PROMPT_HISTORY_DIR:-./backend/.history-empty}:/data/prompt-history:ro
     restart: unless-stopped
 
   frontend:

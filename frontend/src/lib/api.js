@@ -136,6 +136,37 @@ export async function readPngInfo(image) {
   return r.json();
 }
 
+// ---- 提示詞歷史（讀取 sd-webui-prompt-history 擴充的紀錄）----
+export async function fetchPromptHistory(page = 1, q = "", pageSize = 24) {
+  const params = new URLSearchParams({ page, q, page_size: pageSize });
+  const r = await fetch(`/api/prompt-history?${params}`);
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "無法取得歷史");
+  return r.json();
+}
+
+// 縮圖 URL（後端即時縮放並快取）
+export const promptHistoryThumb = (id, size = 256) =>
+  `/api/prompt-history/${encodeURIComponent(id)}/thumb?size=${size}`;
+
+// 歷史資料目錄（env 當預設、UI 可覆寫）
+export async function fetchPromptHistoryDir() {
+  const r = await fetch("/api/prompt-history-dir");
+  if (!r.ok) throw new Error("無法取得歷史目錄設定");
+  return r.json();
+}
+
+export async function savePromptHistoryDir(dir) {
+  const r = await fetch("/api/prompt-history-dir", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir }),
+  });
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "設定失敗");
+  return r.json();
+}
+
 // ---- 前端 UI 設定（後端持久化、跨裝置同步）----
 export async function fetchUiSettings() {
   const r = await fetch("/api/ui-settings");

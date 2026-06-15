@@ -4,6 +4,7 @@ import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import TopBar from "./components/TopBar";
 import SettingsModal from "./components/SettingsModal";
+import HistoryModal from "./components/HistoryModal";
 
 export default function App() {
   const loadResources = useChat((s) => s.loadResources);
@@ -12,6 +13,7 @@ export default function App() {
     () => typeof window === "undefined" || window.innerWidth >= 768
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     loadResources();
@@ -24,10 +26,12 @@ export default function App() {
         <TopBar
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenHistory={() => setHistoryOpen(true)}
         />
         <ChatView />
       </div>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {historyOpen && <HistoryModal onClose={() => setHistoryOpen(false)} />}
     </div>
   );
 }

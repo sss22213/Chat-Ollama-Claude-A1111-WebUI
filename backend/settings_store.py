@@ -10,7 +10,13 @@ import json
 import os
 from pathlib import Path
 
-from config import DATA_DIR, IMAGE_DIR as DEFAULT_IMAGE_DIR, OLLAMA_URL, A1111_URL
+from config import (
+    DATA_DIR,
+    IMAGE_DIR as DEFAULT_IMAGE_DIR,
+    OLLAMA_URL,
+    A1111_URL,
+    PROMPT_HISTORY_DIR as DEFAULT_PROMPT_HISTORY_DIR,
+)
 
 SETTINGS_FILE = DATA_DIR / "app_settings.json"
 
@@ -31,6 +37,8 @@ def _default_web() -> dict:
 _settings: dict = {
     "image_dir": str(DEFAULT_IMAGE_DIR),
     "known_dirs": [str(DEFAULT_IMAGE_DIR)],
+    # 提示詞歷史目錄的 UI 覆寫（空字串＝沿用 env 預設 PROMPT_HISTORY_DIR）
+    "prompt_history_dir": "",
     "sources": {
         "ollama": _default_source(OLLAMA_URL, 11434),
         "a1111": _default_source(A1111_URL, 7860),
@@ -128,6 +136,47 @@ def info() -> dict:
         "writable": os.access(d, os.W_OK),
         "count": count,
         "known_dirs": _settings.get("known_dirs", []),
+    }
+
+
+# ---- 提示詞歷史目錄（env 當預設、UI 可覆寫並持久化）----
+def get_prompt_history_dir() -> str:
+    """有效歷史目錄：UI 覆寫優先，否則用 env 預設（PROMPT_HISTORY_DIR）。"""
+    return (
+        (_settings.get("prompt_history_dir") or "").strip()
+        or DEFAULT_PROMPT_HISTORY_DIR
+    )
+
+
+def set_prompt_history_dir(path: str) -> dict:
+    """設定歷史目錄覆寫；空字串＝清除（回到 env 預設）。
+
+    歷史目錄常是唯讀掛載，故只檢查「存在且為資料夾」，不要求可寫。
+    """
+    path = (path or "").strip()
+    if path:
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            raise ValueError("請提供絕對路徑")
+        if not p.is_dir():
+            raise ValueError("找不到此資料夾")
+        path = str(p.resolve())
+    _settings["prompt_history_dir"] = path
+    _save()
+    return prompt_history_info()
+
+
+def prompt_history_info() -> dict:
+    """目前歷史目錄狀態（給設定面板顯示）。"""
+    effective = get_prompt_history_dir()
+    available = bool(
+        effective and os.path.isfile(os.path.join(effective, "data.json"))
+    )
+    return {
+        "dir": effective,
+        "default": DEFAULT_PROMPT_HISTORY_DIR,
+        "override": (_settings.get("prompt_history_dir") or ""),
+        "available": available,
     }
 
 

@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import { X, FolderOpen, HardDrive, Loader2, AlertTriangle } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT, LANGS } from "../i18n";
-import { fetchStorage, setStorage as apiSetStorage } from "../lib/api";
+import {
+  fetchStorage,
+  setStorage as apiSetStorage,
+  fetchPromptHistoryDir,
+} from "../lib/api";
 import DirectoryPicker from "./DirectoryPicker";
 import SourcesPanel from "./SourcesPanel";
 import WebPanel from "./WebPanel";
@@ -25,9 +29,19 @@ export default function SettingsModal({ onClose }) {
   const [storageErr, setStorageErr] = useState("");
   const [saving, setSaving] = useState(false);
 
+  // 提示詞歷史目錄（env 預設、UI 可覆寫）
+  const setPromptHistoryDir = useChat((s) => s.setPromptHistoryDir);
+  const [histDir, setHistDir] = useState(null);
+  const [histPickerOpen, setHistPickerOpen] = useState(false);
+  const [histErr, setHistErr] = useState("");
+  const [histSaving, setHistSaving] = useState(false);
+
   useEffect(() => {
     fetchStorage()
       .then(setStorageState)
+      .catch(() => {});
+    fetchPromptHistoryDir()
+      .then(setHistDir)
       .catch(() => {});
   }, []);
 
@@ -42,6 +56,20 @@ export default function SettingsModal({ onClose }) {
       setStorageErr(e.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const onSetHistDir = async (dir) => {
+    setHistSaving(true);
+    setHistErr("");
+    try {
+      const info = await setPromptHistoryDir(dir);
+      setHistDir(info);
+      setHistPickerOpen(false);
+    } catch (e) {
+      setHistErr(e.message);
+    } finally {
+      setHistSaving(false);
     }
   };
 
@@ -162,6 +190,56 @@ export default function SettingsModal({ onClose }) {
             )}
           </Section>
 
+          {/* 提示詞歷史目錄 */}
+          <Section title={t("history")}>
+            <Field label={t("historyDirLabel")}>
+              <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2">
+                  <HardDrive size={15} className="shrink-0 text-gray-400" />
+                  <span className="truncate font-mono text-xs text-gray-200">
+                    {histDir?.dir || t("historyDirUnset")}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setHistPickerOpen(true)}
+                  className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-3 py-2 text-sm hover:bg-ink-750"
+                >
+                  {histSaving ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <FolderOpen size={15} />
+                  )}
+                  {t("chooseFolder")}
+                </button>
+              </div>
+            </Field>
+            {histDir && (
+              <p className="text-xs">
+                {histDir.available ? (
+                  <span className="text-emerald-400">
+                    {t("historyFound", { count: histDir.count ?? "?" })}
+                  </span>
+                ) : (
+                  <span className="text-amber-300/90">{t("historyNotFound")}</span>
+                )}
+                {histDir.override ? (
+                  <button
+                    onClick={() => onSetHistDir("")}
+                    className="ml-2 text-gray-400 underline hover:text-gray-200"
+                  >
+                    {t("historyDirReset")}
+                  </button>
+                ) : null}
+              </p>
+            )}
+            <p className="text-xs text-gray-500">{t("historyDirHint")}</p>
+            {histErr && (
+              <p className="flex items-center gap-1.5 text-xs text-red-300">
+                <AlertTriangle size={13} /> {histErr}
+              </p>
+            )}
+          </Section>
+
           {/* 圖片生成參數 */}
           <Section title={t("sdSection")}>
             <Field label={t("sdCheckpoint")}>
@@ -236,6 +314,18 @@ export default function SettingsModal({ onClose }) {
             initialPath={storage?.image_dir}
             onPick={onPickDir}
             onClose={() => setPickerOpen(false)}
+          />
+        </div>
+      )}
+
+      {histPickerOpen && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <DirectoryPicker
+            initialPath={histDir?.dir || histDir?.default}
+            requireWritable={false}
+            title={t("pickerTitleHistory")}
+            onPick={onSetHistDir}
+            onClose={() => setHistPickerOpen(false)}
           />
         </div>
       )}
