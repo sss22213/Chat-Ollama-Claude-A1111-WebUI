@@ -1,0 +1,604 @@
+[
+ {
+  "tag": "hatsune_miku",
+  "name": "Hatsune Miku",
+  "series": "Vocaloid"
+ },
+ {
+  "tag": "kagamine_rin",
+  "name": "Kagamine Rin",
+  "series": "Vocaloid"
+ },
+ {
+  "tag": "megurine_luka",
+  "name": "Megurine Luka",
+  "series": "Vocaloid"
+ },
+ {
+  "tag": "ganyu_(genshin_impact)",
+  "name": "Ganyu",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "raiden_shogun",
+  "name": "Raiden Shogun",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "hu_tao_(genshin_impact)",
+  "name": "Hu Tao",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "nahida_(genshin_impact)",
+  "name": "Nahida",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "nilou_(genshin_impact)",
+  "name": "Nilou",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "yae_miko",
+  "name": "Yae Miko",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "keqing_(genshin_impact)",
+  "name": "Keqing",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "lumine_(genshin_impact)",
+  "name": "Lumine",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "furina_(genshin_impact)",
+  "name": "Furina",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "kamisato_ayaka",
+  "name": "Kamisato Ayaka",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "mona_(genshin_impact)",
+  "name": "Mona",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "eula_(genshin_impact)",
+  "name": "Eula",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "shenhe_(genshin_impact)",
+  "name": "Shenhe",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "yelan_(genshin_impact)",
+  "name": "Yelan",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "zhongli_(genshin_impact)",
+  "name": "Zhongli",
+  "series": "Genshin Impact"
+ },
+ {
+  "tag": "kafka_(honkai:_star_rail)",
+  "name": "Kafka",
+  "series": "Honkai: Star Rail"
+ },
+ {
+  "tag": "silver_wolf_(honkai:_star_rail)",
+  "name": "Silver Wolf",
+  "series": "Honkai: Star Rail"
+ },
+ {
+  "tag": "stelle_(honkai:_star_rail)",
+  "name": "Stelle",
+  "series": "Honkai: Star Rail"
+ },
+ {
+  "tag": "march_7th_(honkai:_star_rail)",
+  "name": "March 7th",
+  "series": "Honkai: Star Rail"
+ },
+ {
+  "tag": "firefly_(honkai:_star_rail)",
+  "name": "Firefly",
+  "series": "Honkai: Star Rail"
+ },
+ {
+  "tag": "gawr_gura",
+  "name": "Gawr Gura",
+  "series": "Hololive"
+ },
+ {
+  "tag": "mori_calliope",
+  "name": "Mori Calliope",
+  "series": "Hololive"
+ },
+ {
+  "tag": "usada_pekora",
+  "name": "Usada Pekora",
+  "series": "Hololive"
+ },
+ {
+  "tag": "minato_aqua",
+  "name": "Minato Aqua",
+  "series": "Hololive"
+ },
+ {
+  "tag": "houshou_marine",
+  "name": "Houshou Marine",
+  "series": "Hololive"
+ },
+ {
+  "tag": "shirakami_fubuki",
+  "name": "Shirakami Fubuki",
+  "series": "Hololive"
+ },
+ {
+  "tag": "nakiri_ayame",
+  "name": "Nakiri Ayame",
+  "series": "Hololive"
+ },
+ {
+  "tag": "inugami_korone",
+  "name": "Inugami Korone",
+  "series": "Hololive"
+ },
+ {
+  "tag": "shishiro_botan",
+  "name": "Shishiro Botan",
+  "series": "Hololive"
+ },
+ {
+  "tag": "hoshimachi_suisei",
+  "name": "Hoshimachi Suisei",
+  "series": "Hololive"
+ },
+ {
+  "tag": "ninomae_ina'nis",
+  "name": "Ninomae Ina'nis",
+  "series": "Hololive"
+ },
+ {
+  "tag": "hakurei_reimu",
+  "name": "Reimu Hakurei",
+  "series": "Touhou"
+ },
+ {
+  "tag": "kirisame_marisa",
+  "name": "Marisa Kirisame",
+  "series": "Touhou"
+ },
+ {
+  "tag": "remilia_scarlet",
+  "name": "Remilia Scarlet",
+  "series": "Touhou"
+ },
+ {
+  "tag": "flandre_scarlet",
+  "name": "Flandre Scarlet",
+  "series": "Touhou"
+ },
+ {
+  "tag": "izayoi_sakuya",
+  "name": "Sakuya Izayoi",
+  "series": "Touhou"
+ },
+ {
+  "tag": "konpaku_youmu",
+  "name": "Youmu Konpaku",
+  "series": "Touhou"
+ },
+ {
+  "tag": "komeiji_koishi",
+  "name": "Koishi Komeiji",
+  "series": "Touhou"
+ },
+ {
+  "tag": "komeiji_satori",
+  "name": "Satori Komeiji",
+  "series": "Touhou"
+ },
+ {
+  "tag": "cirno",
+  "name": "Cirno",
+  "series": "Touhou"
+ },
+ {
+  "tag": "fujiwara_no_mokou",
+  "name": "Fujiwara no Mokou",
+  "series": "Touhou"
+ },
+ {
+  "tag": "reisen_udongein_inaba",
+  "name": "Reisen Udongein Inaba",
+  "series": "Touhou"
+ },
+ {
+  "tag": "saigyouji_yuyuko",
+  "name": "Yuyuko Saigyouji",
+  "series": "Touhou"
+ },
+ {
+  "tag": "yakumo_yukari",
+  "name": "Yukari Yakumo",
+  "series": "Touhou"
+ },
+ {
+  "tag": "artoria_pendragon_(fate)",
+  "name": "Artoria Pendragon",
+  "series": "Fate"
+ },
+ {
+  "tag": "jeanne_d'arc_(fate)",
+  "name": "Jeanne d'Arc",
+  "series": "Fate"
+ },
+ {
+  "tag": "mash_kyrielight",
+  "name": "Mash Kyrielight",
+  "series": "Fate"
+ },
+ {
+  "tag": "tamamo_no_mae_(fate)",
+  "name": "Tamamo no Mae",
+  "series": "Fate"
+ },
+ {
+  "tag": "scathach_(fate)",
+  "name": "Scathach",
+  "series": "Fate"
+ },
+ {
+  "tag": "ishtar_(fate)",
+  "name": "Ishtar",
+  "series": "Fate"
+ },
+ {
+  "tag": "nero_claudius_(fate)",
+  "name": "Nero Claudius",
+  "series": "Fate"
+ },
+ {
+  "tag": "okita_souji_(fate)",
+  "name": "Okita Souji",
+  "series": "Fate"
+ },
+ {
+  "tag": "shiroko_(blue_archive)",
+  "name": "Shiroko",
+  "series": "Blue Archive"
+ },
+ {
+  "tag": "arona_(blue_archive)",
+  "name": "Arona",
+  "series": "Blue Archive"
+ },
+ {
+  "tag": "hoshino_(blue_archive)",
+  "name": "Hoshino",
+  "series": "Blue Archive"
+ },
+ {
+  "tag": "yuuka_(blue_archive)",
+  "name": "Yuuka",
+  "series": "Blue Archive"
+ },
+ {
+  "tag": "hina_(blue_archive)",
+  "name": "Hina",
+  "series": "Blue Archive"
+ },
+ {
+  "tag": "mika_(blue_archive)",
+  "name": "Mika",
+  "series": "Blue Archive"
+ },
+ {
+  "tag": "amiya_(arknights)",
+  "name": "Amiya",
+  "series": "Arknights"
+ },
+ {
+  "tag": "texas_(arknights)",
+  "name": "Texas",
+  "series": "Arknights"
+ },
+ {
+  "tag": "exusiai_(arknights)",
+  "name": "Exusiai",
+  "series": "Arknights"
+ },
+ {
+  "tag": "lappland_(arknights)",
+  "name": "Lappland",
+  "series": "Arknights"
+ },
+ {
+  "tag": "enterprise_(azur_lane)",
+  "name": "Enterprise",
+  "series": "Azur Lane"
+ },
+ {
+  "tag": "belfast_(azur_lane)",
+  "name": "Belfast",
+  "series": "Azur Lane"
+ },
+ {
+  "tag": "taihou_(azur_lane)",
+  "name": "Taihou",
+  "series": "Azur Lane"
+ },
+ {
+  "tag": "kongou_(kancolle)",
+  "name": "Kongou",
+  "series": "Kantai Collection"
+ },
+ {
+  "tag": "shimakaze_(kancolle)",
+  "name": "Shimakaze",
+  "series": "Kantai Collection"
+ },
+ {
+  "tag": "kaga_(kancolle)",
+  "name": "Kaga",
+  "series": "Kantai Collection"
+ },
+ {
+  "tag": "dawn_(pokemon)",
+  "name": "Dawn",
+  "series": "Pokemon"
+ },
+ {
+  "tag": "may_(pokemon)",
+  "name": "May",
+  "series": "Pokemon"
+ },
+ {
+  "tag": "serena_(pokemon)",
+  "name": "Serena",
+  "series": "Pokemon"
+ },
+ {
+  "tag": "misty_(pokemon)",
+  "name": "Misty",
+  "series": "Pokemon"
+ },
+ {
+  "tag": "hex_maniac_(pokemon)",
+  "name": "Hex Maniac",
+  "series": "Pokemon"
+ },
+ {
+  "tag": "asuka_langley_souryuu",
+  "name": "Asuka Langley",
+  "series": "Neon Genesis Evangelion"
+ },
+ {
+  "tag": "ayanami_rei",
+  "name": "Rei Ayanami",
+  "series": "Neon Genesis Evangelion"
+ },
+ {
+  "tag": "makise_kurisu",
+  "name": "Makise Kurisu",
+  "series": "Steins;Gate"
+ },
+ {
+  "tag": "zero_two_(darling_in_the_franxx)",
+  "name": "Zero Two",
+  "series": "Darling in the FranXX"
+ },
+ {
+  "tag": "rem_(re:zero)",
+  "name": "Rem",
+  "series": "Re:Zero"
+ },
+ {
+  "tag": "emilia_(re:zero)",
+  "name": "Emilia",
+  "series": "Re:Zero"
+ },
+ {
+  "tag": "ram_(re:zero)",
+  "name": "Ram",
+  "series": "Re:Zero"
+ },
+ {
+  "tag": "megumin",
+  "name": "Megumin",
+  "series": "KonoSuba"
+ },
+ {
+  "tag": "aqua_(konosuba)",
+  "name": "Aqua",
+  "series": "KonoSuba"
+ },
+ {
+  "tag": "darkness_(konosuba)",
+  "name": "Darkness",
+  "series": "KonoSuba"
+ },
+ {
+  "tag": "power_(chainsaw_man)",
+  "name": "Power",
+  "series": "Chainsaw Man"
+ },
+ {
+  "tag": "makima_(chainsaw_man)",
+  "name": "Makima",
+  "series": "Chainsaw Man"
+ },
+ {
+  "tag": "kamado_nezuko",
+  "name": "Nezuko Kamado",
+  "series": "Demon Slayer"
+ },
+ {
+  "tag": "frieren",
+  "name": "Frieren",
+  "series": "Frieren"
+ },
+ {
+  "tag": "anya_(spy_x_family)",
+  "name": "Anya Forger",
+  "series": "Spy x Family"
+ },
+ {
+  "tag": "yor_briar",
+  "name": "Yor Forger",
+  "series": "Spy x Family"
+ },
+ {
+  "tag": "kitagawa_marin",
+  "name": "Marin Kitagawa",
+  "series": "My Dress-Up Darling"
+ },
+ {
+  "tag": "nakano_miku",
+  "name": "Miku Nakano",
+  "series": "The Quintessential Quintuplets"
+ },
+ {
+  "tag": "nakano_nino",
+  "name": "Nino Nakano",
+  "series": "The Quintessential Quintuplets"
+ },
+ {
+  "tag": "marin",
+  "name": "Marin",
+  "series": "Misc"
+ },
+ {
+  "tag": "lucy_(cyberpunk)",
+  "name": "Lucy",
+  "series": "Cyberpunk: Edgerunners"
+ },
+ {
+  "tag": "yamada_anna_(boku_no_kokoro_no_yabai_yatsu)",
+  "name": "Anna Yamada",
+  "series": "The Dangers in My Heart"
+ },
+ {
+  "tag": "komi_shouko",
+  "name": "Shouko Komi",
+  "series": "Komi Can't Communicate"
+ },
+ {
+  "tag": "marin_kitagawa",
+  "name": "Marin Kitagawa",
+  "series": "My Dress-Up Darling"
+ },
+ {
+  "tag": "souryuu_asuka_langley",
+  "name": "Asuka Langley",
+  "series": "Neon Genesis Evangelion"
+ },
+ {
+  "tag": "princess_zelda",
+  "name": "Princess Zelda",
+  "series": "The Legend of Zelda"
+ },
+ {
+  "tag": "samus_aran",
+  "name": "Samus Aran",
+  "series": "Metroid"
+ },
+ {
+  "tag": "2b_(nier:automata)",
+  "name": "2B",
+  "series": "NieR: Automata"
+ },
+ {
+  "tag": "a2_(nier:automata)",
+  "name": "A2",
+  "series": "NieR: Automata"
+ },
+ {
+  "tag": "tifa_lockhart",
+  "name": "Tifa Lockhart",
+  "series": "Final Fantasy VII"
+ },
+ {
+  "tag": "aerith_gainsborough",
+  "name": "Aerith Gainsborough",
+  "series": "Final Fantasy VII"
+ },
+ {
+  "tag": "boa_hancock",
+  "name": "Boa Hancock",
+  "series": "One Piece"
+ },
+ {
+  "tag": "nami_(one_piece)",
+  "name": "Nami",
+  "series": "One Piece"
+ },
+ {
+  "tag": "nico_robin",
+  "name": "Nico Robin",
+  "series": "One Piece"
+ },
+ {
+  "tag": "uzumaki_naruto",
+  "name": "Naruto Uzumaki",
+  "series": "Naruto"
+ },
+ {
+  "tag": "haruno_sakura",
+  "name": "Sakura Haruno",
+  "series": "Naruto"
+ },
+ {
+  "tag": "hyuuga_hinata",
+  "name": "Hinata Hyuuga",
+  "series": "Naruto"
+ },
+ {
+  "tag": "shirogane_noel",
+  "name": "Shirogane Noel",
+  "series": "Hololive"
+ },
+ {
+  "tag": "shiina_mahiru",
+  "name": "Mahiru Shiina",
+  "series": "The Angel Next Door"
+ },
+ {
+  "tag": "violet_evergarden",
+  "name": "Violet Evergarden",
+  "series": "Violet Evergarden"
+ },
+ {
+  "tag": "yoshida_yuuko",
+  "name": "Yoshida Yuuko (Shamiko)",
+  "series": "Machikado Mazoku",
+  "aliases": [
+   "shamiko",
+   "machikado mazoku",
+   "the demon girl next door",
+   "yoshida yuko",
+   "yuuko"
+  ]
+ },
+ {
+  "tag": "chiyoda_momo",
+  "name": "Chiyoda Momo",
+  "series": "Machikado Mazoku",
+  "aliases": [
+   "momo",
+   "machikado mazoku",
+   "the demon girl next door"
+  ]
+ }
+]

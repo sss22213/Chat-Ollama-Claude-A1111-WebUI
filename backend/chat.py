@@ -22,6 +22,16 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+def _oss_level(effort: str | None) -> str:
+    """把通用 effort 映射成 gpt-oss 接受的思考等級 low/medium/high。"""
+    e = (effort or "").lower()
+    if e in ("minimal", "low"):
+        return "low"
+    if e in ("high", "xhigh", "max"):
+        return "high"
+    return "medium"
+
+
 def _last_init_image(messages: list[dict[str, Any]]) -> str | None:
     """取最後一則含 images 的 user 訊息的第一張圖，作為 img2img 初始圖。"""
     for m in reversed(messages):
@@ -62,7 +72,12 @@ async def _generate_with_progress(
         }
 
     result = await task  # 失敗會在此拋出
-    yield {"type": "image", "url": result["url"], "params": result["params"]}
+    yield {
+        "type": "image",
+        "url": result["url"],
+        "params": result["params"],
+        "info": result.get("info", ""),  # A1111 完整 geninfo（含實際 seed/model）
+    }
 
 
 def _fmt_search(query: str, results: list[dict]) -> str:
@@ -89,6 +104,7 @@ async def run_chat(
     num_ctx: int | None = None,
     image_sources: list[str] | None = None,
     engine: str = "ollama",
+    effort: str | None = None,
 ) -> AsyncIterator[str]:
     """主迴圈，yield SSE 字串。
 
@@ -97,18 +113,22 @@ async def run_chat(
     if engine == "claude_cli":
         async for s in _run_cli_engine(
             claude_client, CLAUDE_CONTEXT_LENGTH,
-            model, messages, tools_enabled, image_settings, bool(think)
+            model, messages, tools_enabled, image_settings, bool(think), effort
         ):
             yield s
         return
     if engine == "codex":
         async for s in _run_codex(
-            model, messages, tools_enabled, image_settings, bool(think)
+            model, messages, tools_enabled, image_settings, bool(think), effort
         ):
             yield s
         return
 
     can_tools = await ollama_client.model_supports_tools(model)
+    # gpt-oss 支援思考等級：think 開啟時把 effort 映射成 low/medium/high；其他模型維持布林開關
+    ollama_think = think
+    if think and effort and "gpt-oss" in model.lower():
+        ollama_think = _oss_level(effort)
     init_image = _last_init_image(messages)
     # read_png_info 要讀「原圖」metadata；image_sources 是本回合未經縮圖的原始位元組，
     # 沒有時退回 init_image（縮圖後的 JPEG 通常已無 metadata）。
@@ -135,7 +155,7 @@ async def run_chat(
             tool_calls: list[dict[str, Any]] = []
 
             async for chunk in ollama_client.chat_stream(
-                model, convo, tools=tool_schema, think=think, num_ctx=num_ctx
+                model, convo, tools=tool_schema, think=ollama_think, num_ctx=num_ctx
             ):
                 if chunk.get("error"):
                     yield _sse({"type": "error", "message": str(chunk["error"])})
@@ -185,7 +205,7 @@ async def run_chat(
         # 用完輪數仍想呼叫工具 → 最後再不帶工具讓模型用文字收尾（不報錯）
         if not answered:
             async for chunk in ollama_client.chat_stream(
-                model, convo, tools=None, think=think, num_ctx=num_ctx
+                model, convo, tools=None, think=ollama_think, num_ctx=num_ctx
             ):
                 if chunk.get("error"):
                     yield _sse({"type": "error", "message": str(chunk["error"])})
@@ -350,6 +370,7 @@ async def _run_cli_engine(
     tools_enabled: bool,
     image_settings: dict[str, Any] | None,
     think: bool,
+    effort: str | None = None,
 ) -> AsyncIterator[str]:
     """通用 CLI 引擎路徑：串流文字 + 解析生圖指令。client 為 claude_client / codex_client。"""
     init_image = _last_init_image(messages)
@@ -358,7 +379,7 @@ async def _run_cli_engine(
     prompt_tokens = 0
 
     try:
-        async for ev in client.chat_stream(model, messages, system, think=think):
+        async for ev in client.chat_stream(model, messages, system, think=think, effort=effort):
             kind = ev.get("type")
             if kind == "error":
                 yield _sse({"type": "error", "message": ev["message"]})
@@ -401,12 +422,17 @@ async def _run_cli_engine(
 
 def _codex_image_instructions(has_init_image: bool) -> str:
     s = (
-        "\n\nYou are a chat assistant connected to a local Stable Diffusion (A1111) "
-        "image generator. Respond via the structured output: put your natural-language "
-        "reply in 'reply'. If the user asks you to draw / paint / create / generate / "
-        "show an image, put comma-separated English danbooru-style tags describing it in "
-        "'image_prompt' (these are SDXL/Pony/Illustrious anime models); otherwise leave "
-        "'image_prompt' empty. Do not include steps/sampler/seed. "
+        "\n\nYou generate images by FILLING THE 'image_prompt' FIELD — that is the ONLY "
+        "mechanism. There is NO 'imagegen', NO image skill, NO tool, NO function, NO shell "
+        "and NO command available to you. NEVER say you will 'use a skill/tool', NEVER run "
+        "a command, NEVER do command_execution, NEVER take a second step. Respond with ONE "
+        "structured JSON object immediately and then STOP. Put your natural-language reply "
+        "in 'reply'. If the user asks you to draw / paint / create / generate / show an "
+        "image of ANYTHING (any character or subject, even one you don't recognize — just "
+        "describe it literally), you MUST put comma-separated English danbooru-style tags "
+        "in 'image_prompt' (these feed SDXL/Pony/Illustrious anime models). Leaving "
+        "'image_prompt' empty produces NO image, so never leave it empty when an image is "
+        "requested. Do not include steps/sampler/seed. "
     )
     if has_init_image:
         s += (
@@ -424,6 +450,7 @@ async def _run_codex(
     tools_enabled: bool,
     image_settings: dict[str, Any] | None,
     think: bool,
+    effort: str | None = None,
 ) -> AsyncIterator[str]:
     init_image = _last_init_image(messages)
     use_schema = bool(tools_enabled)
@@ -440,6 +467,7 @@ async def _run_codex(
             think=think,
             use_schema=use_schema,
             has_init_image=bool(init_image),
+            effort=effort,
         ):
             kind = ev.get("type")
             if kind == "error":
@@ -448,6 +476,8 @@ async def _run_codex(
                 return
             if kind == "usage":
                 prompt_tokens = ev["prompt_tokens"]
+            elif kind == "thinking":
+                yield _sse({"type": "thinking", "delta": ev["delta"]})
             elif kind == "text":
                 if ev.get("delta"):
                     yield _sse({"type": "token", "delta": ev["delta"]})

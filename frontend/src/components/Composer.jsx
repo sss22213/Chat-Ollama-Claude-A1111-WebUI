@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, ImagePlus, X, FileText } from "lucide-react";
+import { ArrowUp, Square, ImagePlus, X, FileText, Users } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
 import PngInfoModal from "./PngInfoModal";
+import CharacterPicker from "./CharacterPicker";
 
 // 原圖位元組（不重壓，保留 PNG metadata 給 PNG Info 用）。過大則不保留以省記憶體。
 const MAX_ORIGINAL = 12 * 1024 * 1024; // 12MB
@@ -53,9 +54,32 @@ export default function Composer() {
   const removeAttachment = useChat((s) => s.removeAttachment);
   const composerDraft = useChat((s) => s.composerDraft);
   const setComposerDraft = useChat((s) => s.setComposerDraft);
+  const generateCharacter = useChat((s) => s.generateCharacter);
   const taRef = useRef(null);
   const fileRef = useRef(null);
   const [pngFor, setPngFor] = useState(null); // 正在看 PNG Info 的附件原圖
+  const [charOpen, setCharOpen] = useState(false); // 角色搜尋器
+
+  // 調整輸入框高度（內容變動後）
+  const resizeTextarea = () => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+  };
+
+  // 把角色接到目前輸入內容後面（自動補逗號）；有完整提示詞就帶入完整的
+  const insertTag = (c) => {
+    const piece = (typeof c === "object" ? c?.prompt?.trim() || c?.tag : c) || "";
+    setText((prev) => {
+      const base = prev.trim().replace(/[,，\s]*$/, "");
+      return base ? `${base}, ${piece}` : piece;
+    });
+    requestAnimationFrame(() => {
+      taRef.current?.focus();
+      resizeTextarea();
+    });
+  };
 
   // 外部（如「套用歷史」）要帶入輸入框的草稿：填入後清回 null，並聚焦／調整高度
   useEffect(() => {
@@ -171,6 +195,13 @@ export default function Composer() {
           >
             <ImagePlus size={18} />
           </button>
+          <button
+            onClick={() => setCharOpen(true)}
+            title={t("characters")}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-gray-400 hover:bg-ink-700 hover:text-gray-200"
+          >
+            <Users size={18} />
+          </button>
           <textarea
             ref={taRef}
             value={text}
@@ -207,6 +238,18 @@ export default function Composer() {
 
       {pngFor && (
         <PngInfoModal image={pngFor} onClose={() => setPngFor(null)} />
+      )}
+
+      {charOpen && (
+        <CharacterPicker
+          streaming={streaming}
+          onInsert={insertTag}
+          onGenerate={(c) => {
+            generateCharacter(c);
+            setCharOpen(false);
+          }}
+          onClose={() => setCharOpen(false)}
+        />
       )}
     </div>
   );

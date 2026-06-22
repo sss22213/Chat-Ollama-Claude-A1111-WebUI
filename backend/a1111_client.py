@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import uuid
 from typing import Any
@@ -99,8 +100,24 @@ def _save_first_image(data: dict[str, Any]) -> str:
     return f"/images/{filename}"
 
 
+def _clean_geninfo(data: dict[str, Any]) -> str:
+    """A1111 txt2img/img2img 的 info 常是 JSON 字串，真正人類可讀的 geninfo
+    （含實際 seed/model）在 infotexts[0]；取它，取不到才退回原字串。"""
+    raw = data.get("info") or ""
+    if not raw:
+        return ""
+    try:
+        obj = json.loads(raw)
+        texts = obj.get("infotexts")
+        if isinstance(texts, list) and texts:
+            return str(texts[0])
+    except (ValueError, TypeError):
+        pass
+    return str(raw)
+
+
 def _result(url: str, params: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
-    return {"url": url, "params": params, "info": data.get("info", "")}
+    return {"url": url, "params": params, "info": _clean_geninfo(data)}
 
 
 async def txt2img(

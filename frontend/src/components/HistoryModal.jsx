@@ -81,7 +81,7 @@ export default function HistoryModal({ onClose }) {
       onClick={onClose}
     >
       <div
-        className="flex h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 sm:h-[88vh]"
+        className="flex h-[92dvh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 sm:h-[88dvh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 標題列 + 搜尋 */}

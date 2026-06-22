@@ -167,6 +167,14 @@ export async function savePromptHistoryDir(dir) {
   return r.json();
 }
 
+// ---- WAI 角色關鍵字搜尋 ----
+export async function fetchCharacters(q = "", limit = 80) {
+  const params = new URLSearchParams({ q, limit });
+  const r = await fetch(`/api/booru-characters?${params}`);
+  if (!r.ok) throw new Error("無法取得角色清單");
+  return r.json();
+}
+
 // ---- 前端 UI 設定（後端持久化、跨裝置同步）----
 export async function fetchUiSettings() {
   const r = await fetch("/api/ui-settings");
@@ -263,6 +271,7 @@ export function streamChat(
     numCtx,
     imageSources,
     engine,
+    effort,
   },
   onEvent,
   onDone,
@@ -285,6 +294,7 @@ export function streamChat(
           num_ctx: numCtx,
           image_sources: imageSources,
           engine,
+          effort,
         }),
         signal: controller.signal,
       });

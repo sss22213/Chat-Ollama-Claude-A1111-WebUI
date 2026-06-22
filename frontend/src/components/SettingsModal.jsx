@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { X, FolderOpen, HardDrive, Loader2, AlertTriangle } from "lucide-react";
-import { useChat } from "../store/chat";
+import { useChat, normEffort } from "../store/chat";
 import { useT, LANGS } from "../i18n";
 import {
   fetchStorage,
@@ -10,6 +10,14 @@ import {
 import DirectoryPicker from "./DirectoryPicker";
 import SourcesPanel from "./SourcesPanel";
 import WebPanel from "./WebPanel";
+
+// 各引擎可用的推理強度（統一在設定裡呈現，不需切換引擎即可分別調整）
+// ollama 的 effort 僅 gpt-oss 會用到（其他模型用上方 think 開關）
+const EFFORT_ENGINES = [
+  { key: "claude_cli", label: "Claude", options: ["low", "medium", "high", "xhigh", "max"] },
+  { key: "codex", label: "Codex", options: ["minimal", "low", "medium", "high"] },
+  { key: "ollama", label: "Ollama · gpt-oss", options: ["low", "medium", "high"] },
+];
 
 export default function SettingsModal({ onClose }) {
   const t = useT();
@@ -22,6 +30,10 @@ export default function SettingsModal({ onClose }) {
   const img = settings.imageSettings;
   const modelMaxCtx = models.find((m) => m.name === settings.chatModel)
     ?.context_length;
+  // 各引擎獨立的 effort：一次顯示全部，寫回時只改該引擎的鍵
+  const eff = normEffort(settings.effort);
+  const setEffortFor = (key, v) =>
+    setSettings({ effort: { ...normEffort(settings.effort), [key]: v } });
 
   // 圖片儲存位置（伺服器端設定）
   const [storage, setStorageState] = useState(null);
@@ -79,7 +91,7 @@ export default function SettingsModal({ onClose }) {
       onClick={onClose}
     >
       <div
-        className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 sm:max-h-[85vh]"
+        className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 sm:max-h-[85dvh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-ink-700 px-5 py-3">
@@ -123,6 +135,31 @@ export default function SettingsModal({ onClose }) {
               onChange={(v) => setSettings({ think: v })}
               hint={t("showThinkingHint")}
             />
+            <Field label={t("effortLabel")}>
+              <div className="space-y-2">
+                {EFFORT_ENGINES.map(({ key, label, options }) => (
+                  <div key={key} className="flex items-center gap-3">
+                    <span className="w-32 shrink-0 text-sm text-gray-300">
+                      {label}
+                    </span>
+                    <select
+                      value={options.includes(eff[key]) ? eff[key] : "medium"}
+                      onChange={(e) => setEffortFor(key, e.target.value)}
+                      className="flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-sm outline-none focus:border-ink-500"
+                    >
+                      {options.map((lvl) => (
+                        <option key={lvl} value={lvl}>
+                          {lvl}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-500">
+                {t("effortHint")} {t("effortHintOss")}
+              </p>
+            </Field>
             {settings.engine === "ollama" && (
               <Field label={t("numCtx")}>
                 <input

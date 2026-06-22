@@ -100,7 +100,7 @@ export default function PngInfoModal({ image, onClose }) {
       onClick={onClose}
     >
       <div
-        className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 sm:max-h-[85vh]"
+        className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 sm:max-h-[85dvh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-ink-700 px-5 py-3">

@@ -192,11 +192,13 @@ function ContextMeter({ used, total }) {
   const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
   return (
     <div
-      className="hidden items-center gap-2 sm:flex"
+      className="flex shrink-0 items-center gap-1.5 sm:gap-2"
       title={`${t("contextLabel")}: ${used} / ${total} (${pct}%)`}
     >
-      <span className="text-xs text-gray-500">{t("contextLabel")}</span>
-      <div className="h-1.5 w-20 overflow-hidden rounded-full bg-ink-700">
+      <span className="hidden text-xs text-gray-500 sm:inline">
+        {t("contextLabel")}
+      </span>
+      <div className="h-1.5 w-10 overflow-hidden rounded-full bg-ink-700 sm:w-20">
         <div
           className={`h-full rounded-full ${color}`}
           style={{ width: `${Math.max(pct, 2)}%` }}

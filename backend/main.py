@@ -12,7 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+import threading
+
 import a1111_client
+import booru_characters
 import chat as chat_mod
 import claude_client
 import codex_client
@@ -36,6 +39,8 @@ app.add_middleware(
 # 載入持久化設定（圖片儲存目錄等）+ 初始化對話資料庫
 settings_store.load()
 conversations_store.init()
+# 背景補齊角色關鍵字（向 danbooru 抓人氣角色；失敗則只用內建清單，不阻塞啟動）
+threading.Thread(target=booru_characters.ensure_enriched, daemon=True).start()
 
 
 @app.get("/images/{filename}")
@@ -57,8 +62,10 @@ class ChatRequest(BaseModel):
     num_ctx: int | None = None
     # 本回合附件的「原始」圖片位元組（未經前端縮圖/轉檔），僅供 read_png_info 讀 metadata。
     image_sources: list[str] | None = None
-    # AI 引擎：ollama | claude_cli
+    # AI 引擎：ollama | claude_cli | codex
     engine: str = "ollama"
+    # 推理強度（claude: low..max；codex: minimal..high）；ollama 不適用
+    effort: str | None = None
 
 
 @app.get("/api/health")
@@ -370,6 +377,12 @@ def prompt_history_dir_set(req: PromptHistoryDirRequest) -> dict[str, Any]:
     return _prompt_history_dir_info()
 
 
+# ---- WAI 角色關鍵字搜尋 ----
+@app.get("/api/booru-characters")
+def booru_characters_search(q: str = "", limit: int = 60) -> list[dict[str, str]]:
+    return booru_characters.search(q, max(1, min(200, limit)))
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
     stream = chat_mod.run_chat(
@@ -382,6 +395,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
         num_ctx=req.num_ctx,
         image_sources=req.image_sources,
         engine=req.engine,
+        effort=req.effort,
     )
     return StreamingResponse(
         stream,

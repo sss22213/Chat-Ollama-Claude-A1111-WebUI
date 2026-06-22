@@ -71,7 +71,7 @@ export default function DirectoryPicker({
       onClick={onClose}
     >
       <div
-        className="flex h-[34rem] max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850"
+        className="flex h-[34rem] max-h-[92dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-ink-700 px-5 py-3">

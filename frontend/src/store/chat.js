@@ -54,6 +54,50 @@ const uid = () =>
   (crypto.randomUUID && crypto.randomUUID()) ||
   Math.random().toString(36).slice(2);
 
+// 推理強度（effort）各引擎獨立記憶；相容舊版（字串）→ 自動轉成各引擎共用該值
+const EFFORT_DEFAULT = { claude_cli: "medium", codex: "medium", ollama: "medium" };
+export function normEffort(e) {
+  if (e && typeof e === "object") return { ...EFFORT_DEFAULT, ...e };
+  const v = typeof e === "string" && e ? e : "medium";
+  return { claude_cli: v, codex: v, ollama: v };
+}
+// 引擎 → effort 的鍵（codex/claude_cli 用引擎名；ollama 共用一個，僅 gpt-oss 會用到）
+export const effortKeyFor = (engine) => (engine === "ollama" ? "ollama" : engine);
+
+// 把一張圖的參數整理成 A1111 風格 geninfo 文字（info 缺時的後備）
+function paramsToText(p) {
+  if (!p) return "";
+  const lines = [];
+  if (p.prompt) lines.push(p.prompt);
+  if (p.negative_prompt) lines.push(`Negative prompt: ${p.negative_prompt}`);
+  const tail = [];
+  if (p.steps != null) tail.push(`Steps: ${p.steps}`);
+  if (p.sampler_name) tail.push(`Sampler: ${p.sampler_name}`);
+  if (p.cfg_scale != null) tail.push(`CFG scale: ${p.cfg_scale}`);
+  if (p.seed != null) tail.push(`Seed: ${p.seed}`);
+  if (p.width && p.height) tail.push(`Size: ${p.width}x${p.height}`);
+  if (p.sd_model_checkpoint) tail.push(`Model: ${p.sd_model_checkpoint}`);
+  if (tail.length) lines.push(tail.join(", "));
+  return lines.join("\n");
+}
+
+// 把一則訊息已生成的圖片參數，整理成「隱藏」文字附在送出的 content 後面，
+// 讓模型之後被問到「剛剛那張圖的 PNG info / 參數」時答得出來（畫面不顯示）。
+export function genInfoForModel(images) {
+  if (!images?.length) return "";
+  const blocks = images
+    .map((im, i) => {
+      const txt = (im.info && im.info.trim()) || paramsToText(im.params);
+      if (!txt) return "";
+      const tag = images.length > 1 ? ` #${i + 1}` : "";
+      return `已生成圖片${tag} 的參數 (PNG info)：\n${txt}`;
+    })
+    .filter(Boolean);
+  return blocks.length
+    ? `\n\n[系統備註，使用者看不到，供你回答生成參數用]\n${blocks.join("\n\n")}`
+    : "";
+}
+
 const DEFAULT_IMAGE_SETTINGS = {
   steps: 28,
   cfg_scale: 5,
@@ -120,6 +164,7 @@ export const useChat = create(
         toolsEnabled: true,
         webEnabled: false,
         think: false,
+        effort: { ...EFFORT_DEFAULT }, // 推理強度，各引擎獨立
         numCtx: 8192,
         systemPrompt: "",
         lang: "zh-TW",
@@ -470,6 +515,10 @@ export const useChat = create(
           .filter((m) => m.id !== assistantMsg.id)
           .map((m) => {
             const base = { role: m.role, content: m.content };
+            // 助理曾生成的圖片，把其 PNG info 以隱藏文字附在 content（畫面不變，只給模型看）
+            if (m.role === "assistant" && m.images?.length) {
+              base.content = (m.content || "") + genInfoForModel(m.images);
+            }
             if (m.attachments?.length) {
               base.images = m.attachments.map((a) => stripPrefix(a.dataUrl));
             }
@@ -491,6 +540,8 @@ export const useChat = create(
         const canTools = get().modelSupportsTools(model);
         const toolsEnabled = settings.toolsEnabled && canTools;
         const webEnabled = settings.webEnabled && canTools;
+        // 取當前引擎自己的 effort
+        const effort = normEffort(settings.effort)[effortKeyFor(settings.engine)];
 
         const abort = streamChat(
           {
@@ -503,6 +554,7 @@ export const useChat = create(
             numCtx: settings.numCtx,
             imageSources,
             engine: settings.engine,
+            effort,
           },
           (e) => {
             if (e.type === "thinking") {
@@ -546,7 +598,10 @@ export const useChat = create(
               get()._patchMessage(assistantMsg.id, (m) => ({
                 toolRunning: false,
                 progress: null,
-                images: [...(m.images || []), { url: e.url, params: e.params }],
+                images: [
+                  ...(m.images || []),
+                  { url: e.url, params: e.params, info: e.info || "" },
+                ],
               }));
             } else if (e.type === "usage") {
               set({
@@ -616,7 +671,9 @@ export const useChat = create(
           get()._patchMessage(assistantMsg.id, {
             toolRunning: false,
             status: "done",
-            images: [{ url: result.url, params: result.params }],
+            images: [
+              { url: result.url, params: result.params, info: result.info || "" },
+            ],
           });
         } catch (e) {
           get()._patchMessage(assistantMsg.id, {
@@ -663,6 +720,23 @@ export const useChat = create(
       applyHistory(record) {
         get().setImageSettings(get()._historySettings(record, false));
         get().setComposerDraft(record.prompt ? `/image ${record.prompt}` : "");
+      },
+
+      // 角色快速生成：用「角色 tag + 畫質詞」直接生成一張（WAI/Illustrious 友善）
+      // 角色可為字串 tag 或物件 {tag, prompt}；有完整提示詞（Drawing Spells）就優先用，生成更準
+      async generateCharacter(c) {
+        const tag = typeof c === "string" ? c : c?.tag;
+        const full = typeof c === "object" ? (c?.prompt || "").trim() : "";
+        if (get().streaming || !tag) return;
+        let convo = get().currentConversation();
+        if (!convo) {
+          get().createConversation();
+          convo = get().currentConversation();
+        }
+        await get()._ensureLoaded(convo.id);
+        const body = full || tag;
+        const prompt = `${body}, masterpiece, best quality, amazing quality`;
+        await get()._handleSlashImage(prompt, get().settings.imageSettings);
       },
 
       // 直接生成：用該筆自己的 prompt + 參數立刻重生一張（不改動目前的生成設定）

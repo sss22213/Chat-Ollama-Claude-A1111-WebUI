@@ -92,8 +92,13 @@ def _build_user_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return content
 
 
-def _base_args(model: str, system: str, output_format: str) -> list[str]:
-    return [
+_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _base_args(
+    model: str, system: str, output_format: str, effort: str | None = None
+) -> list[str]:
+    args = [
         CLAUDE_BIN,
         "-p",
         "--input-format",
@@ -108,8 +113,11 @@ def _base_args(model: str, system: str, output_format: str) -> list[str]:
         "--no-session-persistence",
         "--system-prompt",
         system,
-        *CLAUDE_EXTRA_ARGS,
     ]
+    if effort in _EFFORTS:
+        args += ["--effort", effort]  # 推理強度：low/medium/high/xhigh/max
+    args += [*CLAUDE_EXTRA_ARGS]
+    return args
 
 
 async def _spawn(args: list[str], stdin_payload: str):
@@ -130,6 +138,7 @@ async def chat_stream(
     messages: list[dict[str, Any]],
     system: str,
     think: bool = False,
+    effort: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """串流 claude 回覆。
 
@@ -139,7 +148,7 @@ async def chat_stream(
         {"type": "user", "message": {"role": "user", "content": _build_user_content(messages)}},
         ensure_ascii=False,
     )
-    args = _base_args(model, system, "stream-json") + ["--include-partial-messages"]
+    args = _base_args(model, system, "stream-json", effort) + ["--include-partial-messages"]
 
     try:
         proc = await _spawn(args, payload)

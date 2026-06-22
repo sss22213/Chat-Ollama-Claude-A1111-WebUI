@@ -183,19 +183,42 @@ def _write_images(images: list[str]) -> list[str]:
     return paths
 
 
+_CODEX_EFFORTS = ("minimal", "low", "medium", "high")
+
+
+def _reasoning_cfg(think: bool, effort: str | None) -> list[str]:
+    """codex 推理設定：effort 控速度/深度；summary 決定是否吐出思考摘要（給 thinking 顯示）。"""
+    cfg: list[str] = []
+    if effort in _CODEX_EFFORTS:
+        cfg += ["-c", f"model_reasoning_effort={effort}"]
+    cfg += ["-c", f"model_reasoning_summary={'detailed' if think else 'none'}"]
+    return cfg
+
+
 async def _exec(
-    model: str, prompt: str, images: list[str], extra: list[str] | None = None
+    model: str,
+    prompt: str,
+    images: list[str],
+    extra: list[str] | None = None,
+    *,
+    think: bool = False,
+    effort: str | None = None,
+    stop_after_message: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
-    """低階執行 codex exec，yield 原始事件：agent_message / usage / error。"""
+    """低階執行 codex exec，yield 原始事件：agent_message / reasoning / usage / error。
+    stop_after_message：拿到第一則 agent_message 就結束並 kill。結構化輸出模式必開——
+    因為 gpt-5.5 產出 JSON 答案後常以為要『用工具/跑指令』而繼續 command_execution，
+    一直等不到 turn.completed，會讓使用者卡在『思考中』直到逾時。"""
     bin_path = resolve_bin()
     if not bin_path:
         yield {"type": "error", "message": "找不到 codex 執行檔"}
         return
 
     image_paths = _write_images(images)
+    cfg = _reasoning_cfg(think, effort)
     try:
         proc = await asyncio.create_subprocess_exec(
-            *_args(bin_path, model, image_paths, extra),
+            *_args(bin_path, model, image_paths, cfg + (extra or [])),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -224,9 +247,20 @@ async def _exec(
             t = evt.get("type")
             if t == "item.completed":
                 item = evt.get("item") or {}
-                if item.get("type") == "agent_message" and item.get("text"):
+                itype = item.get("type")
+                if itype == "agent_message" and item.get("text"):
                     produced = True
                     yield {"type": "agent_message", "text": item["text"]}
+                    if stop_after_message:
+                        proc.kill()
+                        return
+                elif itype == "reasoning":
+                    # 思考摘要（model_reasoning_summary=detailed 時才有）→ 當 thinking 顯示
+                    rtext = item.get("text") or item.get("summary") or item.get("content")
+                    if isinstance(rtext, list):
+                        rtext = "\n".join(str(x) for x in rtext)
+                    if rtext:
+                        yield {"type": "reasoning", "text": str(rtext)}
             elif t == "turn.completed":
                 usage = evt.get("usage") or {}
                 if usage.get("input_tokens"):
@@ -251,18 +285,29 @@ async def _exec(
 
 
 async def _run_freeform(
-    model: str, messages: list[dict[str, Any]], system: str
+    model: str,
+    messages: list[dict[str, Any]],
+    system: str,
+    think: bool = False,
+    effort: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     prompt, images = _build_prompt(messages, system)
-    async for ev in _exec(model, prompt, images):
+    async for ev in _exec(model, prompt, images, think=think, effort=effort):
         if ev["type"] == "agent_message":
             yield {"type": "text", "delta": ev["text"]}
+        elif ev["type"] == "reasoning":
+            yield {"type": "thinking", "delta": ev["text"] + "\n"}
         else:
             yield ev
 
 
 async def _run_schema(
-    model: str, messages: list[dict[str, Any]], system: str, has_init_image: bool
+    model: str,
+    messages: list[dict[str, Any]],
+    system: str,
+    has_init_image: bool,
+    think: bool = False,
+    effort: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """結構化輸出模式：回 {reply, image_prompt, edit} → text + image_request。"""
     prompt, images = _build_prompt(messages, system)
@@ -275,10 +320,13 @@ async def _run_schema(
     err = None
     try:
         async for ev in _exec(
-            model, prompt, images, extra=["--output-schema", schema_path]
+            model, prompt, images, extra=["--output-schema", schema_path],
+            think=think, effort=effort, stop_after_message=True,
         ):
             if ev["type"] == "agent_message":
                 last_msg = ev["text"]
+            elif ev["type"] == "reasoning":
+                yield {"type": "thinking", "delta": ev["text"] + "\n"}
             elif ev["type"] == "usage":
                 usage = ev["prompt_tokens"]
             elif ev["type"] == "error":
@@ -323,15 +371,20 @@ async def chat_stream(
     model: str,
     messages: list[dict[str, Any]],
     system: str,
-    think: bool = False,  # codex exec 無逐字串流；保留簽名一致
+    think: bool = False,  # 開啟時請 codex 吐出思考摘要（當 thinking 顯示）
     use_schema: bool = False,
     has_init_image: bool = False,
+    effort: str | None = None,  # 推理強度：minimal/low/medium/high（低＝更快）
 ) -> AsyncIterator[dict[str, Any]]:
     if use_schema:
-        async for ev in _run_schema(model, messages, system, has_init_image):
+        async for ev in _run_schema(
+            model, messages, system, has_init_image, think=think, effort=effort
+        ):
             yield ev
     else:
-        async for ev in _run_freeform(model, messages, system):
+        async for ev in _run_freeform(
+            model, messages, system, think=think, effort=effort
+        ):
             yield ev
 
 

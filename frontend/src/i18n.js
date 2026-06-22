@@ -137,6 +137,14 @@ const dict = {
     historyNotFound: "此目錄沒有 data.json（找不到歷史）",
     historyDirReset: "用預設值",
     pickerTitleHistory: "選擇歷史資料目錄",
+    effortLabel: "推理強度 (effort)",
+    effortPerEngine: "Claude / Codex / Ollama(gpt-oss) 各自獨立；切換引擎會顯示該引擎的設定。",
+    effortHint: "越高思考越深、越慢；Codex 設低（minimal/low）可明顯加快。",
+    effortHintOss: "gpt-oss 專屬：思考等級 low/medium/high（需開啟上方「顯示思考過程」）。其他 Ollama 模型只有開/關。",
+    characters: "角色關鍵字",
+    charSearchPh: "搜尋角色 / 作品…",
+    charInsert: "帶入",
+    charEmpty: "找不到角色",
   },
 
   "zh-CN": {
@@ -265,6 +273,14 @@ const dict = {
     historyNotFound: "此目录没有 data.json（找不到历史）",
     historyDirReset: "用默认值",
     pickerTitleHistory: "选择历史数据目录",
+    effortLabel: "推理强度 (effort)",
+    effortPerEngine: "Claude / Codex / Ollama(gpt-oss) 各自独立；切换引擎会显示该引擎的设定。",
+    effortHint: "越高思考越深、越慢；Codex 设低（minimal/low）可明显加快。",
+    effortHintOss: "gpt-oss 专属：思考等级 low/medium/high（需开启上方「显示思考过程」）。其他 Ollama 模型只有开/关。",
+    characters: "角色关键字",
+    charSearchPh: "搜索角色 / 作品…",
+    charInsert: "带入",
+    charEmpty: "找不到角色",
   },
 
   en: {
@@ -399,6 +415,14 @@ const dict = {
     historyNotFound: "No data.json in this folder (no history found)",
     historyDirReset: "Use default",
     pickerTitleHistory: "Choose history data folder",
+    effortLabel: "Reasoning effort",
+    effortPerEngine: "Claude / Codex / Ollama(gpt-oss) each kept separately; switching engine shows that engine's setting.",
+    effortHint: "Higher = deeper thinking but slower; set Codex lower (minimal/low) to speed it up noticeably.",
+    effortHintOss: "gpt-oss only: thinking level low/medium/high (needs \"Show reasoning\" above on). Other Ollama models are on/off only.",
+    characters: "Characters",
+    charSearchPh: "Search character / series…",
+    charInsert: "Insert",
+    charEmpty: "No characters found",
   },
 
   ja: {
@@ -533,6 +557,14 @@ const dict = {
     historyNotFound: "このフォルダに data.json がありません（履歴なし）",
     historyDirReset: "デフォルトに戻す",
     pickerTitleHistory: "履歴データフォルダを選択",
+    effortLabel: "推論強度 (effort)",
+    effortPerEngine: "Claude / Codex / Ollama(gpt-oss) はそれぞれ独立。エンジンを切り替えるとそのエンジンの設定が表示されます。",
+    effortHint: "高いほど深く考えるが遅くなる。Codex は低く（minimal/low）すると大幅に速くなる。",
+    effortHintOss: "gpt-oss 専用：思考レベル low/medium/high（上の「思考プロセスを表示」をオンに）。他の Ollama モデルはオン/オフのみ。",
+    characters: "キャラクター",
+    charSearchPh: "キャラ / 作品を検索…",
+    charInsert: "挿入",
+    charEmpty: "キャラが見つかりません",
   },
 
   ko: {
@@ -666,6 +698,14 @@ const dict = {
     historyNotFound: "이 폴더에 data.json이 없습니다 (기록 없음)",
     historyDirReset: "기본값 사용",
     pickerTitleHistory: "기록 데이터 폴더 선택",
+    effortLabel: "추론 강도 (effort)",
+    effortPerEngine: "Claude / Codex / Ollama(gpt-oss) 각각 독립. 엔진을 전환하면 해당 엔진의 설정이 표시됩니다.",
+    effortHint: "높을수록 더 깊게 생각하지만 느려짐. Codex는 낮추면(minimal/low) 눈에 띄게 빨라짐.",
+    effortHintOss: "gpt-oss 전용: 사고 레벨 low/medium/high (위의 '사고 과정 표시' 켜야 함). 다른 Ollama 모델은 켜기/끄기만.",
+    characters: "캐릭터",
+    charSearchPh: "캐릭터 / 작품 검색…",
+    charInsert: "삽입",
+    charEmpty: "캐릭터를 찾을 수 없습니다",
   },
 };
 

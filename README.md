@@ -49,6 +49,12 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   from the extension's `data.json`), and one click to **apply to settings** or **generate
   now** (re-render with the original seed/params). *(Optional — point it at the extension's
   data folder; see [Prompt history](#prompt-history-sd-webui-prompt-history).)*
+- 👥 **Character keyword search (WAI / Illustrious)** — the 👥 button opens a searchable
+  picker of **20,000+** anime characters whose danbooru tags work directly with WAI /
+  Illustrious / NoobAI / Pony checkpoints. Romanization-tolerant, multi-word search; insert
+  into the composer or generate immediately. Most entries carry a **full curated appearance
+  prompt** for accurate results. *(See [Character search](#character-search-wai--illustrious)
+  for data sources.)*
 - 📊 **Live progress bar** — percentage, step count, and a live preview during generation.
 - 📂 **Selectable image storage location** — pick the output folder with a server-side
   directory picker (browse / type a path / create a folder); old images still resolve
@@ -154,6 +160,9 @@ npm run dev
 9. You can also type `/image 1girl, solar punk city, masterpiece` to generate directly.
 10. **Prompt history:** if enabled, the 🕘 button (top bar, left of ⚙️) opens a searchable
     grid of your past A1111 generations — click one to apply it to settings or re-generate.
+11. **Character search:** the 👥 button (composer) opens a searchable list of 20k+ anime
+    characters — **insert** one into your prompt or **generate** it directly. See
+    [Character search](#character-search-wai--illustrious).
 
 > **Keyboard:** **Shift + Enter** sends a message; **Enter** inserts a newline. (This keeps
 > Enter from sending mid-composition when typing with an IME.)
@@ -261,6 +270,31 @@ downscaled on the fly and cached under `backend/data/history_thumbs/`.
 > exactly what setting `PROMPT_HISTORY_DIR` in `.env` does. The in-UI override is mainly for
 > local dev, or for switching between several already-mounted folders.
 
+## Character search (WAI / Illustrious)
+
+The 👥 button in the composer opens a searchable picker of anime characters whose danbooru
+tags work directly with WAI / Illustrious / NoobAI / Pony checkpoints. Search by name,
+series, tag, or nickname — matching is **romanization-tolerant** (long vowels are collapsed,
+so `yuko` finds `yuuko`) and **multi-word AND** (`ganyu genshin` works). Then **insert** the
+character into the composer or **generate** an image immediately. Most entries carry a full
+curated **appearance prompt** (clothing, hair, eyes) for more accurate results.
+
+### Data sources
+
+The list is the **union of three sources, kept without de-duplication** (the searchable
+keywords and prompts differ between sources, so the same character may appear more than
+once — the richer entry is marked 📝):
+
+| Source | What | License / origin |
+|--------|------|------------------|
+| **Drawing Spells** | ~14,000 characters **with full appearance prompts**, bundled at `backend/drawingspells_characters.json` | **MIT** © 2025 深海異音 — <https://github.com/hbl917070/DrawingSpells> |
+| **danbooru** | up to ~20,000 popular character tags (`category:character`, ordered by post count), fetched in the background on first run and cached at `backend/data/booru_characters_cache.json` | tag data from <https://danbooru.donmai.us> |
+| **Built-in seed** | ~120 hand-curated popular characters with series + nickname aliases, at `backend/booru_characters_seed.json` | this project |
+
+The danbooru fetch is **best-effort**: if the site is unreachable, the bundled Drawing
+Spells list and the seed still work fully offline. The cache is versioned and refreshes
+after 30 days. See `backend/booru_characters.py`.
+
 ## Architecture
 
 ```
@@ -293,6 +327,7 @@ their `images` stripped automatically.
 | `backend/web_tools.py` | web search (DuckDuckGo/SearXNG) + page extraction (with SSRF guard) |
 | `backend/settings_store.py` | persisted settings: image dir + service sources + web provider + prompt-history dir |
 | `backend/prompt_history_store.py` | reads the `sd-webui-prompt-history` extension's `data.json` + thumbnails (cached, paginated, searchable) |
+| `backend/booru_characters.py` | character keyword search (Drawing Spells + danbooru + seed; fuzzy/alias matching) |
 | `backend/docker_probe.py` | best-effort container listing via the docker socket |
 | `frontend/src/store/chat.js` | zustand state + streaming coordination + persistence |
 | `frontend/src/lib/api.js` | SSE parsing, storage/browse/sources/engine calls |
@@ -360,3 +395,11 @@ the GNU GPL as published by the Free Software Foundation, either version 3 of th
 or (at your option) any later version. It is distributed in the hope that it will be
 useful, but **WITHOUT ANY WARRANTY**; without even the implied warranty of MERCHANTABILITY
 or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+### Third-party data
+
+The bundled character list `backend/drawingspells_characters.json` is derived from
+**[Drawing Spells](https://github.com/hbl917070/DrawingSpells)** — **MIT License**,
+© 2025 深海異音 — used here under the terms of the MIT License. Character tags fetched at
+runtime come from **[danbooru](https://danbooru.donmai.us)**. See
+[Character search](#character-search-wai--illustrious).
