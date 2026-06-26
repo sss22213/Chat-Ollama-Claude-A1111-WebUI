@@ -6,17 +6,28 @@ import {
   Combine,
   Loader2,
   History,
+  Layers,
+  BookOpen,
+  Sparkles,
 } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
 
-export default function TopBar({ onToggleSidebar, onOpenSettings, onOpenHistory }) {
+export default function TopBar({
+  onToggleSidebar,
+  onOpenSettings,
+  onOpenHistory,
+  onOpenLoras,
+  onOpenComic,
+  onOpenSkills,
+}) {
   const t = useT();
   const models = useChat((s) => s.models);
   const settings = useChat((s) => s.settings);
   const setSettings = useChat((s) => s.setSettings);
   const engines = useChat((s) => s.engines);
   const features = useChat((s) => s.features);
+  const skills = useChat((s) => s.skills);
   const setEngine = useChat((s) => s.setEngine);
   const health = useChat((s) => s.health);
   const usage = useChat((s) => s.usage);
@@ -32,6 +43,11 @@ export default function TopBar({ onToggleSidebar, onOpenSettings, onOpenHistory 
     : settings.chatModel;
   const activeModelMeta = models.find((m) => m.name === activeModel);
   const toolsAvailable = !!activeModelMeta?.supports_tools;
+  const skillOn = !!settings.skill;
+  const skillLabel =
+    settings.skill === "__auto__"
+      ? t("skillAuto")
+      : skills.find((s) => s.slug === settings.skill)?.name;
 
   const onChangeModel = (name) => {
     setSettings({ chatModel: name });
@@ -162,6 +178,39 @@ export default function TopBar({ onToggleSidebar, onOpenSettings, onOpenHistory 
         <StatusDot ok={health.ollama} label="Ollama" />
         <StatusDot ok={health.a1111} label="A1111" />
       </div>
+
+      {/* 技能（Agent Skills）：啟用時高亮並顯示名稱 */}
+      <button
+        onClick={onOpenSkills}
+        title={skillLabel || t("skills")}
+        className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-sm transition sm:px-3 ${
+          skillOn
+            ? "border-violet-600/50 bg-violet-600/15 text-violet-300"
+            : "border-ink-600 text-gray-300 hover:bg-ink-750"
+        }`}
+      >
+        <Sparkles size={15} />
+        <span className="hidden max-w-[8rem] truncate sm:inline">
+          {skillLabel || t("skills")}
+        </span>
+      </button>
+
+      <button
+        onClick={onOpenComic}
+        className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-2 py-1.5 text-sm text-gray-300 hover:bg-ink-750 sm:px-3"
+        title={t("comicStudio")}
+      >
+        <BookOpen size={16} />
+        <span className="hidden sm:inline">{t("comicStudio")}</span>
+      </button>
+
+      <button
+        onClick={onOpenLoras}
+        className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750"
+        title={t("loraBrowse")}
+      >
+        <Layers size={18} />
+      </button>
 
       {features?.promptHistory && (
         <button

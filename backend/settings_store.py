@@ -16,6 +16,7 @@ from config import (
     OLLAMA_URL,
     A1111_URL,
     PROMPT_HISTORY_DIR as DEFAULT_PROMPT_HISTORY_DIR,
+    SKILLS_DIR as DEFAULT_SKILLS_DIR,
 )
 
 SETTINGS_FILE = DATA_DIR / "app_settings.json"
@@ -39,6 +40,8 @@ _settings: dict = {
     "known_dirs": [str(DEFAULT_IMAGE_DIR)],
     # 提示詞歷史目錄的 UI 覆寫（空字串＝沿用 env 預設 PROMPT_HISTORY_DIR）
     "prompt_history_dir": "",
+    # 技能目錄的 UI 覆寫（空字串＝沿用 env 預設 SKILLS_DIR）；所有 SKILL.md 放這裡
+    "skills_dir": "",
     "sources": {
         "ollama": _default_source(OLLAMA_URL, 11434),
         "a1111": _default_source(A1111_URL, 7860),
@@ -76,6 +79,7 @@ def load() -> dict:
         except Exception:
             pass
     _settings.setdefault("known_dirs", [])
+    _settings.setdefault("skills_dir", "")
     if _settings["image_dir"] not in _settings["known_dirs"]:
         _settings["known_dirs"].insert(0, _settings["image_dir"])
     _normalize_sources()
@@ -177,6 +181,49 @@ def prompt_history_info() -> dict:
         "default": DEFAULT_PROMPT_HISTORY_DIR,
         "override": (_settings.get("prompt_history_dir") or ""),
         "available": available,
+    }
+
+
+# ---- 技能目錄（env 當預設、UI 可覆寫並持久化）----
+def get_skills_dir() -> Path:
+    """有效技能目錄：UI 覆寫優先，否則用 env 預設（SKILLS_DIR）。skills_store 用它定位。"""
+    override = (_settings.get("skills_dir") or "").strip()
+    return Path(override) if override else Path(DEFAULT_SKILLS_DIR)
+
+
+def set_skills_dir(path: str) -> dict:
+    """設定技能目錄覆寫；空字串＝清除（回到 env 預設）。會建立目錄並檢查可寫。"""
+    path = (path or "").strip()
+    if path:
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            raise ValueError("請提供絕對路徑")
+        p.mkdir(parents=True, exist_ok=True)
+        if not os.access(p, os.W_OK):
+            raise PermissionError("此資料夾無法寫入")
+        path = str(p.resolve())
+    _settings["skills_dir"] = path
+    _save()
+    return skills_dir_info()
+
+
+def skills_dir_info() -> dict:
+    """目前技能目錄狀態（給設定面板顯示）。count＝目錄下含 SKILL.md 的子資料夾數。"""
+    d = get_skills_dir()
+    count = 0
+    try:
+        if d.is_dir():
+            count = sum(
+                1 for sub in d.iterdir() if sub.is_dir() and (sub / "SKILL.md").is_file()
+            )
+    except Exception:
+        count = 0
+    return {
+        "dir": str(d),
+        "default": str(DEFAULT_SKILLS_DIR),
+        "override": (_settings.get("skills_dir") or ""),
+        "writable": os.access(d, os.W_OK) if d.exists() else False,
+        "count": count,
     }
 
 

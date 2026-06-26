@@ -6,6 +6,8 @@ import {
   fetchStorage,
   setStorage as apiSetStorage,
   fetchPromptHistoryDir,
+  fetchSkillsDir,
+  saveSkillsDir,
 } from "../lib/api";
 import DirectoryPicker from "./DirectoryPicker";
 import SourcesPanel from "./SourcesPanel";
@@ -48,12 +50,22 @@ export default function SettingsModal({ onClose }) {
   const [histErr, setHistErr] = useState("");
   const [histSaving, setHistSaving] = useState(false);
 
+  // 技能目錄（env 預設、UI 可覆寫）
+  const reloadSkills = useChat((s) => s.reloadSkills);
+  const [skillsDir, setSkillsDir] = useState(null);
+  const [skillsPickerOpen, setSkillsPickerOpen] = useState(false);
+  const [skillsErr, setSkillsErr] = useState("");
+  const [skillsSaving, setSkillsSaving] = useState(false);
+
   useEffect(() => {
     fetchStorage()
       .then(setStorageState)
       .catch(() => {});
     fetchPromptHistoryDir()
       .then(setHistDir)
+      .catch(() => {});
+    fetchSkillsDir()
+      .then(setSkillsDir)
       .catch(() => {});
   }, []);
 
@@ -82,6 +94,21 @@ export default function SettingsModal({ onClose }) {
       setHistErr(e.message);
     } finally {
       setHistSaving(false);
+    }
+  };
+
+  const onSetSkillsDir = async (dir) => {
+    setSkillsSaving(true);
+    setSkillsErr("");
+    try {
+      const info = await saveSkillsDir(dir);
+      setSkillsDir(info);
+      setSkillsPickerOpen(false);
+      await reloadSkills(); // 目錄變了，重抓技能清單
+    } catch (e) {
+      setSkillsErr(e.message);
+    } finally {
+      setSkillsSaving(false);
     }
   };
 
@@ -277,6 +304,58 @@ export default function SettingsModal({ onClose }) {
             )}
           </Section>
 
+          {/* 技能目錄 */}
+          <Section title={t("skillsSection")}>
+            <Field label={t("skillsDirLabel")}>
+              <div className="flex items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2">
+                  <HardDrive size={15} className="shrink-0 text-gray-400" />
+                  <span className="truncate font-mono text-xs text-gray-200">
+                    {skillsDir?.dir || t("loading")}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setSkillsPickerOpen(true)}
+                  className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-3 py-2 text-sm hover:bg-ink-750"
+                >
+                  {skillsSaving ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <FolderOpen size={15} />
+                  )}
+                  {t("chooseFolder")}
+                </button>
+              </div>
+            </Field>
+            {skillsDir && (
+              <p className="text-xs">
+                <span className="text-emerald-400">
+                  {t("skillsFound", { count: skillsDir.count ?? 0 })}
+                </span>
+                {" · "}
+                {skillsDir.writable ? (
+                  <span className="text-gray-500">{t("writable")}</span>
+                ) : (
+                  <span className="text-amber-300/90">{t("notWritable")}</span>
+                )}
+                {skillsDir.override ? (
+                  <button
+                    onClick={() => onSetSkillsDir("")}
+                    className="ml-2 text-gray-400 underline hover:text-gray-200"
+                  >
+                    {t("historyDirReset")}
+                  </button>
+                ) : null}
+              </p>
+            )}
+            <p className="text-xs text-gray-500">{t("skillsDirHint")}</p>
+            {skillsErr && (
+              <p className="flex items-center gap-1.5 text-xs text-red-300">
+                <AlertTriangle size={13} /> {skillsErr}
+              </p>
+            )}
+          </Section>
+
           {/* 圖片生成參數 */}
           <Section title={t("sdSection")}>
             <Field label={t("sdCheckpoint")}>
@@ -363,6 +442,17 @@ export default function SettingsModal({ onClose }) {
             title={t("pickerTitleHistory")}
             onPick={onSetHistDir}
             onClose={() => setHistPickerOpen(false)}
+          />
+        </div>
+      )}
+
+      {skillsPickerOpen && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <DirectoryPicker
+            initialPath={skillsDir?.dir || skillsDir?.default}
+            title={t("pickerTitleSkills")}
+            onPick={onSetSkillsDir}
+            onClose={() => setSkillsPickerOpen(false)}
           />
         </div>
       )}

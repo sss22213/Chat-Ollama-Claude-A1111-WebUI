@@ -19,11 +19,14 @@ import booru_characters
 import chat as chat_mod
 import claude_client
 import codex_client
+import comic as comic_mod
 import conversations_store
 import docker_probe
+import loras
 import ollama_client
 import prompt_history_store
 import settings_store
+import skills_store
 import web_tools
 from config import CORS_ORIGINS, DEFAULT_IMAGE_SETTINGS
 
@@ -66,6 +69,8 @@ class ChatRequest(BaseModel):
     engine: str = "ollama"
     # 推理強度（claude: low..max；codex: minimal..high）；ollama 不適用
     effort: str | None = None
+    # 啟用的技能 slug（Agent Skill）；空＝不啟用
+    skill: str | None = None
 
 
 @app.get("/api/health")
@@ -383,6 +388,100 @@ def booru_characters_search(q: str = "", limit: int = 60) -> list[dict[str, str]
     return booru_characters.search(q, max(1, min(200, limit)))
 
 
+# ---- LoRA 清單 + 觸發詞（讀 A1111 /sdapi/v1/loras） ----
+@app.get("/api/loras")
+async def loras_search(q: str = "", limit: int = 0) -> list[dict[str, Any]]:
+    # limit<=0 → 不限制，回傳全部 LoRA（選單要顯示全部）
+    return await loras.search(q, None if limit <= 0 else min(2000, limit))
+
+
+@app.post("/api/loras/refresh")
+async def loras_refresh() -> dict[str, Any]:
+    try:
+        items = await loras.refresh()
+    except Exception as e:
+        raise HTTPException(502, f"無法連到 A1111 重新整理 LoRA：{e}")
+    return {"count": len(items), "items": items}
+
+
+@app.get("/api/lora-thumb")
+async def lora_thumb(name: str, size: int = 96):
+    """LoRA 縮圖（代理 A1111 預覽圖 + Pillow 縮放快取）；無預覽回 404，前端顯示首字母佔位。"""
+    fp = await loras.thumb_file(name, max(48, min(512, size)))
+    if not fp:
+        raise HTTPException(404, "無縮圖")
+    return FileResponse(fp)
+
+
+# ---- 技能（Agent Skills）外掛 ----
+@app.get("/api/skills-dir")
+def skills_dir_get() -> dict[str, Any]:
+    return settings_store.skills_dir_info()
+
+
+class SkillsDirRequest(BaseModel):
+    dir: str = ""
+
+
+@app.put("/api/skills-dir")
+def skills_dir_set(req: SkillsDirRequest) -> dict[str, Any]:
+    try:
+        return settings_store.set_skills_dir(req.dir)
+    except (ValueError, PermissionError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/skills")
+def skills_list() -> list[dict[str, Any]]:
+    """列出可用技能（給前端選單）。"""
+    return skills_store.list_skills()
+
+
+@app.get("/api/skills/{slug}")
+def skills_get(slug: str) -> dict[str, Any]:
+    skill = skills_store.get_skill(slug)
+    if not skill:
+        raise HTTPException(404, "找不到技能")
+    return skill
+
+
+class SkillSaveRequest(BaseModel):
+    slug: str
+    content: str  # 完整 SKILL.md 原文
+
+
+@app.post("/api/skills")
+def skills_create(req: SkillSaveRequest) -> dict[str, Any]:
+    """新增 / 覆寫技能（在網頁直接編輯 SKILL.md）。"""
+    try:
+        return skills_store.save_skill(req.slug, req.content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class SkillUpdateRequest(BaseModel):
+    content: str
+
+
+@app.put("/api/skills/{slug}")
+def skills_update(slug: str, req: SkillUpdateRequest) -> dict[str, Any]:
+    try:
+        return skills_store.save_skill(slug, req.content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/skills/{slug}")
+def skills_delete(slug: str) -> dict[str, bool]:
+    try:
+        ok = skills_store.delete_skill(slug)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not ok:
+        raise HTTPException(404, "找不到技能")
+    return {"ok": True}
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest) -> StreamingResponse:
     stream = chat_mod.run_chat(
@@ -396,6 +495,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
         image_sources=req.image_sources,
         engine=req.engine,
         effort=req.effort,
+        skill=req.skill,
     )
     return StreamingResponse(
         stream,
@@ -521,3 +621,47 @@ async def tools_run(req: ImageRequest) -> dict[str, Any]:
         "generate_image", {"prompt": req.prompt}, req.image_settings, None
     )
     return await a1111_client.txt2img(**kwargs)
+
+
+# ---- 漫畫分鏡（用 LLM 把劇情拆成多格腳本；出圖仍走 /api/generate-image）----
+class StoryboardRequest(BaseModel):
+    engine: str = "ollama"
+    model: str
+    premise: str
+    panel_count: int = 6
+    # 角色卡：[{name, appearance}]；name 會被引用到每格的 characters
+    characters: list[dict[str, Any]] | None = None
+    style: str = ""
+    lang: str = "zh-TW"
+    num_ctx: int | None = None
+    # 使用者自訂的額外指示（指引 AI 分鏡的風格/語氣/內容）
+    system: str = ""
+    # 覆寫內建的分鏡 system 範本（空＝用預設）
+    system_base: str = ""
+
+
+@app.get("/api/comic/system-default")
+def comic_system_default() -> dict[str, str]:
+    """內建分鏡 system 範本，給前端「載入預設」編輯。"""
+    return {"system": comic_mod.default_system()}
+
+
+@app.post("/api/comic/storyboard")
+async def comic_storyboard(req: StoryboardRequest) -> dict[str, Any]:
+    try:
+        return await comic_mod.storyboard(
+            engine=req.engine,
+            model=req.model,
+            premise=req.premise,
+            panel_count=req.panel_count,
+            characters=req.characters,
+            style=req.style,
+            lang=req.lang,
+            num_ctx=req.num_ctx,
+            system=req.system,
+            system_base=req.system_base,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"分鏡生成失敗：{e}")

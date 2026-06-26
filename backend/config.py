@@ -70,6 +70,13 @@ CODEX_SANDBOX_MODE = os.getenv("CODEX_SANDBOX_MODE", "read-only")
 # docker 模式由 compose 固定掛到 /data/prompt-history；本機開發可直接指主機路徑。
 PROMPT_HISTORY_DIR = os.getenv("PROMPT_HISTORY_DIR", "").strip()
 
+# ---- 技能（Agent Skills）外掛 ----
+# 放 SKILL.md 外掛的目錄；每個子資料夾＝一個技能（SKILL.md + 選用 references/ scripts/）。
+# 相容 Anthropic / Codex 的 Agent Skill 格式，社群 skill 可直接放進來。
+SKILLS_DIR = Path(os.getenv("SKILLS_DIR", Path(__file__).parent / "skills"))
+# 注入給模型的技能提示詞長度上限（字元）；保護 context 較小的本地模型。
+SKILL_MAX_CHARS = int(os.getenv("SKILL_MAX_CHARS", "8000"))
+
 # CORS 允許來源（Vite dev server）
 CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",

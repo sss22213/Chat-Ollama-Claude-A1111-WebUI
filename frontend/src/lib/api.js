@@ -175,6 +175,26 @@ export async function fetchCharacters(q = "", limit = 80) {
   return r.json();
 }
 
+// ---- LoRA 清單 + 觸發詞 ----
+// limit=0（預設）代表不限制，後端會回傳全部 LoRA。
+export async function fetchLoras(q = "", limit = 0) {
+  const params = new URLSearchParams({ q, limit });
+  const r = await fetch(`/api/loras?${params}`);
+  if (!r.ok) throw new Error("無法取得 LoRA 清單");
+  return r.json();
+}
+
+export async function refreshLoras() {
+  const r = await fetch("/api/loras/refresh", { method: "POST" });
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "重新整理失敗");
+  return r.json();
+}
+
+// 縮圖 URL（後端代理 A1111 預覽圖 + 即時縮放快取；無預覽回 404）
+export const loraThumb = (name, size = 96) =>
+  `/api/lora-thumb?name=${encodeURIComponent(name)}&size=${size}`;
+
 // ---- 前端 UI 設定（後端持久化、跨裝置同步）----
 export async function fetchUiSettings() {
   const r = await fetch("/api/ui-settings");
@@ -220,6 +240,72 @@ export async function deleteConversationRemote(id) {
     method: "DELETE",
   });
   if (!r.ok) throw new Error("刪除對話失敗");
+  return r.json();
+}
+
+// ---- 技能（Agent Skills）外掛 ----
+export async function fetchSkills() {
+  try {
+    const r = await fetch("/api/skills");
+    if (!r.ok) return [];
+    return await r.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchSkill(slug) {
+  const r = await fetch(`/api/skills/${encodeURIComponent(slug)}`);
+  if (!r.ok) throw new Error("無法取得技能");
+  return r.json();
+}
+
+export async function createSkill(slug, content) {
+  const r = await fetch("/api/skills", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slug, content }),
+  });
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "建立失敗");
+  return r.json();
+}
+
+export async function updateSkill(slug, content) {
+  const r = await fetch(`/api/skills/${encodeURIComponent(slug)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "儲存失敗");
+  return r.json();
+}
+
+export async function deleteSkill(slug) {
+  const r = await fetch(`/api/skills/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+  });
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "刪除失敗");
+  return r.json();
+}
+
+// 技能目錄（env 當預設、UI 可覆寫）
+export async function fetchSkillsDir() {
+  const r = await fetch("/api/skills-dir");
+  if (!r.ok) throw new Error("無法取得技能目錄設定");
+  return r.json();
+}
+
+export async function saveSkillsDir(dir) {
+  const r = await fetch("/api/skills-dir", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir }),
+  });
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "設定失敗");
   return r.json();
 }
 
@@ -272,6 +358,7 @@ export function streamChat(
     imageSources,
     engine,
     effort,
+    skill,
   },
   onEvent,
   onDone,
@@ -295,6 +382,7 @@ export function streamChat(
           image_sources: imageSources,
           engine,
           effort,
+          skill,
         }),
         signal: controller.signal,
       });

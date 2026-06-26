@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, ImagePlus, X, FileText, Users } from "lucide-react";
+import { ArrowUp, Square, ImagePlus, X, FileText, Users, Layers } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
 import PngInfoModal from "./PngInfoModal";
 import CharacterPicker from "./CharacterPicker";
+import LoraPicker from "./LoraPicker";
 
 // 原圖位元組（不重壓，保留 PNG metadata 給 PNG Info 用）。過大則不保留以省記憶體。
 const MAX_ORIGINAL = 12 * 1024 * 1024; // 12MB
@@ -54,11 +55,15 @@ export default function Composer() {
   const removeAttachment = useChat((s) => s.removeAttachment);
   const composerDraft = useChat((s) => s.composerDraft);
   const setComposerDraft = useChat((s) => s.setComposerDraft);
+  const composerInsert = useChat((s) => s.composerInsert);
+  const insertComposer = useChat((s) => s.insertComposer);
   const generateCharacter = useChat((s) => s.generateCharacter);
+  const generateLora = useChat((s) => s.generateLora);
   const taRef = useRef(null);
   const fileRef = useRef(null);
   const [pngFor, setPngFor] = useState(null); // 正在看 PNG Info 的附件原圖
   const [charOpen, setCharOpen] = useState(false); // 角色搜尋器
+  const [loraOpen, setLoraOpen] = useState(false); // LoRA 搜尋器
 
   // 調整輸入框高度（內容變動後）
   const resizeTextarea = () => {
@@ -95,6 +100,13 @@ export default function Composer() {
       el.setSelectionRange(el.value.length, el.value.length);
     });
   }, [composerDraft, setComposerDraft]);
+
+  // 外部（如 LoRA 瀏覽器）要「附加」的片段：沿用 insertTag 的接逗號邏輯，取用後清回 null
+  useEffect(() => {
+    if (composerInsert == null) return;
+    insertTag(composerInsert);
+    insertComposer(null);
+  }, [composerInsert, insertComposer]);
 
   const submit = () => {
     if ((!text.trim() && attachments.length === 0) || streaming) return;
@@ -202,6 +214,13 @@ export default function Composer() {
           >
             <Users size={18} />
           </button>
+          <button
+            onClick={() => setLoraOpen(true)}
+            title={t("loras")}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-gray-400 hover:bg-ink-700 hover:text-gray-200"
+          >
+            <Layers size={18} />
+          </button>
           <textarea
             ref={taRef}
             value={text}
@@ -249,6 +268,18 @@ export default function Composer() {
             setCharOpen(false);
           }}
           onClose={() => setCharOpen(false)}
+        />
+      )}
+
+      {loraOpen && (
+        <LoraPicker
+          streaming={streaming}
+          onInsert={insertTag}
+          onGenerate={(c) => {
+            generateLora(c);
+            setLoraOpen(false);
+          }}
+          onClose={() => setLoraOpen(false)}
         />
       )}
     </div>

@@ -17,6 +17,7 @@ import {
   fetchUiSettings,
   saveUiSettings,
   savePromptHistoryDir,
+  fetchSkills,
 } from "../lib/api";
 
 // engine / chatModel 是「裝置本機」設定，不跨裝置同步：
@@ -168,6 +169,7 @@ export const useChat = create(
         numCtx: 8192,
         systemPrompt: "",
         lang: "zh-TW",
+        skill: "", // 啟用的技能 slug（Agent Skill）；空＝不啟用
         imageSettings: { ...DEFAULT_IMAGE_SETTINGS },
       },
 
@@ -177,13 +179,15 @@ export const useChat = create(
       samplers: [],
       engines: { ollama: true, claude_cli: false, codex: false },
       features: { promptHistory: false }, // 後端可用的選用功能（依掛載/設定而定）
+      skills: [], // 後端掃到的技能清單 [{slug,name,description,...}]
       health: { ollama: true, a1111: true },
       streaming: false,
       _abort: null,
       attachments: [], // 待送出的附件圖 [{id, dataUrl}]
       usage: null, // {prompt_tokens, num_ctx} 上一輪 context 用量
       compacting: false,
-      composerDraft: null, // 要塞進輸入框的草稿（如「套用歷史」帶入 prompt）
+      composerDraft: null, // 要塞進輸入框的草稿（如「套用歷史」帶入 prompt，會「取代」輸入框內容）
+      composerInsert: null, // 要「附加」到輸入框的片段（如 LoRA 瀏覽器帶入 tag，保留已輸入內容）
 
       // ---- 附件（上傳/重繪共用）----
       // dataUrl：縮圖後（給預覽/vision/img2img、會持久化）；
@@ -243,14 +247,22 @@ export const useChat = create(
           set((st) => ({ settings: { ...st.settings, engine } }));
         }
 
-        const [models, sdModels, samplers, defaults, health] =
+        const [models, sdModels, samplers, defaults, health, skills] =
           await Promise.all([
             fetchModels(engine).catch(() => []),
             fetchSdModels().catch(() => []),
             fetchSamplers().catch(() => []),
             fetchDefaults().catch(() => null),
             fetchHealth(),
+            fetchSkills(),
           ]);
+
+        // 啟用中的技能若已不在清單（被移除）→ 取消啟用
+        let skill = get().settings.skill || "";
+        if (skill && !skills.some((s) => s.slug === skill)) skill = "";
+        if (skill !== get().settings.skill) {
+          set((st) => ({ settings: { ...st.settings, skill } }));
+        }
 
         set({
           models,
@@ -258,6 +270,7 @@ export const useChat = create(
           samplers,
           health,
           engines,
+          skills,
           features: { promptHistory: !!defaults?.prompt_history },
         });
 
@@ -277,6 +290,23 @@ export const useChat = create(
 
         // 對話改由後端載入（跨裝置、長期保存）
         await get().loadConversations();
+      },
+
+      // 重抓技能清單（新增/編輯/刪除後刷新）；啟用中技能若被刪則取消
+      async reloadSkills() {
+        const skills = await fetchSkills();
+        set((st) => {
+          const cur = st.settings.skill || "";
+          const stillThere =
+            cur === "" || cur === "__auto__" || skills.some((s) => s.slug === cur);
+          return {
+            skills,
+            settings: stillThere
+              ? st.settings
+              : { ...st.settings, skill: "" },
+          };
+        });
+        return skills;
       },
 
       // 從後端載入對話摘要清單（messages 採懶載入：點開才抓）
@@ -555,6 +585,7 @@ export const useChat = create(
             imageSources,
             engine: settings.engine,
             effort,
+            skill: settings.skill || "",
           },
           (e) => {
             if (e.type === "thinking") {
@@ -693,6 +724,11 @@ export const useChat = create(
         set({ composerDraft: text });
       },
 
+      // 把片段「附加」到輸入框（Composer 取用後會清回 null）；保留使用者已輸入的內容
+      insertComposer(text) {
+        set({ composerInsert: text });
+      },
+
       // checkpoint 對不上目前 A1111 已載入的清單時就拿掉，避免生成報錯／下拉變空
       _historySettings(record, mergeCurrent) {
         const base = mergeCurrent ? { ...get().settings.imageSettings } : {};
@@ -735,6 +771,22 @@ export const useChat = create(
         }
         await get()._ensureLoaded(convo.id);
         const body = full || tag;
+        const prompt = `${body}, masterpiece, best quality, amazing quality`;
+        await get()._handleSlashImage(prompt, get().settings.imageSettings);
+      },
+
+      // LoRA 直接生成：用 <lora:name:1> + 觸發詞立刻生一張
+      async generateLora(c) {
+        const name = typeof c === "string" ? c : c?.name;
+        const full = typeof c === "object" ? (c?.prompt || "").trim() : "";
+        if (get().streaming || !name) return;
+        let convo = get().currentConversation();
+        if (!convo) {
+          get().createConversation();
+          convo = get().currentConversation();
+        }
+        await get()._ensureLoaded(convo.id);
+        const body = full || `<lora:${name}:1>`;
         const prompt = `${body}, masterpiece, best quality, amazing quality`;
         await get()._handleSlashImage(prompt, get().settings.imageSettings);
       },

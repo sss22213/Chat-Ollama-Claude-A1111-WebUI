@@ -9,6 +9,7 @@ import a1111_client
 import claude_client
 import codex_client
 import ollama_client
+import skills_store
 import tools as tools_mod
 import web_tools
 from config import CLAUDE_CONTEXT_LENGTH, CODEX_CONTEXT_LENGTH
@@ -30,6 +31,30 @@ def _oss_level(effort: str | None) -> str:
     if e in ("high", "xhigh", "max"):
         return "high"
     return "medium"
+
+
+def _inject_skill(
+    messages: list[dict[str, Any]], skill: str | None
+) -> list[dict[str, Any]]:
+    """把選定技能的指示注入 system（接在既有 system prompt 之前）。
+
+    所有引擎都從 system 訊息取 system prompt，所以注入一則 system 即可全引擎通用。
+    技能不存在 / 未啟用時原樣回傳。"""
+    if not skill:
+        return messages
+    # "__auto__"＝讓模型自行從所有技能裡判斷要不要用、用哪個
+    if skill == "__auto__":
+        skill_text = skills_store.build_auto_prompt()
+    else:
+        skill_text = skills_store.build_prompt(skill)
+    if not skill_text:
+        return messages
+    msgs = [dict(m) for m in messages]
+    for m in msgs:
+        if m.get("role") == "system":
+            m["content"] = skill_text + "\n\n" + (m.get("content") or "")
+            return msgs
+    return [{"role": "system", "content": skill_text}, *msgs]
 
 
 def _last_init_image(messages: list[dict[str, Any]]) -> str | None:
@@ -105,11 +130,15 @@ async def run_chat(
     image_sources: list[str] | None = None,
     engine: str = "ollama",
     effort: str | None = None,
+    skill: str | None = None,
 ) -> AsyncIterator[str]:
     """主迴圈，yield SSE 字串。
 
     事件型別：thinking / token / tool_call / progress / image / sources / usage / error / done
     """
+    # 啟用技能：把指示注入 system（全引擎通用）
+    messages = _inject_skill(messages, skill)
+
     if engine == "claude_cli":
         async for s in _run_cli_engine(
             claude_client, CLAUDE_CONTEXT_LENGTH,

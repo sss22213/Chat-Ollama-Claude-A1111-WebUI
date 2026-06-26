@@ -30,6 +30,43 @@ async def list_samplers() -> list[str]:
         return [s["name"] for s in resp.json()]
 
 
+async def list_loras() -> list[dict[str, Any]]:
+    """列出 A1111 目前掃描到的 LoRA（含安全張量內嵌 metadata，可萃取觸發詞）。"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(f"{settings_store.get_a1111_url()}/sdapi/v1/loras")
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def refresh_loras() -> None:
+    """請 A1111 重新掃描 LoRA 目錄（放了新檔不必重啟 WebUI）。"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{settings_store.get_a1111_url()}/sdapi/v1/refresh-loras"
+        )
+        resp.raise_for_status()
+
+
+async def fetch_lora_preview(candidates: list[str]) -> bytes | None:
+    """依序向 A1111 內部 extra-networks 路由探多個候選預覽路徑，
+    回第一個成功取得的圖片位元組；全部失敗回 None。
+    注意：/sd_extra_networks/thumb 是 A1111 未公開的內部路由（隨版本可能變動）。"""
+    base = settings_store.get_a1111_url()
+    async with httpx.AsyncClient(timeout=15) as client:
+        for cand in candidates:
+            try:
+                resp = await client.get(
+                    f"{base}/sd_extra_networks/thumb", params={"filename": cand}
+                )
+            except httpx.HTTPError:
+                continue
+            if resp.status_code == 200 and resp.headers.get(
+                "content-type", ""
+            ).startswith("image"):
+                return resp.content
+    return None
+
+
 async def get_options() -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{settings_store.get_a1111_url()}/sdapi/v1/options")

@@ -26,11 +26,16 @@ const fmtDate = (sec) => {
   }
 };
 
-export default function HistoryModal({ onClose }) {
+// onApply / onGenerate 可覆寫動作（漫畫工作室套用到漫畫設定）；
+// 不傳則沿用聊天 store 行為。onGenerate={null} 可隱藏「直接生成」。
+export default function HistoryModal({ onClose, onApply, onGenerate }) {
   const t = useT();
   const applyHistory = useChat((s) => s.applyHistory);
   const generateFromHistory = useChat((s) => s.generateFromHistory);
   const streaming = useChat((s) => s.streaming);
+
+  const applyFn = onApply || applyHistory;
+  const genFn = onGenerate === undefined ? generateFromHistory : onGenerate;
 
   const [qInput, setQInput] = useState("");
   const [q, setQ] = useState("");
@@ -66,12 +71,12 @@ export default function HistoryModal({ onClose }) {
   const items = data?.items || [];
   const pages = data?.pages || 1;
 
-  const onApply = () => {
-    applyHistory(selected);
+  const doApply = () => {
+    applyFn(selected);
     onClose();
   };
-  const onGenerate = () => {
-    generateFromHistory(selected);
+  const doGenerate = () => {
+    genFn?.(selected);
     onClose();
   };
 
@@ -116,8 +121,9 @@ export default function HistoryModal({ onClose }) {
             t={t}
             streaming={streaming}
             onBack={() => setSelected(null)}
-            onApply={onApply}
-            onGenerate={onGenerate}
+            onApply={doApply}
+            onGenerate={doGenerate}
+            showGenerate={!!genFn}
           />
         ) : (
           <>
@@ -219,7 +225,15 @@ function HistoryCard({ item, onClick }) {
   );
 }
 
-function HistoryDetail({ record, t, streaming, onBack, onApply, onGenerate }) {
+function HistoryDetail({
+  record,
+  t,
+  streaming,
+  onBack,
+  onApply,
+  onGenerate,
+  showGenerate = true,
+}) {
   const params = record.params || {};
   const orderedKeys = [
     "Steps",
@@ -282,13 +296,15 @@ function HistoryDetail({ record, t, streaming, onBack, onApply, onGenerate }) {
         >
           <SlidersHorizontal size={15} /> {t("historyApply")}
         </button>
-        <button
-          onClick={onGenerate}
-          disabled={streaming || !record.prompt}
-          className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-ink-600 disabled:text-gray-500"
-        >
-          <Wand2 size={15} /> {t("historyGenerate")}
-        </button>
+        {showGenerate && (
+          <button
+            onClick={onGenerate}
+            disabled={streaming || !record.prompt}
+            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-ink-600 disabled:text-gray-500"
+          >
+            <Wand2 size={15} /> {t("historyGenerate")}
+          </button>
+        )}
       </div>
     </>
   );
