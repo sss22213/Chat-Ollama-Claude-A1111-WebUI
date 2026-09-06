@@ -90,20 +90,37 @@ def _is_blocked_host(host: str) -> bool:
     return False
 
 
-async def fetch_url(url: str, max_chars: int | None = None) -> dict:
-    cfg = settings_store.get_web()
-    limit = int(max_chars or cfg.get("fetch_max_chars") or 6000)
-
+def _check_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError("只允許 http/https 網址")
     if _is_blocked_host(parsed.hostname):
         raise ValueError("基於安全，拒絕存取內部/私有位址")
 
+
+_MAX_REDIRECTS = 5
+
+
+async def fetch_url(url: str, max_chars: int | None = None) -> dict:
+    cfg = settings_store.get_web()
+    limit = int(max_chars or cfg.get("fetch_max_chars") or 6000)
+
+    _check_url(url)
+
+    # 不用 httpx 的自動轉址：公開網址可以 302 到 127.0.0.1 / 169.254.169.254
+    # 之類的內部位址，必須每一跳都重新驗證目標。
     async with httpx.AsyncClient(
-        timeout=20, follow_redirects=True, headers={"User-Agent": UA}
+        timeout=20, follow_redirects=False, headers={"User-Agent": UA}
     ) as client:
-        resp = await client.get(url)
+        for _ in range(_MAX_REDIRECTS + 1):
+            resp = await client.get(url)
+            if resp.is_redirect and resp.next_request is not None:
+                url = str(resp.next_request.url)
+                _check_url(url)
+                continue
+            break
+        else:
+            raise ValueError("轉址次數過多")
         resp.raise_for_status()
         ctype = resp.headers.get("content-type", "")
         if "html" not in ctype and "text" not in ctype:

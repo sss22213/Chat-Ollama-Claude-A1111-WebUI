@@ -207,8 +207,8 @@ your **logged-in credentials**:
 
 > Without `CLAUDE_CREDS_DIR`, an empty directory is mounted and the Claude engine shows as
 > "unavailable" (Ollama is unaffected). The credentials directory is mounted **read-write**
-> so the CLI can refresh its token. Use `CLAUDE_MODELS` to customize the model aliases in
-> the dropdown (default `sonnet,opus,haiku`).
+> so the CLI can refresh its token. Use `CLAUDE_MODELS` to customize the models in the
+> dropdown (default `sonnet,opus,fable,haiku`) — see [Supported models](#supported-models).
 
 ### Enabling Claude CLI (local dev, no Docker)
 
@@ -225,7 +225,8 @@ output** (`--output-schema`): when the image tool is on, the model returns
 `{reply, image_prompt, edit_attached_image}`, and a non-empty `image_prompt` triggers
 A1111 (txt2img, or img2img when an image is attached). The model dropdown is populated
 automatically from the models your Codex account supports (read from
-`~/.codex/models_cache.json`). You can also type `/image <prompt>` on any engine.
+`~/.codex/models_cache.json`, see [Supported models](#supported-models)). You can also type
+`/image <prompt>` on any engine.
 
 **Docker:** the `codex` binary is a static executable, so the whole `~/.codex` (binary +
 auth + model cache) is mounted into the container — set an **absolute path** in `.env`:
@@ -238,6 +239,47 @@ Then `docker compose up -d --build` and pick **Codex CLI** in the top bar. If Co
 about sandbox/landlock inside the container, set `CODEX_SANDBOX_MODE=bypass` in `.env`
 (the container is already the isolation boundary). **Local dev:** if `codex` is on `PATH`
 and logged in, it's auto-detected — no config needed.
+
+### Supported models
+
+**Claude CLI.** The dropdown shows whatever `CLAUDE_MODELS` contains (default
+`sonnet,opus,fable,haiku`). Aliases are resolved by the installed Claude Code CLI to the
+newest model of that family, so they never go stale; full IDs pin a specific version. The
+table reflects Claude Code 2.1.261:
+
+| Entry in `CLAUDE_MODELS` | Resolves to | Context | Reasoning effort |
+|---|---|---|---|
+| `fable` | Claude Fable 5.1 (`claude-fable-5-1`) | 1M | low · medium · high · xhigh · max |
+| `opus` | Claude Opus 5 (`claude-opus-5`) | 1M | low · medium · high · xhigh · max |
+| `sonnet` | Claude Sonnet 5 (`claude-sonnet-5`) | 1M | low · medium · high · xhigh · max |
+| `haiku` | Claude Haiku 4.5 (`claude-haiku-4-5`) | 200K | — |
+
+Full IDs accepted as well: `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`,
+`claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-5`,
+`claude-sonnet-4-6`, `claude-haiku-4-5`. Fable / Opus 5 / Opus 4.7+ / Sonnet 5 use a native
+1M window; Opus 4.6, Sonnet 4.6 and Haiku 4.5 are 200K — append `[1m]` (e.g. `sonnet[1m]`,
+`claude-opus-4-6[1m]`) to turn on the CLI's 1M window for those. The dropdown shows the
+resolved name next to each entry (e.g. `opus · Opus 5`); set `CLAUDE_CONTEXT_LENGTH` to
+force one context size for every Claude model.
+
+**Codex CLI.** The dropdown is built from `~/.codex/models_cache.json` — the models your
+account can actually use — so it updates whenever the `codex` CLI refreshes its catalog
+(run `codex debug models` or any `codex` session on the host; Docker sees the mounted
+cache). Hidden / non-chat entries (`gpt-reserve`, `codex-auto-review`) are filtered out.
+Catalog as of 2026-09-06 (codex 0.144.1):
+
+| Model | Reasoning effort | Context |
+|---|---|---|
+| `gpt-6-astra` | low · medium · high · xhigh · max · ultra (default low) | 272K |
+| `gpt-5.6-sol` | low · medium · high · xhigh · max · ultra (default low) | 272K |
+| `gpt-5.6-terra` | low · medium · high · xhigh · max · ultra (default medium) | 272K |
+| `gpt-5.6-luna` | low · medium · high · xhigh · max (default medium) | 272K |
+| `gpt-5.5` | low · medium · high · xhigh (default medium) | 272K |
+| `gpt-5.4-mini` | low · medium · high · xhigh (default medium) | 272K |
+
+The effort selector in ⚙️ Settings only offers the levels the selected model declares. Set
+`CODEX_MODELS=gpt-6-astra,gpt-5.5` to pin the dropdown; the same list above is the built-in
+fallback when no cache exists yet.
 
 ## Prompt history (sd-webui-prompt-history)
 
@@ -337,7 +379,8 @@ their `images` stripped automatically.
 ## Configuration
 
 Copy `.env.example` and override via environment variables (addresses, default model,
-timeouts, Claude / Codex credentials, prompt-history folder). In dev mode the frontend proxy target is in
+timeouts, Claude / Codex credentials and model lists (`CLAUDE_MODELS`, `CODEX_MODELS`),
+prompt-history folder). In dev mode the frontend proxy target is in
 `frontend/vite.config.js` (`BACKEND_URL`, default `127.0.0.1:8000`); in Docker mode
 `frontend/nginx.conf` proxies `/api` and `/images` to `backend:8000`.
 
@@ -376,7 +419,8 @@ networks:
   `override_settings` and restored after generation.
 - Some models don't support tools; when selected, the tool toggles disable automatically
   and plain chat (or `/image`) still works.
-- On the Claude engine, the web-search tools are not available (built-in tools are disabled).
+- On the CLI engines (Claude and Codex), the web-search tools are not available — they are
+  only wired to the Ollama engine.
 
 ## Development
 

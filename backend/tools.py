@@ -11,6 +11,27 @@ from typing import Any
 
 from config import DEFAULT_IMAGE_SETTINGS
 
+# 模型給的 prompt/negative 清洗上限：模型退化重複（同一串 tags 無限循環）時的自我保護。
+# CLIP 一段只有 77 token，超過幾十個 tag 本來就沒有意義。
+_MAX_TAGS = 60
+_MAX_TAG_CHARS = 1500
+
+
+def _clean_tags(text: str) -> str:
+    """去除重複 tag 並限制數量/長度（只清模型給的參數；UI 設定的 negative 不動）。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for tag in (text or "").split(","):
+        t = tag.strip()
+        key = t.lower()
+        if not t or key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+        if len(out) >= _MAX_TAGS:
+            break
+    return ", ".join(out)[:_MAX_TAG_CHARS]
+
 GENERATE_IMAGE_TOOL = {
     "type": "function",
     "function": {
@@ -33,7 +54,12 @@ GENERATE_IMAGE_TOOL = {
                 },
                 "negative_prompt": {
                     "type": "string",
-                    "description": "Optional tags to avoid (e.g. 'lowres, bad anatomy, worst quality').",
+                    "description": (
+                        "USUALLY OMIT THIS — the app already applies a curated "
+                        "negative prompt covering quality/anatomy issues. Only set it "
+                        "when the user explicitly wants to avoid something specific, "
+                        "with AT MOST 15 short tags and no repeats."
+                    ),
                 },
                 "width": {"type": "integer", "description": "Optional width in px (multiple of 64)."},
                 "height": {"type": "integer", "description": "Optional height in px (multiple of 64)."},
@@ -62,7 +88,14 @@ EDIT_IMAGE_TOOL = {
                     "type": "string",
                     "description": "Positive prompt describing the desired result, as comma-separated English tags.",
                 },
-                "negative_prompt": {"type": "string", "description": "Optional tags to avoid."},
+                "negative_prompt": {
+                    "type": "string",
+                    "description": (
+                        "USUALLY OMIT THIS — the app already applies a curated "
+                        "negative prompt. Only for user-requested specifics; max 15 "
+                        "short tags, no repeats."
+                    ),
+                },
                 "denoising_strength": {
                     "type": "number",
                     "description": "0.0~1.0. How much to change the original (low=subtle, high=very different). Default ~0.6. Optional.",
@@ -148,11 +181,6 @@ def web_tools_schema() -> list[dict[str, Any]]:
     return [WEB_SEARCH_TOOL, FETCH_URL_TOOL]
 
 
-def get_tools(has_init_image: bool) -> list[dict[str, Any]]:
-    """相容舊呼叫：僅圖片工具。"""
-    return image_tools(has_init_image)
-
-
 def build_call(
     name: str,
     args: dict[str, Any],
@@ -162,14 +190,18 @@ def build_call(
     """把工具呼叫解析成 ('txt2img'|'img2img', kwargs)。"""
     settings = {**DEFAULT_IMAGE_SETTINGS, **(image_settings or {})}
 
-    prompt = (args.get("prompt") or "").strip()
+    # 模型給的參數先清洗（去重複 tag、限長）：擋退化式重複輸出
+    prompt = _clean_tags(args.get("prompt") or "")
     if not prompt:
         raise ValueError(f"{name} 缺少 prompt")
 
-    # negative：UI 預設 + 模型補充
+    # negative：UI 預設（原樣保留）+ 模型補充（清洗後）
     neg_parts = [
         p.strip()
-        for p in (settings.get("negative_prompt", ""), args.get("negative_prompt", ""))
+        for p in (
+            settings.get("negative_prompt", ""),
+            _clean_tags(args.get("negative_prompt") or ""),
+        )
         if p and p.strip()
     ]
     negative = ", ".join(neg_parts)

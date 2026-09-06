@@ -28,7 +28,7 @@ import prompt_history_store
 import settings_store
 import skills_store
 import web_tools
-from config import CORS_ORIGINS, DEFAULT_IMAGE_SETTINGS
+from config import BROWSE_ROOTS, CORS_ORIGINS, DEFAULT_IMAGE_SETTINGS
 
 app = FastAPI(title="Chat + Ollama + A1111 WebUI")
 
@@ -67,7 +67,7 @@ class ChatRequest(BaseModel):
     image_sources: list[str] | None = None
     # AI 引擎：ollama | claude_cli | codex
     engine: str = "ollama"
-    # 推理強度（claude: low..max；codex: minimal..high）；ollama 不適用
+    # 推理強度（claude: low..max；codex: low..ultra，依模型而定）；ollama 不適用
     effort: str | None = None
     # 啟用的技能 slug（Agent Skill）；空＝不啟用
     skill: str | None = None
@@ -148,8 +148,22 @@ class StorageRequest(BaseModel):
     image_dir: str
 
 
+def _ensure_allowed(path: Path) -> Path:
+    """把路徑限制在 BROWSE_ROOTS 白名單內（預設家目錄與 DATA_DIR，可用環境變數調整）。"""
+    try:
+        resolved = path.expanduser().resolve()
+    except Exception:
+        raise HTTPException(400, "無效的路徑")
+    if not any(
+        resolved == root or resolved.is_relative_to(root) for root in BROWSE_ROOTS
+    ):
+        raise HTTPException(403, "此路徑不在允許範圍內（可用 BROWSE_ROOTS 環境變數調整）")
+    return resolved
+
+
 @app.put("/api/storage")
 def set_storage(req: StorageRequest) -> dict[str, Any]:
+    _ensure_allowed(Path(req.image_dir))
     try:
         settings_store.set_image_dir(req.image_dir)
     except (ValueError, PermissionError) as e:
@@ -163,11 +177,7 @@ def set_storage(req: StorageRequest) -> dict[str, Any]:
 @app.get("/api/browse")
 def browse(path: str | None = None) -> dict[str, Any]:
     """列出某目錄下的子資料夾，供前端逐層瀏覽。未給 path 時從家目錄開始。"""
-    base = Path(path).expanduser() if path else Path.home()
-    try:
-        base = base.resolve()
-    except Exception:
-        raise HTTPException(400, "無效的路徑")
+    base = _ensure_allowed(Path(path) if path else Path.home())
     if not base.is_dir():
         raise HTTPException(400, "不是有效的資料夾")
 
@@ -184,7 +194,13 @@ def browse(path: str | None = None) -> dict[str, Any]:
     except PermissionError:
         raise HTTPException(403, "沒有權限存取此資料夾")
 
-    parent = str(base.parent) if base.parent != base else None
+    # 上一層若超出白名單就不給（否則前端點「上一層」會 403）
+    parent = None
+    if base.parent != base and any(
+        base.parent == root or base.parent.is_relative_to(root)
+        for root in BROWSE_ROOTS
+    ):
+        parent = str(base.parent)
     return {
         "path": str(base),
         "parent": parent,
@@ -203,7 +219,7 @@ def make_dir(req: MkdirRequest) -> dict[str, Any]:
     name = req.name.strip()
     if not name or "/" in name or name in (".", ".."):
         raise HTTPException(400, "資料夾名稱無效")
-    target = Path(req.path).expanduser() / name
+    target = _ensure_allowed(Path(req.path)) / name
     try:
         target.mkdir(parents=False, exist_ok=False)
     except FileExistsError:

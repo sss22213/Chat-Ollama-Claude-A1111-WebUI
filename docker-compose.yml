@@ -18,10 +18,12 @@ services:
       # Claude CLI 引擎（與 ollama 二選一）。binary 已裝在映像內；
       # 可選模型別名與 claude 路徑可覆寫。
       CLAUDE_BIN: ${CLAUDE_BIN:-claude}
-      CLAUDE_MODELS: ${CLAUDE_MODELS:-sonnet,opus,haiku}
+      CLAUDE_MODELS: ${CLAUDE_MODELS:-sonnet,opus,fable,haiku}
       # OpenAI Codex CLI 引擎。binary 與認證由下方掛載的 ~/.codex 提供（static 可跨發行版）。
       # 容器內若沙箱建立失敗（landlock 不可用）可改成 bypass。
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-read-only}
+      # 固定 codex 下拉模型（空＝自動讀掛載進來的 ~/.codex/models_cache.json）
+      CODEX_MODELS: ${CODEX_MODELS:-}
       # 提示詞歷史：容器內固定讀此掛載點；實際主機目錄由下方 volume 的 PROMPT_HISTORY_DIR 決定。
       PROMPT_HISTORY_DIR: /data/prompt-history
     extra_hosts:

@@ -84,6 +84,9 @@ function paramsToText(p) {
 
 // 把一則訊息已生成的圖片參數，整理成「隱藏」文字附在送出的 content 後面，
 // 讓模型之後被問到「剛剛那張圖的 PNG info / 參數」時答得出來（畫面不顯示）。
+// 注意：只會附在「最後一則」有圖的助理訊息（見 send 的歷史組裝）——每則都附會讓
+// 歷史充滿 prompt/negative 純文字範本，誘導模型模仿著印文字而不呼叫工具，
+// 也是退化重複迴圈的素材來源。可在設定用 sendGenInfo 整個關閉。
 export function genInfoForModel(images) {
   if (!images?.length) return "";
   const blocks = images
@@ -95,7 +98,10 @@ export function genInfoForModel(images) {
     })
     .filter(Boolean);
   return blocks.length
-    ? `\n\n[系統備註，使用者看不到，供你回答生成參數用]\n${blocks.join("\n\n")}`
+    ? "\n\n[系統備註，使用者看不到，供你回答生成參數用。Reference data only — " +
+        "NEVER imitate this format or print prompt tags as plain text in your " +
+        "replies; to create a new image you must still call the image tool / " +
+        `marker as instructed.]\n${blocks.join("\n\n")}`
     : "";
 }
 
@@ -164,6 +170,7 @@ export const useChat = create(
         engine: "ollama", // ollama | claude_cli
         toolsEnabled: true,
         webEnabled: false,
+        sendGenInfo: true, // 把最近一張生成圖的參數（PNG info）提供給模型
         think: false,
         effort: { ...EFFORT_DEFAULT }, // 推理強度，各引擎獨立
         numCtx: 8192,
@@ -539,21 +546,32 @@ export const useChat = create(
         get().clearAttachments();
 
         // 組送出的訊息（帶 role+content；有附件則帶 images 供 vision/img2img）
-        const history = get()
+        const sendable = get()
           .currentConversation()
           .messages.filter((m) => m.role === "user" || m.role === "assistant")
-          .filter((m) => m.id !== assistantMsg.id)
-          .map((m) => {
-            const base = { role: m.role, content: m.content };
-            // 助理曾生成的圖片，把其 PNG info 以隱藏文字附在 content（畫面不變，只給模型看）
+          .filter((m) => m.id !== assistantMsg.id);
+        // PNG info 只附在「最後一則」有圖的助理訊息（問參數幾乎都是問最近那張）。
+        // 每則都附會讓歷史充滿 prompt 純文字範本 → 模型模仿著印文字而忘記呼叫工具。
+        let lastGenIdx = -1;
+        if (settings.sendGenInfo !== false) {
+          for (let i = sendable.length - 1; i >= 0; i--) {
+            const m = sendable[i];
             if (m.role === "assistant" && m.images?.length) {
-              base.content = (m.content || "") + genInfoForModel(m.images);
+              lastGenIdx = i;
+              break;
             }
-            if (m.attachments?.length) {
-              base.images = m.attachments.map((a) => stripPrefix(a.dataUrl));
-            }
-            return base;
-          });
+          }
+        }
+        const history = sendable.map((m, i) => {
+          const base = { role: m.role, content: m.content };
+          if (i === lastGenIdx) {
+            base.content = (m.content || "") + genInfoForModel(m.images);
+          }
+          if (m.attachments?.length) {
+            base.images = m.attachments.map((a) => stripPrefix(a.dataUrl));
+          }
+          return base;
+        });
 
         const apiMessages = settings.systemPrompt
           ? [{ role: "system", content: settings.systemPrompt }, ...history]
@@ -570,8 +588,13 @@ export const useChat = create(
         const canTools = get().modelSupportsTools(model);
         const toolsEnabled = settings.toolsEnabled && canTools;
         const webEnabled = settings.webEnabled && canTools;
-        // 取當前引擎自己的 effort
-        const effort = normEffort(settings.effort)[effortKeyFor(settings.engine)];
+        // 取當前引擎自己的 effort；codex 依所選模型能力修正
+        // （例如設定殘留 5.6 才有的 ultra、卻換回 5.5 → 退回 medium，避免 CLI 報錯）
+        let effort = normEffort(settings.effort)[effortKeyFor(settings.engine)];
+        if (settings.engine === "codex") {
+          const supported = get().models.find((m) => m.name === model)?.efforts;
+          if (supported?.length && !supported.includes(effort)) effort = "medium";
+        }
 
         const abort = streamChat(
           {

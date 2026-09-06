@@ -48,6 +48,9 @@ const dict = {
     systemPromptPh: "例如：你是一位友善的助手，回覆使用繁體中文。",
     showThinking: "顯示思考過程 (thinking)",
     showThinkingHint: "支援 thinking 的模型會輸出推理鏈，可在訊息中收合查看。",
+    sendGenInfo: "讓模型知道已生成圖片的參數",
+    sendGenInfoHint:
+      "把最近一張生成圖的參數（PNG info）隨對話提供給模型，讓它答得出「這張圖的 prompt / 參數」。若模型常把 prompt 印成文字而不生圖，可關閉。",
     language: "語言",
     storageSection: "圖片儲存位置",
     storageLabel: "生成圖片的存放資料夾（伺服器端）",
@@ -214,6 +217,9 @@ const dict = {
     systemPromptPh: "例如：你是一位友善的助手，回复使用简体中文。",
     showThinking: "显示思考过程 (thinking)",
     showThinkingHint: "支持 thinking 的模型会输出推理链，可在消息中折叠查看。",
+    sendGenInfo: "让模型知道已生成图片的参数",
+    sendGenInfoHint:
+      "把最近一张生成图的参数（PNG info）随对话提供给模型，让它能回答「这张图的 prompt / 参数」。若模型常把 prompt 打印成文字而不生图，可关闭。",
     language: "语言",
     storageSection: "图片存储位置",
     storageLabel: "生成图片的存放文件夹（服务器端）",
@@ -384,6 +390,9 @@ const dict = {
     showThinking: "Show reasoning (thinking)",
     showThinkingHint:
       "Models that support thinking output a reasoning chain, collapsible in messages.",
+    sendGenInfo: "Share generated-image parameters with the model",
+    sendGenInfoHint:
+      "Attach the latest generated image's parameters (PNG info) to the conversation so the model can answer questions about them. Turn off if the model tends to print prompts as text instead of generating images.",
     language: "Language",
     storageSection: "Image storage location",
     storageLabel: "Folder to store generated images (server-side)",
@@ -556,6 +565,9 @@ const dict = {
     showThinking: "思考プロセスを表示 (thinking)",
     showThinkingHint:
       "thinking 対応モデルは推論過程を出力し、メッセージ内で折りたたんで確認できます。",
+    sendGenInfo: "生成画像のパラメータをモデルに共有",
+    sendGenInfoHint:
+      "直近の生成画像のパラメータ（PNG info）を会話に添付し、モデルが「この画像のプロンプト／設定」に答えられるようにします。モデルが画像を生成せずプロンプトを文字で出力しがちな場合はオフにしてください。",
     language: "言語",
     storageSection: "画像の保存場所",
     storageLabel: "生成画像を保存するフォルダ（サーバー側）",
@@ -727,6 +739,9 @@ const dict = {
     showThinking: "사고 과정 표시 (thinking)",
     showThinkingHint:
       "thinking 지원 모델은 추론 과정을 출력하며 메시지에서 접어서 볼 수 있습니다.",
+    sendGenInfo: "생성 이미지 파라미터를 모델에 공유",
+    sendGenInfoHint:
+      "가장 최근 생성 이미지의 파라미터(PNG info)를 대화에 첨부해 모델이 「이 이미지의 프롬프트/설정」에 답할 수 있게 합니다. 모델이 이미지를 생성하지 않고 프롬프트를 텍스트로 출력하는 경향이 있으면 끄세요.",
     language: "언어",
     storageSection: "이미지 저장 위치",
     storageLabel: "생성 이미지를 저장할 폴더 (서버 측)",

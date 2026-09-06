@@ -28,18 +28,65 @@ def available() -> bool:
     return bool(shutil.which(CLAUDE_BIN) or os.path.isfile(CLAUDE_BIN))
 
 
+_1M = 1_000_000
+_200K = 200_000
+
+# Claude Code CLI（2.1.261）內建模型目錄：名稱 → (顯示名稱, context 視窗)。
+# 別名由 CLI 解析成該系列最新版；也可直接填完整 ID。
+# Opus 4.7+ / Sonnet 5 / Fable 原生 1M；Opus 4.6 / Sonnet 4.6 / Haiku 4.5 為 200K
+# （前兩者加 "[1m]" 後綴可開 1M，見 model_info）。
+MODEL_CATALOG: dict[str, tuple[str, int]] = {
+    # 別名（永遠指向最新版）
+    "fable": ("Fable 5.1", _1M),
+    "opus": ("Opus 5", _1M),
+    "sonnet": ("Sonnet 5", _1M),
+    "haiku": ("Haiku 4.5", _200K),
+    # 完整 ID（固定版本）
+    "claude-fable-5-1": ("Fable 5.1", _1M),
+    "claude-fable-5": ("Fable 5", _1M),
+    "claude-opus-5": ("Opus 5", _1M),
+    "claude-opus-4-8": ("Opus 4.8", _1M),
+    "claude-opus-4-7": ("Opus 4.7", _1M),
+    "claude-opus-4-6": ("Opus 4.6", _200K),
+    "claude-sonnet-5": ("Sonnet 5", _1M),
+    "claude-sonnet-4-6": ("Sonnet 4.6", _200K),
+    "claude-haiku-4-5": ("Haiku 4.5", _200K),
+}
+
+
+def model_info(name: str) -> tuple[str, int]:
+    """(顯示名稱, context)。目錄外的名稱原樣顯示、context 用 200K 保守值；
+    "[1m]" 後綴＝CLI 的 1M 視窗開關。"""
+    base = name[:-4] if name.endswith("[1m]") else name
+    label, ctx = MODEL_CATALOG.get(base, (base, _200K))
+    if base != name:
+        label, ctx = f"{label} · 1M", _1M
+    return label, ctx
+
+
+def context_length_for(model: str) -> int:
+    """該模型的 context 長度；CLAUDE_CONTEXT_LENGTH 設了正整數就一律用它。"""
+    if CLAUDE_CONTEXT_LENGTH > 0:
+        return CLAUDE_CONTEXT_LENGTH
+    return model_info(model)[1]
+
+
 def list_models() -> list[dict[str, Any]]:
-    """Claude 可選模型（別名）。vision/tools 都標 True（tools 走 directive）。"""
-    return [
-        {
-            "name": m,
-            "supports_tools": True,
-            "supports_vision": True,
-            "context_length": CLAUDE_CONTEXT_LENGTH,
-            "engine": "claude_cli",
-        }
-        for m in CLAUDE_MODELS
-    ]
+    """Claude 可選模型（CLAUDE_MODELS）。vision/tools 都標 True（tools 走 directive）。"""
+    out = []
+    for m in CLAUDE_MODELS:
+        label, _ = model_info(m)
+        out.append(
+            {
+                "name": m,
+                "label": label,  # 前端下拉顯示「name · label」（別名解析到的版本）
+                "supports_tools": True,
+                "supports_vision": True,
+                "context_length": context_length_for(m),
+                "engine": "claude_cli",
+            }
+        )
+    return out
 
 
 def _guess_media_type(b64: str) -> str:
@@ -157,6 +204,8 @@ async def chat_stream(
         return
 
     got_text = False
+    errored = False  # 已 yield 過 error 就不在 finally 重複回報（避免雙重錯誤事件）
+    aborted = False  # 消費端提前 aclose（例如退化偵測中止）
     try:
         while True:
             try:
@@ -165,6 +214,7 @@ async def chat_stream(
                 )
             except asyncio.TimeoutError:
                 proc.kill()
+                errored = True
                 yield {"type": "error", "message": "claude 回覆逾時"}
                 return
             if not line:
@@ -187,13 +237,21 @@ async def chat_stream(
             elif t == "result":
                 if evt.get("is_error"):
                     msg = evt.get("result") or evt.get("api_error_status") or "claude error"
+                    errored = True
                     yield {"type": "error", "message": str(msg)}
                 usage = evt.get("usage") or {}
                 if usage.get("input_tokens"):
                     yield {"type": "usage", "prompt_tokens": usage["input_tokens"]}
+    except GeneratorExit:
+        # 消費端提前中止（例如偵測到模型輸出退化重複）：殺掉子行程，
+        # 否則 finally 的 proc.wait() 會等一個還在無限輸出的 claude 等不完。
+        aborted = True
+        proc.kill()
+        raise
     finally:
         rc = await proc.wait()
-        if rc != 0 and not got_text:
+        # aborted 時不可再 yield（generator 正在關閉）
+        if not aborted and rc != 0 and not got_text and not errored:
             err = (await proc.stderr.read()).decode(errors="replace").strip()
             yield {"type": "error", "message": err or f"claude 結束碼 {rc}"}
 

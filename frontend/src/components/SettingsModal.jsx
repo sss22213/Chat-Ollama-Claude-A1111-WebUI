@@ -15,9 +15,11 @@ import WebPanel from "./WebPanel";
 
 // 各引擎可用的推理強度（統一在設定裡呈現，不需切換引擎即可分別調整）
 // ollama 的 effort 僅 gpt-oss 會用到（其他模型用上方 think 開關）
+// codex 的 options 是「模型能力未知時」的後備；引擎為 codex 時會改用
+// 所選模型宣告的 efforts（GPT-6 / 5.6 系列多了 max/ultra）
 const EFFORT_ENGINES = [
   { key: "claude_cli", label: "Claude", options: ["low", "medium", "high", "xhigh", "max"] },
-  { key: "codex", label: "Codex", options: ["minimal", "low", "medium", "high"] },
+  { key: "codex", label: "Codex", options: ["low", "medium", "high", "xhigh"] },
   { key: "ollama", label: "Ollama · gpt-oss", options: ["low", "medium", "high"] },
 ];
 
@@ -36,6 +38,13 @@ export default function SettingsModal({ onClose }) {
   const eff = normEffort(settings.effort);
   const setEffortFor = (key, v) =>
     setSettings({ effort: { ...normEffort(settings.effort), [key]: v } });
+  // codex：所選模型宣告的推理強度（models 只載目前引擎的清單，故僅 codex 時可得）
+  const codexModelEfforts =
+    settings.engine === "codex"
+      ? models.find((m) => m.name === settings.chatModel)?.efforts
+      : null;
+  const effortOptionsFor = (key, fallback) =>
+    key === "codex" && codexModelEfforts?.length ? codexModelEfforts : fallback;
 
   // 圖片儲存位置（伺服器端設定）
   const [storage, setStorageState] = useState(null);
@@ -162,26 +171,35 @@ export default function SettingsModal({ onClose }) {
               onChange={(v) => setSettings({ think: v })}
               hint={t("showThinkingHint")}
             />
+            <Toggle
+              label={t("sendGenInfo")}
+              checked={settings.sendGenInfo !== false}
+              onChange={(v) => setSettings({ sendGenInfo: v })}
+              hint={t("sendGenInfoHint")}
+            />
             <Field label={t("effortLabel")}>
               <div className="space-y-2">
-                {EFFORT_ENGINES.map(({ key, label, options }) => (
-                  <div key={key} className="flex items-center gap-3">
-                    <span className="w-32 shrink-0 text-sm text-gray-300">
-                      {label}
-                    </span>
-                    <select
-                      value={options.includes(eff[key]) ? eff[key] : "medium"}
-                      onChange={(e) => setEffortFor(key, e.target.value)}
-                      className="flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-sm outline-none focus:border-ink-500"
-                    >
-                      {options.map((lvl) => (
-                        <option key={lvl} value={lvl}>
-                          {lvl}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
+                {EFFORT_ENGINES.map(({ key, label, options }) => {
+                  const opts = effortOptionsFor(key, options);
+                  return (
+                    <div key={key} className="flex items-center gap-3">
+                      <span className="w-32 shrink-0 text-sm text-gray-300">
+                        {label}
+                      </span>
+                      <select
+                        value={opts.includes(eff[key]) ? eff[key] : "medium"}
+                        onChange={(e) => setEffortFor(key, e.target.value)}
+                        className="flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-sm outline-none focus:border-ink-500"
+                      >
+                        {opts.map((lvl) => (
+                          <option key={lvl} value={lvl}>
+                            {lvl}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
               </div>
               <p className="text-xs text-gray-500">
                 {t("effortHint")} {t("effortHintOss")}

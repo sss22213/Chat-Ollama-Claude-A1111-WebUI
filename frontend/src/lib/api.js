@@ -11,7 +11,7 @@ export async function fetchEngines() {
     const r = await fetch("/api/engines");
     return await r.json();
   } catch {
-    return { ollama: true, claude_cli: false };
+    return { ollama: true, claude_cli: false, codex: false };
   }
 }
 

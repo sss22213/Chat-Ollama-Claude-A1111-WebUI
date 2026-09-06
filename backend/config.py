@@ -2,6 +2,15 @@
 import os
 from pathlib import Path
 
+# 本機開發（run.sh）也讀專案根目錄的 .env，行為與 docker compose 一致；
+# 已存在的環境變數優先（load_dotenv 預設不覆寫）。
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:  # 未安裝 python-dotenv 時照常運作（docker 由 compose 注入環境變數）
+    pass
+
 # 服務位址（docker 已對外發佈到主機）
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 A1111_URL = os.getenv("A1111_URL", "http://localhost:7860").rstrip("/")
@@ -39,13 +48,18 @@ CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
 CLAUDE_TIMEOUT = float(os.getenv("CLAUDE_TIMEOUT", "300"))
 # 額外傳給 claude 的旗標（空白分隔），需要時可加 --effort low 之類。
 CLAUDE_EXTRA_ARGS = os.getenv("CLAUDE_EXTRA_ARGS", "").split()
-# 下拉可選的 Claude 模型別名（context window 都是 200k）。
+# 下拉可選的 Claude 模型。可填別名（由 CLI 解析成該系列最新版：
+# sonnet→Sonnet 5、opus→Opus 5、fable→Fable 5.1、haiku→Haiku 4.5）或完整 ID
+# （claude-opus-4-8、claude-sonnet-4-6 …）；200K 模型可加 "[1m]" 後綴開 1M 視窗。
+# 各模型的顯示名稱與 context 見 claude_client.MODEL_CATALOG。
 CLAUDE_MODELS = [
     m.strip()
-    for m in os.getenv("CLAUDE_MODELS", "sonnet,opus,haiku").split(",")
+    for m in (os.getenv("CLAUDE_MODELS") or "sonnet,opus,fable,haiku").split(",")
     if m.strip()
 ]
-CLAUDE_CONTEXT_LENGTH = int(os.getenv("CLAUDE_CONTEXT_LENGTH", "200000"))
+# context 視窗：0（預設）＝依模型目錄（Fable/Opus 5/Opus 4.7+/Sonnet 5 為 1M，
+# Opus 4.6/Sonnet 4.6/Haiku 4.5 為 200K）；設正整數則所有 Claude 模型一律用該值。
+CLAUDE_CONTEXT_LENGTH = int(os.getenv("CLAUDE_CONTEXT_LENGTH", "0"))
 
 # ---- OpenAI Codex CLI 引擎 ----
 # 後端可選用本地已登入的 `codex`（OpenAI Codex CLI）當 AI 引擎。
@@ -54,10 +68,14 @@ CLAUDE_CONTEXT_LENGTH = int(os.getenv("CLAUDE_CONTEXT_LENGTH", "200000"))
 CODEX_BIN = os.getenv("CODEX_BIN", "")  # 空字串=自動解析（PATH 或 ~/.codex/packages）
 CODEX_TIMEOUT = float(os.getenv("CODEX_TIMEOUT", "300"))
 CODEX_EXTRA_ARGS = os.getenv("CODEX_EXTRA_ARGS", "").split()
-# 平常會自動讀 ~/.codex/models_cache.json；這裡只是「cache 也讀不到」時的最終後備。
+# 平常會自動讀 ~/.codex/models_cache.json；這裡只是「cache 也讀不到」時的最終後備
+# （對應 2026-09 的 codex 模型目錄；空字串視同未設定）。
 CODEX_MODELS = [
     m.strip()
-    for m in os.getenv("CODEX_MODELS", "gpt-5.5").split(",")
+    for m in (
+        os.getenv("CODEX_MODELS")
+        or "gpt-6-astra,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4-mini"
+    ).split(",")
     if m.strip()
 ]
 CODEX_CONTEXT_LENGTH = int(os.getenv("CODEX_CONTEXT_LENGTH", "272000"))
@@ -76,6 +94,16 @@ PROMPT_HISTORY_DIR = os.getenv("PROMPT_HISTORY_DIR", "").strip()
 SKILLS_DIR = Path(os.getenv("SKILLS_DIR", Path(__file__).parent / "skills"))
 # 注入給模型的技能提示詞長度上限（字元）；保護 context 較小的本地模型。
 SKILL_MAX_CHARS = int(os.getenv("SKILL_MAX_CHARS", "8000"))
+
+# ---- 伺服器端目錄瀏覽 / 圖片目錄 白名單 ----
+# /api/browse、/api/browse/mkdir 與圖片儲存位置只能落在這些根目錄之內
+# （冒號分隔，如 PATH）。預設：家目錄與 DATA_DIR。避免後端一旦對外綁定，
+# 整台機器的檔案系統被任意瀏覽或寫入。
+BROWSE_ROOTS = [
+    Path(p).expanduser().resolve()
+    for p in os.getenv("BROWSE_ROOTS", f"{Path.home()}:{DATA_DIR}").split(":")
+    if p.strip()
+]
 
 # CORS 允許來源（Vite dev server）
 CORS_ORIGINS = os.getenv(

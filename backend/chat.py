@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any, AsyncIterator
 
 import a1111_client
@@ -12,11 +13,137 @@ import ollama_client
 import skills_store
 import tools as tools_mod
 import web_tools
-from config import CLAUDE_CONTEXT_LENGTH, CODEX_CONTEXT_LENGTH
+from config import CLAUDE_CONTEXT_LENGTH
 
 MAX_TOOL_ROUNDS = 6  # 防止無限呼叫工具（足夠 搜尋→抓頁→回答 多步）
 POLL_INTERVAL = 0.4  # 進度輪詢秒數
 IMAGE_TOOLS = ("generate_image", "edit_image")
+
+# ---- 「忘記調用工具」三層防護 ----
+# 長對話後模型注意力被稀釋，常把 SD prompt 印成文字而不調用工具。對策：
+# 1) 每回合把提醒接在最後一則 user 訊息尾端（模型對結尾注意力最強）
+# 2) 偵測「使用者要圖但整輪沒生圖」→ 自動補一輪糾正重試（文字不重複輸出）
+# 3) 撿回模型印在文字裡的 tool call 殘骸（qwen 的 <tool_call> / ```json 區塊）
+
+# 生圖意圖偵測（供補救重試判斷；誤判的代價只是多跑一輪安靜的推理）
+_IMAGE_INTENT_RE = re.compile(
+    r"畫[一個張出幅]|[幫替]我畫|畫個|畫成|重畫|生成|產生|生圖|出圖|繪製|"
+    r"[來換再加]一?[張幅]|"
+    r"\bdraw\b|\bpaint\b|\bgenerate\b|\bimage of\b|\bpicture of\b|\billustrat|"
+    r"\bmake (?:an? )?(?:image|picture|pic)\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_image(messages: list[dict[str, Any]]) -> bool:
+    """最後一則 user 訊息是否看起來在要求生成／修改圖片。"""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            return bool(_IMAGE_INTENT_RE.search(m.get("content") or ""))
+    return False
+
+
+def _append_to_last_user(
+    messages: list[dict[str, Any]], text: str
+) -> list[dict[str, Any]]:
+    """複製訊息並把提醒接在最後一則 user 訊息文字尾端。
+
+    不能另開一則訊息：CLI 引擎把「最後一則 user」當本回合輸入（含圖片），
+    多加訊息會把使用者的圖片擠進歷史。"""
+    msgs = [dict(m) for m in messages]
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            m["content"] = (m.get("content") or "") + "\n\n" + text
+            return msgs
+    return msgs
+
+
+_OLLAMA_TAIL_REMINDER = (
+    "(system reminder: If this request needs an image to be created or modified, you "
+    "MUST call the generate_image or edit_image tool — never print prompt tags as "
+    "plain text and never claim you cannot generate images. If no image is needed, "
+    "ignore this reminder and answer normally.)"
+)
+
+_OLLAMA_RETRY_NUDGE = (
+    "(system reminder) Your previous reply did not call any tool, but the user's "
+    "message looks like an image request. If an image is indeed wanted, call the "
+    "generate_image tool NOW (or edit_image for the attached image) with "
+    "comma-separated English danbooru tags. If no image is actually needed, reply "
+    "with an empty message."
+)
+
+# ---- 退化式重複偵測 ----
+# 模型（尤其本地模型）偶爾會陷入無限重複迴圈（例如自己編 negative prompt 時同一串
+# tags 一直循環），燒光 token 也叫不到工具。偵測到就中止這輪串流，讓補救重試接手。
+_DEGEN_CHECK_EVERY = 600  # 每累積這麼多新字元檢查一次
+_DEGEN_MIN_UNIT = 12      # 重複單元最短長度（避免誤殺正常的短字重複）
+_DEGEN_MAX_UNIT = 300
+_DEGEN_MIN_SPAN = 480     # 結尾連續重複區段總長超過此值＝退化
+_DEGEN_NOTE = "\n[偵測到模型輸出陷入重複迴圈，已中止這輪輸出]\n"
+
+
+def _looks_degenerate(text: str) -> bool:
+    """結尾是否以某個片段（12~300 字元）連續重複了至少 4 次、共 480 字元以上。"""
+    tail = text[-2400:]
+    n = len(tail)
+    for p in range(_DEGEN_MIN_UNIT, min(_DEGEN_MAX_UNIT, n // 4) + 1):
+        # 從結尾往回比對週期 p：tail[i] == tail[i+p] 能延伸多長
+        i = n - p - 1
+        while i >= 0 and tail[i] == tail[i + p]:
+            i -= 1
+        span = n - 1 - i
+        if span >= _DEGEN_MIN_SPAN and span >= 4 * p:
+            return True
+    return False
+
+
+class _DegenWatch:
+    """累積 thinking+content 串流，週期性檢查是否陷入重複迴圈。"""
+
+    def __init__(self) -> None:
+        self.buf = ""
+        self.next_check = _DEGEN_CHECK_EVERY
+
+    def feed(self, text: str) -> bool:
+        """回傳 True 表示偵測到退化，呼叫端應中止這輪串流。"""
+        self.buf += text
+        if len(self.buf) < self.next_check:
+            return False
+        self.next_check = len(self.buf) + _DEGEN_CHECK_EVERY
+        return _looks_degenerate(self.buf)
+
+
+# 模型把 tool call 印在文字裡的常見殘骸格式
+_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_SALVAGE_TOOLS = ("generate_image", "edit_image", "web_search", "fetch_url", "read_png_info")
+
+
+def _salvage_tool_calls(text: str) -> list[dict[str, Any]]:
+    """模型沒發出正式 tool call、卻把呼叫 JSON 印在文字裡時，撿回來照常執行。"""
+    calls: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    candidates = _TOOL_CALL_BLOCK_RE.findall(text) + _JSON_FENCE_RE.findall(text)
+    for raw in candidates:
+        try:
+            d = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        if isinstance(d.get("function"), dict):  # 也接受 {"function": {...}} 包一層
+            d = d["function"]
+        name = d.get("name")
+        args = d.get("arguments") or d.get("parameters") or {}
+        if name not in _SALVAGE_TOOLS or not isinstance(args, dict):
+            continue
+        key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        calls.append({"function": {"name": name, "arguments": args}})
+    return calls
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -141,7 +268,7 @@ async def run_chat(
 
     if engine == "claude_cli":
         async for s in _run_cli_engine(
-            claude_client, CLAUDE_CONTEXT_LENGTH,
+            claude_client, _claude_ctx(model),
             model, messages, tools_enabled, image_settings, bool(think), effort
         ):
             yield s
@@ -171,6 +298,9 @@ async def run_chat(
     tool_schema = tool_schema or None
 
     convo = [dict(m) for m in messages]
+    # 防遺忘 1)：把工具提醒接在最後一則 user 訊息尾端
+    if can_tools and tools_enabled:
+        convo = _append_to_last_user(convo, _OLLAMA_TAIL_REMINDER)
     # 非 vision 模型若收到 images 會 500，先剝除（img2img 仍可用 init_image）
     if not await ollama_client.model_supports_vision(model):
         for m in convo:
@@ -179,13 +309,19 @@ async def run_chat(
     try:
         answered = False
         prompt_tokens = 0
-        for _round in range(MAX_TOOL_ROUNDS):
+        image_generated = False  # 本回合是否已（嘗試）生圖
+        nudged = False           # 防遺忘 2) 的補救重試只做一次
+        suppress_text = False    # 補救輪的文字不重複輸出給使用者
+        for _round in range(MAX_TOOL_ROUNDS + 1):  # +1：保留給補救輪
             assistant_content = ""
             tool_calls: list[dict[str, Any]] = []
+            degen = _DegenWatch()
+            degenerated = False
 
-            async for chunk in ollama_client.chat_stream(
+            stream = ollama_client.chat_stream(
                 model, convo, tools=tool_schema, think=ollama_think, num_ctx=num_ctx
-            ):
+            )
+            async for chunk in stream:
                 if chunk.get("error"):
                     yield _sse({"type": "error", "message": str(chunk["error"])})
                     yield _sse({"type": "done"})
@@ -195,16 +331,43 @@ async def run_chat(
                 msg = chunk.get("message") or {}
                 if msg.get("thinking"):
                     yield _sse({"type": "thinking", "delta": msg["thinking"]})
+                    degenerated = degen.feed(msg["thinking"])
                 if msg.get("content"):
                     assistant_content += msg["content"]
-                    yield _sse({"type": "token", "delta": msg["content"]})
+                    if not suppress_text:
+                        yield _sse({"type": "token", "delta": msg["content"]})
+                    degenerated = degenerated or degen.feed(msg["content"])
                 if msg.get("tool_calls"):
                     tool_calls.extend(msg["tool_calls"])
+                if degenerated:
+                    # 中止這輪串流（斷線後 ollama 會停止生成）；補救重試接手
+                    yield _sse({"type": "thinking", "delta": _DEGEN_NOTE})
+                    break
+            if degenerated:
+                await stream.aclose()  # 確實斷線，讓 ollama 停止生成
+
+            # 防遺忘 3)：沒有正式 tool call 時，撿模型印在文字裡的呼叫殘骸
+            if not tool_calls and can_tools and tools_enabled and assistant_content:
+                tool_calls = _salvage_tool_calls(assistant_content)
 
             if not tool_calls:
+                # 防遺忘 2)：使用者明顯要圖卻整輪沒生圖 → 補一輪糾正重試
+                if (
+                    can_tools
+                    and tools_enabled
+                    and not image_generated
+                    and not nudged
+                    and _wants_image(messages)
+                ):
+                    nudged = True
+                    suppress_text = True
+                    convo.append({"role": "assistant", "content": assistant_content})
+                    convo.append({"role": "user", "content": _OLLAMA_RETRY_NUDGE})
+                    continue
                 answered = True
                 break
 
+            suppress_text = False  # 有正常動作了，之後的文字照常輸出
             convo.append(
                 {
                     "role": "assistant",
@@ -222,6 +385,8 @@ async def run_chat(
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = {}
+                if name in IMAGE_TOOLS:
+                    image_generated = True
 
                 async for content in _run_tool(
                     name, args, image_settings, init_image, png_source
@@ -347,12 +512,15 @@ def _directive_system(
         "your reply (the app intercepts it, runs Stable Diffusion / A1111, and "
         "replaces it with the rendered image):",
         '[[GENIMG]]{"prompt": "comma, separated, english, danbooru, tags", '
-        '"negative_prompt": "optional", "width": 1024, "height": 1024}[[/GENIMG]]',
+        '"width": 1024, "height": 1024}[[/GENIMG]]',
         "So whenever the user asks you to draw / paint / create / generate / show "
         "an image, you MUST output that marker. Rules: the prompt MUST be "
         "comma-separated English tags (these are SDXL / Pony / Illustrious anime "
         "models, not full sentences). width/height optional (multiples of 64). Do "
-        "NOT include steps/sampler/seed/cfg — the app controls those.",
+        "NOT include steps/sampler/seed/cfg — the app controls those. USUALLY OMIT "
+        "'negative_prompt' — the app already applies a curated negative prompt; "
+        "only set it for user-requested specifics, AT MOST 15 short tags, never "
+        "repeat a tag.",
         "Write one short natural sentence first, THEN the marker on its own line. "
         "Never explain the marker, never wrap it in code fences, and never claim "
         "you cannot generate images — emitting the marker IS how you generate them.",
@@ -391,6 +559,23 @@ async def _run_directive(
         yield {"type": "error", "message": f"圖片生成失敗：{e}"}
 
 
+_CLI_TAIL_REMINDER = (
+    "(system reminder: If this request needs an image to be created or modified, you "
+    "MUST emit the [[GENIMG]]{...}[[/GENIMG]] marker — or [[EDITIMG]] for the attached "
+    "image — exactly as instructed in the system prompt. Never print prompt tags "
+    "without the marker. If no image is needed, ignore this reminder and answer "
+    "normally.)"
+)
+
+_CLI_RETRY_PROMPT = (
+    "(system reminder) Your previous reply did not emit the [[GENIMG]] marker even "
+    "though the user asked for an image. If an image is indeed wanted, output ONLY "
+    'the marker now — e.g. [[GENIMG]]{"prompt": "comma, separated, english, tags"}'
+    "[[/GENIMG]] (or [[EDITIMG]] for the attached image) — with no other text. "
+    "If no image is actually needed, reply with the single word: SKIP."
+)
+
+
 async def _run_cli_engine(
     client,
     ctx_len: int,
@@ -406,31 +591,88 @@ async def _run_cli_engine(
     system = _directive_system(messages, tools_enabled, bool(init_image))
     parser = _DirectiveParser()
     prompt_tokens = 0
+    image_done = False  # 本回合是否出現過生圖指令
+    reply_text = ""     # 完整回覆文字（補救重試時當歷史）
+    send_messages = (
+        _append_to_last_user(messages, _CLI_TAIL_REMINDER)  # 防遺忘 1)
+        if tools_enabled
+        else messages
+    )
+
+    degen = _DegenWatch()
 
     try:
-        async for ev in client.chat_stream(model, messages, system, think=think, effort=effort):
-            kind = ev.get("type")
-            if kind == "error":
-                yield _sse({"type": "error", "message": ev["message"]})
-                yield _sse({"type": "done"})
-                return
-            if kind == "usage":
-                prompt_tokens = ev["prompt_tokens"]
-            elif kind == "thinking":
-                yield _sse({"type": "thinking", "delta": ev["delta"]})
-            elif kind == "text":
-                for item in parser.feed(ev["delta"]):
-                    if item[0] == "text":
-                        if item[1]:
-                            yield _sse({"type": "token", "delta": item[1]})
-                    else:
-                        async for out in _run_directive(
-                            item[1], item[2], image_settings, init_image
-                        ):
-                            yield _sse(out)
+        stream = client.chat_stream(
+            model, send_messages, system, think=think, effort=effort
+        )
+        try:
+            async for ev in stream:
+                kind = ev.get("type")
+                if kind == "error":
+                    yield _sse({"type": "error", "message": ev["message"]})
+                    yield _sse({"type": "done"})
+                    return
+                degenerated = False
+                if kind == "usage":
+                    prompt_tokens = ev["prompt_tokens"]
+                elif kind == "thinking":
+                    yield _sse({"type": "thinking", "delta": ev["delta"]})
+                    degenerated = degen.feed(ev["delta"])
+                elif kind == "text":
+                    degenerated = degen.feed(ev["delta"])
+                    for item in parser.feed(ev["delta"]):
+                        if item[0] == "text":
+                            if item[1]:
+                                reply_text += item[1]
+                                yield _sse({"type": "token", "delta": item[1]})
+                        else:
+                            image_done = True
+                            async for out in _run_directive(
+                                item[1], item[2], image_settings, init_image
+                            ):
+                                yield _sse(out)
+                if degenerated:
+                    # 模型陷入重複迴圈：中止串流（client 端會 kill 子行程），
+                    # 讓下面的補救重試接手
+                    yield _sse({"type": "thinking", "delta": _DEGEN_NOTE})
+                    break
+        finally:
+            await stream.aclose()
         for item in parser.flush():
             if item[1]:
+                reply_text += item[1]
                 yield _sse({"type": "token", "delta": item[1]})
+
+        # 防遺忘 2)：使用者明顯要圖卻沒出現指令 → 補跑一次，只取指令、不重複輸出文字
+        if tools_enabled and not image_done and _wants_image(messages):
+            retry_messages = [
+                *messages,
+                {"role": "assistant", "content": reply_text},
+                {"role": "user", "content": _CLI_RETRY_PROMPT},
+            ]
+            retry_parser = _DirectiveParser()
+            retry_degen = _DegenWatch()
+            try:
+                retry_stream = client.chat_stream(
+                    model, retry_messages, system, think=False, effort=effort
+                )
+                try:
+                    async for ev in retry_stream:
+                        if ev.get("type") != "text":
+                            continue  # 補救輪只關心生圖指令；錯誤/思考/用量都忽略
+                        if retry_degen.feed(ev["delta"]):
+                            break  # 補救輪也退化：直接放棄，別等到逾時
+                        for item in retry_parser.feed(ev["delta"]):
+                            if item[0] == "directive":
+                                async for out in _run_directive(
+                                    item[1], item[2], image_settings, init_image
+                                ):
+                                    yield _sse(out)
+                finally:
+                    await retry_stream.aclose()
+            except Exception:
+                pass  # 補救是盡力而為，失敗不影響已送出的回覆
+
         if prompt_tokens:
             yield _sse(
                 {
@@ -473,6 +715,39 @@ def _codex_image_instructions(has_init_image: bool) -> str:
     return s
 
 
+_CODEX_TAIL_REMINDER = (
+    "(system reminder: if this request asks for an image to be created or modified, "
+    "fill 'image_prompt' with comma-separated English danbooru tags — do not leave it "
+    "empty and do not print the tags in 'reply'. If no image is needed, leave "
+    "'image_prompt' empty and ignore this reminder.)"
+)
+
+_CODEX_RETRY_PROMPT = (
+    "(system reminder) Your previous reply left 'image_prompt' empty even though the "
+    "user asked for an image. Respond again: if an image is indeed wanted, put the "
+    "comma-separated English danbooru tags in 'image_prompt' now and keep 'reply' to "
+    "one short sentence. If no image is actually needed, leave 'image_prompt' empty."
+)
+
+
+def _claude_ctx(model: str) -> int:
+    """該 claude 模型的 context 長度（測試會用假 client 替換模組，故要能後備）。"""
+    try:
+        return claude_client.context_length_for(model)
+    except AttributeError:
+        return CLAUDE_CONTEXT_LENGTH or 200_000
+
+
+def _codex_ctx(model: str) -> int:
+    """該 codex 模型的 context 長度（測試會用假 client 替換模組，故要能後備）。"""
+    try:
+        return codex_client.context_length_for(model)
+    except Exception:
+        from config import CODEX_CONTEXT_LENGTH
+
+        return CODEX_CONTEXT_LENGTH
+
+
 async def _run_codex(
     model: str,
     messages: list[dict[str, Any]],
@@ -486,41 +761,90 @@ async def _run_codex(
     system = _base_system(messages)
     if use_schema:
         system += _codex_image_instructions(bool(init_image))
+    send_messages = (
+        _append_to_last_user(messages, _CODEX_TAIL_REMINDER)  # 防遺忘 1)
+        if use_schema
+        else messages
+    )
 
     prompt_tokens = 0
+    image_done = False  # 本回合是否有生圖請求
+    reply_text = ""     # 完整回覆文字（補救重試時當歷史）
+    degen = _DegenWatch()
     try:
-        async for ev in codex_client.chat_stream(
+        stream = codex_client.chat_stream(
             model,
-            messages,
+            send_messages,
             system,
             think=think,
             use_schema=use_schema,
             has_init_image=bool(init_image),
             effort=effort,
-        ):
-            kind = ev.get("type")
-            if kind == "error":
-                yield _sse({"type": "error", "message": ev["message"]})
-                yield _sse({"type": "done"})
-                return
-            if kind == "usage":
-                prompt_tokens = ev["prompt_tokens"]
-            elif kind == "thinking":
-                yield _sse({"type": "thinking", "delta": ev["delta"]})
-            elif kind == "text":
-                if ev.get("delta"):
-                    yield _sse({"type": "token", "delta": ev["delta"]})
-            elif kind == "image_request":
-                async for out in _run_directive(
-                    ev["name"], json.dumps(ev["args"]), image_settings, init_image
+        )
+        try:
+            async for ev in stream:
+                kind = ev.get("type")
+                if kind == "error":
+                    yield _sse({"type": "error", "message": ev["message"]})
+                    yield _sse({"type": "done"})
+                    return
+                degenerated = False
+                if kind == "usage":
+                    prompt_tokens = ev["prompt_tokens"]
+                elif kind == "thinking":
+                    yield _sse({"type": "thinking", "delta": ev["delta"]})
+                    degenerated = degen.feed(ev["delta"])
+                elif kind == "text":
+                    if ev.get("delta"):
+                        reply_text += ev["delta"]
+                        yield _sse({"type": "token", "delta": ev["delta"]})
+                        degenerated = degen.feed(ev["delta"])
+                elif kind == "image_request":
+                    image_done = True
+                    async for out in _run_directive(
+                        ev["name"], json.dumps(ev["args"]), image_settings, init_image
+                    ):
+                        yield _sse(out)
+                if degenerated:
+                    # 模型陷入重複迴圈：中止串流（client 端會 kill codex 子行程），
+                    # 讓下面的補救重試接手
+                    yield _sse({"type": "thinking", "delta": _DEGEN_NOTE})
+                    break
+        finally:
+            await stream.aclose()
+
+        # 防遺忘 2)：使用者明顯要圖但 image_prompt 空白 → 補跑一次，只取生圖請求
+        if use_schema and not image_done and _wants_image(messages):
+            retry_messages = [
+                *messages,
+                {"role": "assistant", "content": reply_text},
+                {"role": "user", "content": _CODEX_RETRY_PROMPT},
+            ]
+            try:
+                async for ev in codex_client.chat_stream(
+                    model,
+                    retry_messages,
+                    system,
+                    think=False,
+                    use_schema=True,
+                    has_init_image=bool(init_image),
+                    effort=effort,
                 ):
-                    yield _sse(out)
+                    if ev.get("type") != "image_request":
+                        continue  # 補救輪只關心生圖請求；文字/錯誤/用量都忽略
+                    async for out in _run_directive(
+                        ev["name"], json.dumps(ev["args"]), image_settings, init_image
+                    ):
+                        yield _sse(out)
+            except Exception:
+                pass  # 補救是盡力而為，失敗不影響已送出的回覆
+
         if prompt_tokens:
             yield _sse(
                 {
                     "type": "usage",
                     "prompt_tokens": prompt_tokens,
-                    "num_ctx": CODEX_CONTEXT_LENGTH,
+                    "num_ctx": _codex_ctx(model),
                 }
             )
         yield _sse({"type": "done"})

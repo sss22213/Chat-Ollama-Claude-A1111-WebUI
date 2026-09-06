@@ -101,6 +101,10 @@ export default function TopBar({
                 (m.supports_vision ? "👁" : "") +
                 (m.supports_tools || m.supports_vision ? " " : "")}
               {m.name}
+              {/* 後端給的顯示名稱（例如 Claude 別名 opus → Opus 5）；與 name 相同時不重複 */}
+              {m.label && m.label.toLowerCase() !== m.name.toLowerCase()
+                ? ` · ${m.label}`
+                : ""}
             </option>
           ))}
         </select>
