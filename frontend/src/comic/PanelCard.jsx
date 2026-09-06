@@ -176,6 +176,20 @@ export default function PanelCard({ panel, index }) {
           className={`${inputCls} resize-y font-mono`}
         />
 
+        {/* 表情：獨立欄位，出圖時加權放在畫風之後，才不會被角色固定 tag / LoRA 壓過 */}
+        <div className="flex items-center gap-1.5">
+          <span className="shrink-0 text-[11px] text-gray-500">
+            {ct("expressionLabel")}
+          </span>
+          <input
+            value={panel.expression || ""}
+            onChange={(e) => setPanel(panel.id, { expression: e.target.value })}
+            placeholder={ct("expressionPh")}
+            title={ct("expressionHint")}
+            className={`${inputCls} font-mono`}
+          />
+        </div>
+
         {/* 出場角色 */}
         {namedCast.length > 0 && (
           <div className="flex flex-wrap gap-1">

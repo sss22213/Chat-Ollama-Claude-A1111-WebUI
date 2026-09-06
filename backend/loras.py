@@ -7,7 +7,9 @@
   - name    : 丟給 <lora:NAME:1> 的名稱（A1111 的 loras 名稱，可能含子資料夾）。
   - alias   : 顯示用別名（沒有就用 name）。
   - triggers: 觸發詞清單（依訓練標籤頻率由高到低，已把底線換成空白）。
-  - prompt  : 可直接帶入 / 生圖的字串 = <lora:NAME:1> + 觸發詞（略過太泛用的）。
+  - prompt  : 可直接帶入 / 生圖的字串 = <lora:NAME:1> + 觸發詞（略過太泛用的，
+              以及 blush / smile / open mouth 這類表情標籤——角色 LoRA 的高頻訓練
+              標籤常含這些，固定帶入會把每張圖的表情釘死；見 expression_tags）。
 
 快取策略：記憶體內 TTL 快取（LoRA 清單變動不頻繁），避免每次按鍵都打 A1111；
 設定頁換了 A1111 位址、或使用者新增了 LoRA，可用 refresh() 強制重抓。
@@ -24,6 +26,7 @@ from typing import Any
 
 import a1111_client
 from config import DATA_DIR
+from expression_tags import is_expression_tag
 
 _CACHE_TTL = 60  # 秒；此區間內重用快取，避免逐鍵打 A1111
 _TRIGGER_LIMIT = 12  # 每個 LoRA 最多保留幾個觸發詞
@@ -44,6 +47,13 @@ _GENERIC = {
     "1girl", "1boy", "2girls", "solo", "looking at viewer", "simple background",
     "white background", "masterpiece", "best quality", "highres", "absurdres",
 }
+# 表情類的成人向標籤，expression_tags 白名單不列（不給分鏡 LLM 挑），但同樣不該固定帶入
+_EXPRESSION_EXTRA = {"ahegao", "naughty face", "torogao", "aroused"}
+
+
+def _skip_in_prompt(tag: str) -> bool:
+    t = tag.lower()
+    return t in _GENERIC or t in _EXPRESSION_EXTRA or is_expression_tag(t)
 
 
 def _norm(s: str) -> str:
@@ -100,7 +110,7 @@ def _enrich(raw_loras: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         alias = (lo.get("alias") or "").strip() or name
         triggers = _parse_tag_frequency(lo.get("metadata") or {})
-        useful = [t for t in triggers if t.lower() not in _GENERIC]
+        useful = [t for t in triggers if not _skip_in_prompt(t)]
         tag = f"<lora:{name}:1>"
         prompt = ", ".join([tag, *useful]) if useful else tag
         paths[name] = lo.get("path") or ""

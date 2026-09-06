@@ -3,7 +3,9 @@ danbooru 風格的「場景提示詞」＋對白＋旁白，回傳結構化 JSON
 
 出圖本身重用既有的 txt2img（/api/generate-image）；本模組只負責「文字 → 分鏡腳本」。
 角色的固定外觀 tag / LoRA 由前端的「角色卡」維護並在出圖時拼進提示詞，
-所以這裡每格只描述「場景 / 動作 / 構圖 / 表情」與「出場角色名」，不重複角色外觀。
+所以這裡每格只描述「場景 / 動作 / 構圖」與「出場角色名」，不重複角色外觀。
+表情獨立成 expression 欄位（只能從 expression_tags 白名單挑），前端組合提示詞時
+會加權放在畫風之後，才不會被角色固定 tag / LoRA 壓過。
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from typing import Any
 import claude_client
 import codex_client
 import ollama_client
+from expression_tags import EXPRESSION_TAGS, clean_expression, split_scene
 
 # 分鏡格數上限（避免一次要求過多格把 LLM / A1111 拖垮）
 MAX_PANELS = 16
@@ -27,10 +30,19 @@ def _system_prompt() -> str:
         "number of comic panels that flow as a coherent sequence.\n\n"
         "For EACH panel return:\n"
         "- prompt: comma-separated ENGLISH danbooru-style tags describing ONLY this "
-        "panel's scene, camera/shot (e.g. close-up, wide shot, from above), the "
-        "characters' pose / action / expression, and the background. Do NOT restate a "
-        "character's fixed look (hair color, outfit, etc.) — that is added separately. "
-        "Do NOT include quality tags, steps, sampler or seed.\n"
+        "panel's scene: camera/shot (close-up, portrait, upper body, cowboy shot, wide "
+        "shot, from above, from side...), the characters' pose / action / gesture, props, "
+        "and the background. Use real danbooru tags, not sentences. Do NOT put facial "
+        "expressions here — they go in 'expression'. Do NOT restate a character's fixed "
+        "look (hair color, outfit, etc.) — that is added separately. Do NOT include "
+        "quality tags (masterpiece, best quality...), steps, sampler or seed.\n"
+        "- expression: 1-3 comma-separated danbooru tags for the visible character's FACE "
+        "in this panel, chosen ONLY from this list: "
+        + ", ".join(EXPRESSION_TAGS)
+        + ". Combine an emotion with an eye/mouth state when useful (e.g. "
+        "\"scared, wide-eyed, open mouth\"). The expression MUST follow the story beat "
+        "and change between panels — consecutive panels should not all share the same "
+        "face. Use \"\" only if no face is visible.\n"
         "- characters: array of the character NAMES (exactly as given in the cast) that "
         "appear in this panel. Use [] if none.\n"
         "- dialogue: array of {speaker, text} spoken lines for this panel, written in the "
@@ -38,8 +50,11 @@ def _system_prompt() -> str:
         "Use [] if the panel has no dialogue.\n"
         "- caption: optional short narration / caption box text in the user's language "
         "(\"\" if none).\n\n"
+        "Shot selection: when the emotional beat matters, use close-up / portrait / upper "
+        "body so the face is large enough to read; use wide shots only to establish a "
+        "location.\n\n"
         "Return STRICT JSON only, no markdown, no commentary, in exactly this shape:\n"
-        '{"panels": [{"prompt": "...", "characters": ["..."], '
+        '{"panels": [{"prompt": "...", "expression": "...", "characters": ["..."], '
         '"dialogue": [{"speaker": "...", "text": "..."}], "caption": "..."}]}'
     )
 
@@ -124,6 +139,14 @@ def _normalize(obj: dict[str, Any], panel_count: int) -> dict[str, Any]:
         if not isinstance(p, dict):
             continue
         prompt = str(p.get("prompt") or p.get("scene") or "").strip()
+        expression = clean_expression(p.get("expression") or p.get("face") or "")
+        # LLM 若把表情 / 品質詞混進場景（或用了舊版 system 沒有 expression 欄位）：
+        # 表情搬到 expression、品質詞丟掉，場景只留場景。
+        scene_tags, stray = split_scene(prompt)
+        for t in stray:
+            if t not in expression:
+                expression.append(t)
+        prompt = ", ".join(scene_tags)
         chars = p.get("characters") or p.get("cast") or []
         if isinstance(chars, str):
             chars = [c.strip() for c in chars.split(",") if c.strip()]
@@ -143,6 +166,7 @@ def _normalize(obj: dict[str, Any], panel_count: int) -> dict[str, Any]:
         panels.append(
             {
                 "prompt": prompt,
+                "expression": ", ".join(expression[:4]),
                 "characters": chars,
                 "dialogue": dialogue_out,
                 "caption": caption,

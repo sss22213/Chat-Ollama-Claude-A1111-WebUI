@@ -4,6 +4,11 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { generateImage } from "../lib/api";
 import { generateStoryboard } from "../lib/comicApi";
+import { isExpressionTag, splitTags, tagKey } from "../comic/expressionTags";
+
+// 每格「表情」在提示詞裡的強調權重：放在畫風之後、角色固定 tag 之前，
+// 並用 (…:1.2) 加權，否則會被角色卡 20 幾個固定 tag 與 LoRA 壓過去而每格同一張臉。
+const EXPRESSION_WEIGHT = 1.2;
 
 const uid = () =>
   (crypto.randomUUID && crypto.randomUUID()) ||
@@ -29,6 +34,7 @@ const newCharacter = () => ({ id: uid(), name: "", appearance: "", lora: "" });
 const newPanel = (patch = {}) => ({
   id: uid(),
   prompt: "",
+  expression: "", // 該格表情（danbooru tag，逗號分隔）；獨立於場景 prompt
   characters: [],
   bubbles: [],
   image: null, // {url, params, info}
@@ -181,17 +187,47 @@ export const useComic = create(
       },
 
       // ---- 出圖提示詞 / 設定組裝 ----
+      // 順序：畫風 → (表情:1.2) → 角色外觀 / LoRA（濾掉表情類 tag）→ 場景。
+      // 全程依 tag 去重（外觀與 LoRA 觸發詞常重複；場景若又寫了畫風詞也會被吃掉）。
       composePrompt(panel) {
         const { characters, style } = get();
+        const seen = new Set();
+        const take = (tags, { dropExpression = false } = {}) => {
+          const out = [];
+          for (const t of tags) {
+            const key = tagKey(t);
+            if (!key || seen.has(key)) continue;
+            if (dropExpression && isExpressionTag(t)) continue;
+            seen.add(key);
+            out.push(t);
+          }
+          return out;
+        };
+
+        const styleTags = take(splitTags(style));
+        // 表情：expression 欄位 + 場景裡誤寫的表情 tag（舊分鏡格沒有 expression 欄位時仍能加權）
+        const exprTags = take([
+          ...splitTags(panel.expression),
+          ...splitTags(panel.prompt).filter(isExpressionTag),
+        ]);
         const present = (panel.characters || [])
           .map((n) => characters.find((c) => c.name === n))
           .filter(Boolean);
-        const charParts = present.flatMap((c) =>
-          [c.appearance, c.lora].map((s) => (s || "").trim()).filter(Boolean)
+        const charTags = present.flatMap((c) =>
+          take(splitTags(`${c.appearance || ""}, ${c.lora || ""}`), {
+            dropExpression: true,
+          })
         );
-        const parts = [style, ...charParts, panel.prompt]
-          .map((s) => (s || "").trim())
-          .filter(Boolean);
+        const sceneTags = take(splitTags(panel.prompt));
+
+        const parts = [
+          styleTags.join(", "),
+          exprTags.length
+            ? `(${exprTags.join(", ")}:${EXPRESSION_WEIGHT})`
+            : "",
+          charTags.join(", "),
+          sceneTags.join(", "),
+        ].filter(Boolean);
         return parts.join(", ");
       },
 
@@ -272,6 +308,7 @@ export const useComic = create(
           const panels = (data.panels || []).map((p) =>
             newPanel({
               prompt: p.prompt || "",
+              expression: p.expression || "",
               characters: Array.isArray(p.characters) ? p.characters : [],
               bubbles: bubblesFromScript(p.dialogue, p.caption),
             })
