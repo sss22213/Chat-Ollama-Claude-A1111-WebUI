@@ -171,6 +171,8 @@ export const useChat = create(
         toolsEnabled: true,
         webEnabled: false,
         sendGenInfo: true, // 把最近一張生成圖的參數（PNG info）提供給模型
+        autoCompact: false, // 回覆結束後 context 用量達門檻就自動壓縮對話
+        autoCompactAt: 0.8, // 門檻（用量 / num_ctx）
         think: false,
         effort: { ...EFFORT_DEFAULT }, // 推理強度，各引擎獨立
         numCtx: 8192,
@@ -679,6 +681,7 @@ export const useChat = create(
             });
             set({ streaming: false, _abort: null });
             get()._syncConversation(convId); // 保存到後端（跨裝置）
+            get()._maybeAutoCompact();
           },
           (err) => {
             get()._patchMessage(assistantMsg.id, {
@@ -834,6 +837,14 @@ export const useChat = create(
         set({ streaming: false, _abort: null });
       },
 
+      // 自動壓縮：設定開啟且上一輪用量達門檻（預設 80%）就壓縮；compact 本身會擋太短的對話
+      _maybeAutoCompact() {
+        const { settings, usage } = get();
+        if (!settings.autoCompact || !usage?.num_ctx || !usage.prompt_tokens) return;
+        const at = Number(settings.autoCompactAt) || 0.8;
+        if (usage.prompt_tokens / usage.num_ctx >= at) get().compact();
+      },
+
       // 壓縮對話：把較舊訊息摘要成一則，保留最後一組往返，省 context
       async compact() {
         const convo = get().currentConversation();
@@ -847,11 +858,12 @@ export const useChat = create(
 
         set({ compacting: true });
         try {
-          const { summary } = await compactConversation(
+          const { summary, notices } = await compactConversation(
             model,
             payload,
             get().settings.numCtx,
-            get().settings.engine
+            get().settings.engine,
+            get().settings.engine === "ollama" ? !!get().settings.think : undefined
           );
           if (!summary) return;
           const keep = convo.messages.slice(-2); // 保留最後一組往返
@@ -860,6 +872,8 @@ export const useChat = create(
             role: "assistant",
             content: summary,
             compacted: true,
+            // 後端提醒（例如思考沒給出答案、改用不思考產生摘要），顯示在摘要標記旁
+            notices: Array.isArray(notices) && notices.length ? notices : undefined,
             status: "done",
           };
           get()._updateCurrent((c) => ({

@@ -5,44 +5,10 @@ import { useT } from "../i18n";
 import PngInfoModal from "./PngInfoModal";
 import CharacterPicker from "./CharacterPicker";
 import LoraPicker from "./LoraPicker";
+import { fileToDataUrl, readAsDataUrl } from "../lib/image";
 
 // 原圖位元組（不重壓，保留 PNG metadata 給 PNG Info 用）。過大則不保留以省記憶體。
 const MAX_ORIGINAL = 12 * 1024 * 1024; // 12MB
-const fileToDataUrl = (file) =>
-  new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = reject;
-    r.readAsDataURL(file);
-  });
-
-// 讀取圖片並「縮圖＋重壓」後再用，避免大圖（數 MB base64）塞爆記憶體/localStorage。
-// 對 vision 與 img2img 來說，長邊 1536px、JPEG 0.85 已綽綽有餘。
-const readAsDataUrl = (file, maxDim = 1536, quality = 0.85) =>
-  new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-      const w = Math.max(1, Math.round(img.width * scale));
-      const h = Math.max(1, Math.round(img.height * scale));
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-      try {
-        resolve(canvas.toDataURL("image/jpeg", quality));
-      } catch (e) {
-        reject(e);
-      }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("讀取圖片失敗"));
-    };
-    img.src = url;
-  });
 
 export default function Composer() {
   const t = useT();

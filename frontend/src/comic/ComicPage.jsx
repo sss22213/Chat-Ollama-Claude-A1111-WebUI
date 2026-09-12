@@ -1,16 +1,52 @@
-import { useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { GripVertical, X, Plus, MessageSquare } from "lucide-react";
 import { useComic } from "../store/comic";
 import { useCT } from "./comicI18n";
 import { computeLayout } from "./layout";
+import {
+  BUBBLE_STYLES,
+  TAIL_DIRS,
+  bubbleGeometry,
+  bubblePaint,
+  hasTail,
+  styleKey,
+  tailKey,
+} from "./bubbleShape";
 
 const clamp01 = (v) => Math.max(0.04, Math.min(0.96, v));
 
-// 單一氣泡：可拖曳（抓上方握把）、可即時編輯文字。樣式盡量貼近匯出 PNG。
+// 單一氣泡：可拖曳（抓上方握把）、可即時編輯文字、hover 工具列可換樣式與尾巴方向。
+// 外形用 comic/bubbleShape.js 的 SVG path 畫（與匯出 PNG 同一套幾何），
+// 大小由隱藏的鏡像 span 撐出（隨文字自動縮放高度與寬度，最寬不超過 b.w）。
 function PageBubble({ panelId, bubble: b, cellRef }) {
+  const ct = useCT();
   const updateBubble = useComic((s) => s.updateBubble);
   const removeBubble = useComic((s) => s.removeBubble);
   const dragging = useRef(false);
+  const bodyRef = useRef(null);
+  const [box, setBox] = useState({ w: 0, h: 0, fs: 14 });
+
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return undefined;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      const fs = parseFloat(getComputedStyle(el).fontSize) || 14;
+      setBox((o) =>
+        Math.abs(o.w - r.width) < 0.5 && Math.abs(o.h - r.height) < 0.5 && o.fs === fs
+          ? o
+          : { w: r.width, h: r.height, fs }
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
 
   const onPointerDown = (e) => {
     e.stopPropagation();
@@ -39,15 +75,23 @@ function PageBubble({ panelId, bubble: b, cellRef }) {
   };
 
   const isCaption = b.type === "caption";
-  const skin = isCaption
-    ? "rounded-sm border border-stone-700 bg-[#fcf7dc] text-stone-800"
-    : b.type === "thought"
-    ? "rounded-[1.5em] border-2 border-black bg-white text-black"
-    : "rounded-[0.8em] border-2 border-black bg-white text-black";
+  const paint = bubblePaint(b.type, box.fs);
+  const g =
+    box.w > 0
+      ? bubbleGeometry({ style: b.type, w: box.w, h: box.h, fs: box.fs, tail: b.tail })
+      : null;
+  const textStyle = {
+    padding: "0.5em 0.7em",
+    fontWeight: isCaption ? 400 : 600,
+    textAlign: isCaption ? "left" : "center",
+    lineHeight: 1.25,
+  };
+  const selectCls =
+    "h-4 max-w-[5.5rem] rounded border-0 bg-ink-800 px-0.5 text-[10px] leading-none text-gray-200 outline-none";
 
   return (
     <div
-      className="group absolute z-10"
+      className="group absolute z-10 flex justify-center"
       style={{
         left: `${b.x * 100}%`,
         top: `${b.y * 100}%`,
@@ -55,16 +99,50 @@ function PageBubble({ panelId, bubble: b, cellRef }) {
         transform: "translate(-50%, -50%)",
       }}
     >
-      <div className={`relative ${skin}`}>
-        {/* 朝下的對白尾巴 */}
-        {b.type === "speech" && (
-          <div
-            className="absolute left-1/2 h-[0.7em] w-[0.7em] -translate-x-1/2 rotate-45 border-b-2 border-r-2 border-black bg-white"
-            style={{ bottom: "-0.42em" }}
-          />
+      <div
+        ref={bodyRef}
+        className="relative grid max-w-full"
+        style={{
+          fontSize: "clamp(8px, 1.7cqw, 30px)",
+          width: "fit-content",
+          minWidth: "3em",
+          color: paint.text,
+        }}
+      >
+        {g && (
+          <svg
+            className="pointer-events-none absolute left-0 top-0"
+            width={box.w}
+            height={box.h}
+            style={{ overflow: "visible" }}
+            aria-hidden
+          >
+            <path
+              d={g.path}
+              fill={paint.fill}
+              stroke={paint.stroke}
+              strokeWidth={paint.lineWidth}
+              strokeLinejoin={paint.lineJoin}
+              strokeDasharray={g.dash ? g.dash.join(" ") : undefined}
+            />
+            {g.circles.map((c, i) => (
+              <circle
+                key={i}
+                cx={c.x}
+                cy={c.y}
+                r={c.r}
+                fill={paint.fill}
+                stroke={paint.stroke}
+                strokeWidth={paint.lineWidth}
+              />
+            ))}
+          </svg>
         )}
-        {/* 工具列（hover 顯示）：拖曳握把 / 刪除 */}
-        <div className="absolute -top-3 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-md bg-ink-900/90 px-0.5 py-0.5 opacity-0 shadow transition group-hover:opacity-100">
+        {/* 工具列（hover / 編輯中顯示）：拖曳握把 / 樣式 / 尾巴方向 / 刪除 */}
+        <div
+          className="absolute -top-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-md bg-ink-900/90 px-0.5 py-0.5 opacity-0 shadow transition group-hover:opacity-100 group-focus-within:opacity-100"
+          style={{ fontSize: "11px" }}
+        >
           <button
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
@@ -75,26 +153,55 @@ function PageBubble({ panelId, bubble: b, cellRef }) {
           >
             <GripVertical size={12} />
           </button>
+          <select
+            value={b.type}
+            onChange={(e) => updateBubble(panelId, b.id, { type: e.target.value })}
+            title={ct("bubbleStyle")}
+            className={selectCls}
+          >
+            {BUBBLE_STYLES.map((tp) => (
+              <option key={tp} value={tp}>
+                {ct(styleKey(tp))}
+              </option>
+            ))}
+          </select>
+          {hasTail(b.type) && (
+            <select
+              value={b.tail || "down"}
+              onChange={(e) => updateBubble(panelId, b.id, { tail: e.target.value })}
+              title={ct("tailDir")}
+              className={selectCls}
+            >
+              {TAIL_DIRS.map((d) => (
+                <option key={d} value={d}>
+                  {ct(tailKey(d))}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             onClick={() => removeBubble(panelId, b.id)}
             className="rounded p-0.5 text-gray-300 hover:text-red-400"
-            title="✕"
+            title={ct("deleteBubble")}
           >
             <X size={12} />
           </button>
         </div>
+        {/* 鏡像 span 撐出大小；textarea 疊在同一格上 */}
+        <span
+          aria-hidden
+          className="invisible whitespace-pre-wrap break-words [grid-area:1/1]"
+          style={textStyle}
+        >
+          {(b.text || "") + "​"}
+        </span>
         <textarea
           value={b.text}
           onChange={(e) => updateBubble(panelId, b.id, { text: e.target.value })}
           rows={1}
           spellCheck={false}
-          className="block w-full resize-none overflow-hidden border-0 bg-transparent text-center font-semibold leading-tight outline-none"
-          style={{
-            fontSize: "clamp(8px, 1.7cqw, 30px)",
-            padding: "0.5em 0.7em",
-            fontWeight: isCaption ? 400 : 600,
-            textAlign: isCaption ? "left" : "center",
-          }}
+          className="relative block h-full w-full resize-none overflow-hidden border-0 bg-transparent outline-none [grid-area:1/1]"
+          style={{ ...textStyle, fontSize: "1em", color: "inherit" }}
         />
       </div>
     </div>

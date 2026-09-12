@@ -2,6 +2,7 @@
 // 用 <canvas> 重放與「整頁預覽」相同的版面（comic/layout.js），所以輸出與畫面一致。
 // 圖片來自同源 /images，canvas 不會被污染，可正常 toDataURL。
 import { computeLayout } from "./layout";
+import { bubbleGeometry, bubblePaint } from "./bubbleShape";
 
 const FONT_STACK =
   '"Noto Sans CJK TC", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Hiragino Sans", system-ui, sans-serif';
@@ -38,17 +39,6 @@ function drawCover(ctx, img, x, y, w, h) {
   ctx.restore();
 }
 
-function roundRect(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
-}
-
 // 同時支援 CJK（逐字斷行）與拉丁（盡量以空白斷詞）的換行
 function wrapText(ctx, text, maxW) {
   const lines = [];
@@ -76,84 +66,52 @@ function wrapText(ctx, text, maxW) {
 function drawBubble(ctx, b, cx, cy, cw, ch, pageW) {
   const text = (b.text || "").trim();
   if (!text && b.type !== "caption") return;
+  const isCaption = b.type === "caption";
   const fs = Math.max(11, Math.round(pageW * 0.017));
   const pad = Math.round(fs * 0.6);
-  const lineH = Math.round(fs * 1.32);
+  const lineH = Math.round(fs * 1.25);
   const maxTextW = Math.max(40, b.w * cw - pad * 2);
 
-  ctx.font = `${b.type === "caption" ? "" : "600 "}${fs}px ${FONT_STACK}`;
+  ctx.font = `${isCaption ? "" : "600 "}${fs}px ${FONT_STACK}`;
   const lines = wrapText(ctx, text, maxTextW);
   let textW = 0;
   for (const ln of lines) textW = Math.max(textW, ctx.measureText(ln).width);
 
-  const boxW = Math.min(b.w * cw, textW + pad * 2);
+  // 與整頁預覽相同：框寬貼合文字（最寬 b.w），置中於 (x, y)
+  const boxW = Math.max(fs * 3, Math.min(b.w * cw, textW + pad * 2));
   const boxH = lines.length * lineH + pad * 2;
   const centerX = cx + b.x * cw;
   const centerY = cy + b.y * ch;
   const x = centerX - boxW / 2;
   const y = centerY - boxH / 2;
 
-  if (b.type === "caption") {
-    ctx.fillStyle = "rgba(252, 247, 220, 0.95)";
-    ctx.strokeStyle = "#3a3128";
-    ctx.lineWidth = Math.max(1.5, pageW * 0.0016);
-    ctx.fillRect(x, y, boxW, boxH);
-    ctx.strokeRect(x, y, boxW, boxH);
-    ctx.fillStyle = "#2a2622";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    lines.forEach((ln, i) =>
-      ctx.fillText(ln, x + pad, y + pad + lineH * (i + 0.5), boxW - pad * 2)
-    );
-    return;
-  }
-
-  // speech / thought 氣泡
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = "#111111";
-  ctx.lineWidth = Math.max(1.5, pageW * 0.0018);
-  const radius = b.type === "thought" ? boxH / 2 : Math.round(fs * 0.7);
-  roundRect(ctx, x, y, boxW, boxH, radius);
-  ctx.fill();
-  ctx.stroke();
-
-  if (b.type === "speech") {
-    // 朝下的小尾巴
-    const tailW = Math.max(8, fs * 0.6);
-    const ty = y + boxH;
+  // 外形：與 ComicPage 共用 bubbleShape 幾何，樣式 / 尾巴方向所見即所得
+  const g = bubbleGeometry({ style: b.type, w: boxW, h: boxH, fs, tail: b.tail });
+  const paint = bubblePaint(b.type, fs);
+  ctx.save();
+  ctx.translate(x, y);
+  const path = new Path2D(g.path);
+  ctx.fillStyle = paint.fill;
+  ctx.strokeStyle = paint.stroke;
+  ctx.lineWidth = paint.lineWidth;
+  ctx.lineJoin = paint.lineJoin;
+  ctx.fill(path);
+  if (g.dash) ctx.setLineDash(g.dash);
+  ctx.stroke(path);
+  ctx.setLineDash([]);
+  for (const c of g.circles) {
     ctx.beginPath();
-    ctx.moveTo(centerX - tailW / 2, ty - 1);
-    ctx.lineTo(centerX + tailW / 2, ty - 1);
-    ctx.lineTo(centerX - tailW * 0.1, ty + tailW * 1.4);
-    ctx.closePath();
-    ctx.fillStyle = "#ffffff";
-    ctx.fill();
-    ctx.strokeStyle = "#111111";
-    ctx.beginPath();
-    ctx.moveTo(centerX - tailW / 2, ty - 1);
-    ctx.lineTo(centerX - tailW * 0.1, ty + tailW * 1.4);
-    ctx.lineTo(centerX + tailW / 2, ty - 1);
-    ctx.stroke();
-  } else {
-    // thought：底部兩個小泡泡
-    const r1 = fs * 0.32;
-    ctx.beginPath();
-    ctx.arc(centerX - r1, y + boxH + r1 * 0.8, r1, 0, Math.PI * 2);
-    ctx.fillStyle = "#ffffff";
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(centerX - r1 * 2.6, y + boxH + r1 * 2.2, r1 * 0.6, 0, Math.PI * 2);
+    ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
+  ctx.restore();
 
-  ctx.fillStyle = "#111111";
-  ctx.textAlign = "center";
+  ctx.fillStyle = paint.text;
   ctx.textBaseline = "middle";
-  lines.forEach((ln, i) =>
-    ctx.fillText(ln, centerX, y + pad + lineH * (i + 0.5), boxW - pad * 2)
-  );
+  ctx.textAlign = isCaption ? "left" : "center";
+  const tx = isCaption ? x + pad : centerX;
+  lines.forEach((ln, i) => ctx.fillText(ln, tx, y + pad + lineH * (i + 0.5), boxW - pad * 2));
 }
 
 export async function exportComicPng({ panels, layout, settings, title }) {
@@ -222,4 +180,5 @@ export async function exportComicPng({ panels, layout, settings, title }) {
   document.body.appendChild(a);
   a.click();
   a.remove();
+  return dataUrl;
 }

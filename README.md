@@ -30,14 +30,63 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
 - 🎨 **Autonomous image generation** — the model calls `generate_image` (txt2img) →
   A1111 renders → the image is embedded inline (zoom / download / view parameters).
 - 🖼️ **Image upload (vision)** — attach or paste an image and ask a vision model about it.
+- 📖 **Comic Studio** (`#/comic`) — describe a story, let the LLM break it into panels
+  (8–15 scene tags led by subject-count tags, a per-panel **expression** picked from a
+  danbooru whitelist with off-list words mapped to the closest tag, dialogue in the
+  premise's language, captions), regenerate one panel's tags on demand (with an
+  optional direction such as "from above, add rain", and an undo), keep characters consistent
+  with character cards + LoRA, render every panel through A1111, lay them out as a page
+  with draggable speech bubbles, and export a PNG. Bubbles come in six styles (speech,
+  box, shout burst, whisper, thought, caption) with a selectable tail direction (eight
+  directions or none); the page preview and the exported PNG share the same geometry.
+  A **Thinking mode** switch (Ollama) decides whether thinking-capable models reason
+  before writing the storyboard; if a model gets stuck thinking and returns no answer (or the
+  answer is cut off), the request is retried once without thinking and the page shows a
+  notice saying the result was produced without thinking. The same switch exists on the
+  Image Story page, and the chat's conversation summary shows the same notice.
+  Comics are **saved on the server automatically** (title, premise, cards, panels, bubbles,
+  render settings) into `DATA_DIR/comics.db`, with the rendered panels in the image folder;
+  the 📂 **Library** button lists them with thumbnails to reopen, delete or start a new
+  one, and "Export page PNG" also stores the page image in the image folder. The browser's
+  localStorage is only a cache, so container rebuilds, another browser or another device
+  all see the same comics.
+  Each comic also keeps **storyboard versions**: before a new AI storyboard, a script
+  import or a restore, the current panels (rendered images included) are snapshotted; the
+  "Storyboard versions" section in the script panel lists them with previews to restore or
+  delete. Versions live on the server (`comic_versions` table, no limit, identical content
+  stored once); the browser caches only the latest five and fetches older ones on demand.
+  Character cards are matched to the storyboard by name, leniently (case, spaces and
+  suffixes like "Mia (heroine)" are ignored), anyone who speaks in a panel is listed as
+  present, unnamed cards are auto-named before generation, and renaming a card renames its
+  references in the panels.
+  Storyboard replies are parsed leniently (code fences, chatter around the JSON, trailing
+  commas, `<think>` blocks) and a reply that still is not JSON is retried up to three times
+  with a reminder; a reply cut off mid-JSON is reported as truncated with a hint to raise
+  `num_ctx`, lower the panel count or switch thinking off.
+- 🖼️➡️📖 **Image Story** (`#/story`) — upload any number of images and let a vision model
+  write a **short story** or a complete **comic script** (cast with appearance tags, art
+  style, premise, panels) from them; one click opens it in Comic Studio and renders it.
+  A third mode, **Image panels**, treats each uploaded image as one panel (in upload
+  order) and writes a scene note, dialogue and caption for every panel; open it in Comic
+  Studio with the images already in place to position bubbles and export. Panels are
+  handled in two passes — every image is described on its own (one image per request,
+  so a panel can never be matched to the wrong image, even with a dozen of them), then
+  the numbered descriptions are written up as one coherent script.
+  For the story / comic-script modes the page estimates context usage (~2k tokens per
+  image) against the model's window and warns you to drop images or raise `num_ctx`
+  when it won't fit.
+- 📱 **Mobile / tablet friendly** — the chat, Comic Studio and Image Story pages adapt to
+  iPhone / iPad sizes (two-row toolbars, drawer sidebar, single-column layouts, iOS
+  safe-area and input-zoom handling).
 - 🖌️ **img2img redraw** — attach an image and ask the model to restyle/modify it
   (`edit_image`); any generated image also has a "redraw from this" button.
 - 🌐 **Web search** — when enabled, the model can call `web_search` / `fetch_url` to
   look things up and read pages, with clickable sources (DuckDuckGo by default, no key;
   SearXNG optional). *(Ollama engine.)*
 - 🧠 **Context management** — adjustable `num_ctx` (unlock a model's full context), a
-  live **usage meter** (used / limit) in the top bar, and one-click **compact** that
-  summarizes older messages while keeping the latest exchange.
+  live **usage meter** (used / limit) in the top bar, one-click **compact** that
+  summarizes older messages while keeping the latest exchange, and an optional
+  **auto compact** (Settings) that does it for you once usage crosses a threshold.
 - 👁/🔧 The model dropdown marks which models can **see images** (vision) and **use tools**.
 - 📄 **PNG Info (generation parameters)** — read the embedded SD parameters
   (prompt / negative / seed / sampler / size / model) from a generated **or uploaded**
@@ -163,13 +212,34 @@ npm run dev
 11. **Character search:** the 👥 button (composer) opens a searchable list of 20k+ anime
     characters — **insert** one into your prompt or **generate** it directly. See
     [Character search](#character-search-wai--illustrious).
+12. **Comic Studio:** the 📖 button opens `#/comic`. Write a premise, add character cards
+    (fixed appearance tags + optional LoRA; unnamed cards are auto-named), optionally tick
+    **Thinking mode** for thinking-capable Ollama models, press **AI storyboard** to get
+    panels with scene tags, a per-panel **Face** (expression) field, dialogue and captions,
+    then **Generate all**. Each panel has **Regenerate tags** (type a direction such as
+    "from above, add rain", Enter; **Undo** brings the previous tags back). Switch to page
+    view to drag bubbles around, hover one to change its style and tail direction (also
+    editable per bubble in the storyboard cards), and export a PNG. Everything is saved
+    to the server as you work: 📂 **Library** reopens earlier comics, and **Storyboard
+    versions** (script panel) keeps every storyboard that was replaced, with preview and
+    restore.
+13. **Image Story:** the 🖼️ button opens `#/story`. Upload / paste as many images as you
+    like (the page shows an estimated token count against the context window), pick
+    **Story**, **Comic script** or **Image panels** (your images are the panels; reorder
+    them with ◀ ▶), optionally add direction ("heartwarming, twist ending"),
+    and press **Generate**. A story can be sent to Comic Studio as the premise; a comic
+    script can be opened there directly — **Open & render all** imports the cast and
+    panels and starts rendering. Needs a vision-capable model (👁 in the dropdown).
 
 > **Keyboard:** **Shift + Enter** sends a message; **Enter** inserts a newline. (This keeps
 > Enter from sending mid-composition when typing with an IME.)
 
 > **Storage location in Docker mode:** the picker browses the **backend container's**
-> filesystem. By default images go to the bind-mounted `backend/data/images`. To store
-> them elsewhere persistently, mount another volume into the container and select it.
+> filesystem. By default images go to the bind-mounted `backend/data/images` (stored in
+> `app_settings.json` as an empty `image_dir`, so the same settings file works for the
+> container and for a backend started on the host). To store them elsewhere persistently,
+> mount another volume into the container and select it; a folder outside a mounted
+> volume lives only inside the container and is lost when it is rebuilt.
 
 > **vision vs img2img:** with an attached image the model can both *see* it (if it
 > supports vision) and *redraw* it (img2img) — it decides based on what you ask.
@@ -360,14 +430,22 @@ their `images` stripped automatically.
 | Path | Description |
 |------|-------------|
 | `backend/main.py` | FastAPI routes, SSE, static images, engine selection |
+| `backend/errors.py` | turns httpx/engine exceptions into readable error messages (which host timed out, HTTP status + body) |
 | `backend/chat.py` | agentic tool loop + Claude directive parser |
 | `backend/tools.py` | tool schemas: `generate_image` / `edit_image` / `read_png_info` / `web_search` / `fetch_url` |
-| `backend/ollama_client.py` | Ollama engine (chat stream, models, capabilities, context length) |
+| `backend/ollama_client.py` | Ollama engine (chat stream, models, capabilities, context length, thinking switch with automatic no-thinking retry + user notices) |
 | `backend/claude_client.py` | Claude CLI engine (subprocess `claude -p` stream-json; images via directives) |
 | `backend/codex_client.py` | OpenAI Codex CLI engine (subprocess `codex exec --json`; chat + vision via `-i`) |
+| `backend/comics_store.py` | Comic projects + storyboard versions persisted in SQLite (`DATA_DIR/comics.db`) for the Comic Studio library |
+| `backend/comic.py` | Comic storyboard: premise + cast → panels (scene tags, expression, dialogue, caption) as strict JSON; lenient JSON parsing with retries; per-panel tag regeneration; character-name matching |
+| `backend/story.py` | Image Story: uploaded image(s) → short story, a full comic script (cast, style, premise, panels), or per-image panel text (describe each image, then write the script) |
+| `backend/expression_tags.py` | danbooru expression-tag whitelist (+ synonym map for off-list words) shared by the storyboard prompt and the LoRA trigger filter |
+| `frontend/src/comic/` | Comic Studio page (script panel, character cards, panel cards, page layout, PNG export, library modal, storyboard versions); `bubbleShape.js` = bubble geometry shared by the page preview and the PNG export, `names.js` = lenient character-name matching, `notices.js` = backend notice texts |
+| `frontend/src/store/comic.js` | Comic Studio state: storyboard, cards, panels, bubbles, autosave to the server, versions cache, per-panel tag regeneration |
+| `frontend/src/story/` | Image Story page (upload, mode/options, result view, hand-off to Comic Studio); state in `frontend/src/store/story.js`, API in `frontend/src/lib/storyApi.js`, client-side downscaling in `frontend/src/lib/image.js` |
 | `backend/a1111_client.py` | A1111: txt2img / img2img / progress / models / samplers / png-info |
 | `backend/web_tools.py` | web search (DuckDuckGo/SearXNG) + page extraction (with SSRF guard) |
-| `backend/settings_store.py` | persisted settings: image dir + service sources + web provider + prompt-history dir |
+| `backend/settings_store.py` | persisted settings: image dir (default stored as empty so the host and the container resolve their own path) + service sources + web provider + prompt-history dir |
 | `backend/prompt_history_store.py` | reads the `sd-webui-prompt-history` extension's `data.json` + thumbnails (cached, paginated, searchable) |
 | `backend/booru_characters.py` | character keyword search (Drawing Spells + danbooru + seed; fuzzy/alias matching) |
 | `backend/docker_probe.py` | best-effort container listing via the docker socket |

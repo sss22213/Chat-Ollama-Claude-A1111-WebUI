@@ -65,6 +65,76 @@ _SYNONYMS: dict[str, str] = {
     "exhausted": "tired", "drowsy": "sleepy", "eyes closed": "closed eyes",
     "seductive": "seductive smile", "flirty": "seductive smile",
     "^ ^": "^_^", "spiral pupils": "@_@",
+    # 分鏡 LLM 常用、但不在清單裡的情緒詞 → 最接近的正規 tag（實測 qwen3.5 系列會寫這些）
+    "focused": "serious", "focus": "serious", "concentrating": "serious",
+    "concentrated": "serious", "intense": "serious", "intent": "serious", "stern": "serious",
+    "grave": "serious", "solemn": "serious",
+    "relieved": "light smile", "relief": "light smile", "reassured": "light smile",
+    "content": "light smile", "contented": "light smile", "satisfied": "light smile",
+    "gentle smile": "light smile", "soft smile": "light smile", "faint smile": "light smile",
+    "small smile": "light smile", "slight smile": "light smile", "warm smile": "smile",
+    "kind smile": "smile", "bright smile": "grin", "big smile": "grin", "wide smile": "grin",
+    "beaming": "grin", "cheerful": "happy", "joyful": "happy", "delighted": "happy",
+    "glad": "happy", "pleased": "happy", "overjoyed": "excited", "thrilled": "excited",
+    "eager": "excited", "enthusiastic": "excited",
+    "peaceful": "closed eyes", "serene": "closed eyes", "relaxed": "closed eyes",
+    "tranquil": "closed eyes", "resting": "closed eyes", "asleep": "closed eyes",
+    "sleeping": "closed eyes",
+    "touched": "sad smile", "moved": "sad smile", "bittersweet": "sad smile",
+    "nostalgic": "sad smile", "wistful": "sad smile", "grateful": "sad smile",
+    "amazed": "surprised", "amazement": "surprised", "surprise": "surprised",
+    "shock": "shocked", "in shock": "shocked", "disbelief": "shocked", "speechless": "shocked",
+    "flabbergasted": "shocked", "dumbfounded": "shocked",
+    "puzzled": "confused", "perplexed": "confused", "baffled": "confused",
+    "bewildered": "confused", "confusion": "confused", "curious": "head tilt",
+    "pensive": "thinking", "contemplative": "thinking", "pondering": "thinking",
+    "thoughtful": "thinking", "wondering": "thinking",
+    "melancholic": "sad", "melancholy": "sad", "gloomy": "sad", "depressed": "sad",
+    "sorrowful": "sad", "sorrow": "sad", "unhappy": "sad", "upset": "sad",
+    "disappointed": "frown", "displeased": "frown", "grumpy": "frown", "sulking": "pout",
+    "sulky": "pout", "heartbroken": "crying", "weeping": "crying", "sobbing loudly": "sobbing",
+    "terror": "terrified", "horror": "horrified", "dread": "scared", "alarmed": "scared",
+    "worried face": "worried", "apprehensive": "worried", "hesitant": "nervous",
+    "awkward": "nervous", "nervous smile": "nervous", "sheepish": "embarrassed",
+    "ashamed": "embarrassed", "bashful": "shy", "timid": "shy", "coy": "shy",
+    "flushed": "blush", "red face": "blush", "red cheeks": "blush",
+    "mad": "angry", "anger": "angry", "irritated": "annoyed", "frustrated": "annoyed",
+    "exasperated": "annoyed", "impatient": "annoyed", "enraged": "furious", "rage": "furious",
+    "livid": "furious", "hostile": "glaring", "glare": "glaring", "menacing": "glaring",
+    "fierce": "determined", "resolute": "determined", "brave": "determined",
+    "confident": "smug", "proud": "smug", "triumphant": "smug", "cocky": "smug",
+    "playful": "grin", "mischievous": "smirk", "teasing": "smirk", "sly": "smirk",
+    "cunning": "smirk", "amused": "smirk",
+    "weary": "tired", "fatigued": "tired", "sleepy face": "sleepy", "yawning": "sleepy",
+    "faint": "dazed", "lightheaded": "dazed", "dizzy face": "dazed",
+    "hurt": "pain", "in pain": "pain", "agony": "pain", "suffering": "pain",
+    "disgusted": "disgust", "revulsion": "disgust", "envious": "jealous", "envy": "jealous",
+    "deadpan": "expressionless", "emotionless": "expressionless", "indifferent": "expressionless",
+    "neutral face": "expressionless", "poker face": "expressionless",
+    "screaming face": "screaming", "yelling": "shouting", "shout": "shouting",
+    "gasp": "gasping", "breathless": "panting", "out of breath": "panting",
+    "eyes wide": "wide-eyed", "eyes wide open": "wide-eyed", "big eyes": "wide-eyed",
+    "eyes narrowed": "narrowed eyes", "squint": "squinting", "eyes half closed": "half-closed eyes",
+    "half closed eyes": "half-closed eyes", "eyes shut": "closed eyes", "closed eye": "closed eyes",
+    "one eye open": "one eye closed", "winking": "wink",
+    "mouth closed": "closed mouth", "lips pressed": "closed mouth", "tight-lipped": "closed mouth",
+    "open mouth wide": "open mouth", "mouth wide open": "open mouth", "gaping": "open mouth",
+    "toothy grin": "grin", "showing teeth": "teeth", "sticking tongue out": "tongue out",
+    "looking forward": "looking at viewer", "looking ahead": "looking at viewer",
+    "looking at camera": "looking at viewer", "looking straight": "looking at viewer",
+    "staring": "looking at viewer", "stare": "looking at viewer", "facing viewer": "looking at viewer",
+    "looking sideways": "looking to the side", "side glance": "sideways glance",
+    "glance": "sideways glance", "glancing": "sideways glance", "looking aside": "looking away",
+    "averting eyes": "looking away", "avoiding eye contact": "looking away",
+    "looking over shoulder": "looking back", "looking behind": "looking back",
+    "looking at each other": "eye contact", "looking at other": "looking at another",
+    "looking at him": "looking at another", "looking at her": "looking at another",
+    "gazing": "looking at another", "gazing down": "looking down", "downcast": "looking down",
+    "looking upward": "looking up", "looking to the sky": "looking up",
+    "tilted head": "head tilt", "tilting head": "head tilt",
+    "looking around": "looking to the side", "glancing around": "looking to the side",
+    "talking": "open mouth", "speaking": "open mouth", "chatting": "open mouth",
+    "straining": "clenched teeth", "strained": "clenched teeth", "gritting teeth": "clenched teeth",
 }
 
 # 品質 / 分數詞：不該出現在每格的場景 prompt（畫風欄已經有）
@@ -76,7 +146,7 @@ _SCORE_RE = re.compile(r"^score_\d(_up)?$")
 
 # 含底線的表情符號 tag 不做「底線→空白」
 _EMOTICONS = {"@_@", "o_o", ">_<", "^_^", "0_0", "-_-", "._.", ";_;", "t_t", "x_x", "+_+"}
-_SUFFIX_RE = re.compile(r"\s+(expression|look|expressions)$")
+_SUFFIX_RE = re.compile(r"\s+(expression|expressions|look|face|gaze|eyes)$")
 
 _SET = set(EXPRESSION_TAGS)
 
@@ -88,8 +158,13 @@ def normalize_tag(tag: str) -> str:
         return ""
     if t not in _EMOTICONS:
         t = " ".join(t.replace("_", " ").split())
+    if t in _SET:
+        return t
     t = _SYNONYMS.get(t, t)
-    t2 = _SUFFIX_RE.sub("", t)  # "worried expression" → "worried"
+    if t in _SET:
+        return t
+    # "worried expression" / "angry face" → "worried" / "angry"；去掉字尾後再對一次同義表
+    t2 = _SUFFIX_RE.sub("", t)
     if t2 != t:
         t = _SYNONYMS.get(t2, t2)
     return t
@@ -106,7 +181,8 @@ def is_quality_tag(tag: str) -> bool:
 
 def clean_expression(raw: object, limit: int = 4) -> list[str]:
     """把 LLM 給的 expression（字串或陣列）整理成去重的 tag 清單。
-    不在白名單的短 tag 也保留（例如自訂詞），超過三個字的句子丟掉。"""
+    清單外的口語詞先經同義表對應成正規 tag（focused → serious、relieved → light smile…）；
+    對不到的短 tag 也保留（例如使用者自訂詞），超過三個字的句子丟掉。"""
     if isinstance(raw, (list, tuple)):
         items = [str(x) for x in raw]
     else:
@@ -114,7 +190,8 @@ def clean_expression(raw: object, limit: int = 4) -> list[str]:
     out: list[str] = []
     for item in items:
         t = normalize_tag(item)
-        if not t or len(t.split()) > 3 or is_quality_tag(t):
+        # 白名單裡有四個字的 tag（looking to the side…）；只有清單外的長句才視為句子丟掉
+        if not t or (t not in _SET and len(t.split()) > 3) or is_quality_tag(t):
             continue
         if t not in out:
             out.append(t)

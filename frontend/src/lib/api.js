@@ -243,6 +243,83 @@ export async function deleteConversationRemote(id) {
   return r.json();
 }
 
+// ---- 漫畫作品（伺服器端永久保存；瀏覽器 localStorage 只是快取）----
+export async function listComics() {
+  const r = await fetch("/api/comics");
+  if (!r.ok) throw new Error("無法取得作品清單");
+  return r.json();
+}
+
+export async function getComic(id) {
+  const r = await fetch(`/api/comics/${encodeURIComponent(id)}`);
+  if (!r.ok) {
+    const e = new Error(r.status === 404 ? "找不到作品" : "無法取得作品");
+    e.status = r.status;
+    throw e;
+  }
+  return r.json();
+}
+
+export async function putComic(comic) {
+  const r = await fetch(`/api/comics/${encodeURIComponent(comic.id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(comic),
+  });
+  if (!r.ok) throw new Error("儲存作品失敗");
+  return r.json();
+}
+
+export async function deleteComicRemote(id) {
+  const r = await fetch(`/api/comics/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!r.ok) throw new Error("刪除作品失敗");
+  return r.json();
+}
+
+// 分鏡版本：伺服器端不設上限；清單只有摘要，預覽 / 回復才取整份
+export async function listComicVersions(id) {
+  const r = await fetch(`/api/comics/${encodeURIComponent(id)}/versions`);
+  if (!r.ok) throw new Error("無法取得版本清單");
+  return r.json();
+}
+
+export async function getComicVersion(id, versionId) {
+  const r = await fetch(
+    `/api/comics/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}`
+  );
+  if (!r.ok) throw new Error(r.status === 404 ? "找不到版本" : "無法取得版本");
+  return r.json();
+}
+
+export async function addComicVersion(id, version) {
+  const r = await fetch(`/api/comics/${encodeURIComponent(id)}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(version),
+  });
+  if (!r.ok) throw new Error("儲存版本失敗");
+  return r.json();
+}
+
+export async function deleteComicVersionRemote(id, versionId) {
+  const r = await fetch(
+    `/api/comics/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}`,
+    { method: "DELETE" }
+  );
+  if (!r.ok) throw new Error("刪除版本失敗");
+  return r.json();
+}
+
+export async function saveComicPage(id, dataUrl) {
+  const r = await fetch(`/api/comics/${encodeURIComponent(id)}/page`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: dataUrl }),
+  });
+  if (!r.ok) throw new Error("儲存整頁圖失敗");
+  return r.json();
+}
+
 // ---- 技能（Agent Skills）外掛 ----
 export async function fetchSkills() {
   try {
@@ -336,11 +413,12 @@ export async function generateImage(prompt, imageSettings) {
  * 串流聊天。透過 fetch + ReadableStream 解析 SSE。
  * onEvent 會收到後端的每個事件物件。回傳 AbortController 供中斷。
  */
-export async function compactConversation(model, messages, numCtx, engine = "ollama") {
+export async function compactConversation(model, messages, numCtx, engine = "ollama", think) {
   const r = await fetch("/api/compact", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, num_ctx: numCtx, engine }),
+    // think：Ollama 思考型模型摘要時是否先思考（沿用聊天設定的開關）
+    body: JSON.stringify({ model, messages, num_ctx: numCtx, engine, think }),
   });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "壓縮失敗");
   return r.json();

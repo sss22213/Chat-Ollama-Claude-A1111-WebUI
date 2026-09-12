@@ -1,7 +1,10 @@
 """FastAPI 主程式：REST 代理 + SSE 聊天 + 圖片服務 + 儲存位置設定。"""
 from __future__ import annotations
 
+import base64
+import binascii
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -14,12 +17,16 @@ from pydantic import BaseModel
 
 import threading
 
+import logging
+
+from errors import describe
 import a1111_client
 import booru_characters
 import chat as chat_mod
 import claude_client
 import codex_client
 import comic as comic_mod
+import comics_store
 import conversations_store
 import docker_probe
 import loras
@@ -27,8 +34,16 @@ import ollama_client
 import prompt_history_store
 import settings_store
 import skills_store
+import story as story_mod
 import web_tools
 from config import BROWSE_ROOTS, CORS_ORIGINS, DEFAULT_IMAGE_SETTINGS
+
+# uvicorn 只幫自己的 logger 接 handler；這裡把 root 接上，comic / story / ollama_client 的
+# INFO（每次 chat_once 的 done_reason、token 數）與 WARNING（非 JSON 回覆）才會出現在 docker logs
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+log = logging.getLogger("webui")
 
 app = FastAPI(title="Chat + Ollama + A1111 WebUI")
 
@@ -42,6 +57,7 @@ app.add_middleware(
 # 載入持久化設定（圖片儲存目錄等）+ 初始化對話資料庫
 settings_store.load()
 conversations_store.init()
+comics_store.init()
 # 背景補齊角色關鍵字（向 danbooru 抓人氣角色；失敗則只用內建清單，不阻塞啟動）
 threading.Thread(target=booru_characters.ensure_enriched, daemon=True).start()
 
@@ -96,7 +112,7 @@ async def models(engine: str = "ollama") -> list[dict[str, Any]]:
     try:
         return await ollama_client.list_models()
     except Exception as e:
-        raise HTTPException(502, f"無法連線 Ollama：{e}")
+        raise HTTPException(502, f"無法連線 Ollama：{describe(e)}")
 
 
 @app.get("/api/engines")
@@ -114,7 +130,7 @@ async def sd_models() -> list[dict[str, str]]:
     try:
         return await a1111_client.list_sd_models()
     except Exception as e:
-        raise HTTPException(502, f"無法連線 A1111：{e}")
+        raise HTTPException(502, f"無法連線 A1111：{describe(e)}")
 
 
 @app.get("/api/samplers")
@@ -122,7 +138,7 @@ async def samplers() -> list[str]:
     try:
         return await a1111_client.list_samplers()
     except Exception as e:
-        raise HTTPException(502, f"無法連線 A1111：{e}")
+        raise HTTPException(502, f"無法連線 A1111：{describe(e)}")
 
 
 @app.get("/api/defaults")
@@ -351,7 +367,7 @@ async def png_info(req: PngInfoRequest) -> dict[str, Any]:
     try:
         return await a1111_client.png_info(req.image)
     except Exception as e:
-        raise HTTPException(502, f"讀取 PNG 參數失敗：{e}")
+        raise HTTPException(502, f"讀取 PNG 參數失敗：{describe(e)}")
 
 
 # ---- 提示詞歷史（讀取 sd-webui-prompt-history 擴充的紀錄）----
@@ -416,7 +432,7 @@ async def loras_refresh() -> dict[str, Any]:
     try:
         items = await loras.refresh()
     except Exception as e:
-        raise HTTPException(502, f"無法連到 A1111 重新整理 LoRA：{e}")
+        raise HTTPException(502, f"無法連到 A1111 重新整理 LoRA：{describe(e)}")
     return {"count": len(items), "items": items}
 
 
@@ -525,6 +541,8 @@ class CompactRequest(BaseModel):
     messages: list[dict[str, Any]]
     num_ctx: int | None = None
     engine: str = "ollama"
+    # Ollama 思考型模型是否先思考（None＝模型預設）
+    think: bool | None = None
 
 
 @app.post("/api/compact")
@@ -547,6 +565,7 @@ async def compact(req: CompactRequest) -> dict[str, Any]:
         "continue seamlessly. Use the same language as the conversation. "
         "Output only the summary."
     )
+    notices = ollama_client.start_notices()
     try:
         if req.engine == "claude_cli":
             summary = await claude_client.chat_once(
@@ -565,10 +584,12 @@ async def compact(req: CompactRequest) -> dict[str, Any]:
                 {"role": "system", "content": system},
                 {"role": "user", "content": "\n\n".join(lines)},
             ]
-            summary = await ollama_client.chat_once(req.model, messages, req.num_ctx)
+            summary = await ollama_client.chat_once(
+                req.model, messages, req.num_ctx, think=req.think
+            )
     except Exception as e:
-        raise HTTPException(502, f"摘要失敗：{e}")
-    return {"summary": summary.strip()}
+        raise HTTPException(502, f"摘要失敗：{describe(e)}")
+    return {"summary": summary.strip(), "notices": notices}
 
 
 # ---- 前端 UI 設定（跨裝置同步；存於 app_settings.json 的 ui blob）----
@@ -616,6 +637,104 @@ def delete_conversation(conv_id: str) -> dict[str, bool]:
     return {"ok": True}
 
 
+# ---- 漫畫作品（跨裝置、長期保存；作品存 SQLite，圖片在圖片目錄）----
+_COMIC_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _check_comic_id(comic_id: str) -> str:
+    if not _COMIC_ID_RE.match(comic_id or ""):
+        raise HTTPException(400, "作品 id 格式不正確")
+    return comic_id
+
+
+@app.get("/api/comics")
+def list_comics() -> list[dict[str, Any]]:
+    """作品庫清單（摘要）。"""
+    return comics_store.list_summaries()
+
+
+@app.get("/api/comics/{comic_id}")
+def get_comic(comic_id: str) -> dict[str, Any]:
+    comic = comics_store.get(_check_comic_id(comic_id))
+    if not comic:
+        raise HTTPException(404, "找不到作品")
+    return comic
+
+
+@app.put("/api/comics/{comic_id}")
+def put_comic(comic_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """新增或更新整份作品（前端自動儲存）。"""
+    body = {**body, "id": _check_comic_id(comic_id)}
+    try:
+        return comics_store.upsert(body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/comics/{comic_id}")
+def delete_comic(comic_id: str) -> dict[str, bool]:
+    comics_store.delete(_check_comic_id(comic_id))
+    return {"ok": True}
+
+
+# 分鏡版本：伺服器端不設上限；清單只回摘要，預覽 / 回復才取整份
+@app.get("/api/comics/{comic_id}/versions")
+def list_comic_versions(comic_id: str) -> list[dict[str, Any]]:
+    return comics_store.list_versions(_check_comic_id(comic_id))
+
+
+@app.post("/api/comics/{comic_id}/versions")
+def add_comic_version(comic_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """新增一版（內容相同不重複存，回 duplicate=true）。"""
+    _check_comic_id(comic_id)
+    if body.get("id") is not None:
+        _check_comic_id(str(body["id"]))
+    try:
+        return comics_store.add_version(comic_id, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/comics/{comic_id}/versions/{version_id}")
+def get_comic_version(comic_id: str, version_id: str) -> dict[str, Any]:
+    v = comics_store.get_version(_check_comic_id(comic_id), _check_comic_id(version_id))
+    if not v:
+        raise HTTPException(404, "找不到版本")
+    return v
+
+
+@app.delete("/api/comics/{comic_id}/versions/{version_id}")
+def delete_comic_version(comic_id: str, version_id: str) -> dict[str, bool]:
+    comics_store.delete_version(_check_comic_id(comic_id), _check_comic_id(version_id))
+    return {"ok": True}
+
+
+class ComicPageRequest(BaseModel):
+    image: str  # 整頁 PNG 的 data URL 或純 base64
+
+
+@app.post("/api/comics/{comic_id}/page")
+def save_comic_page(comic_id: str, req: ComicPageRequest) -> dict[str, str]:
+    """把匯出的整頁 PNG 存進圖片目錄（與生成圖同處、可永久保存），並記到作品上。"""
+    _check_comic_id(comic_id)
+    b64 = req.image.split(",", 1)[-1] if req.image.startswith("data:") else req.image
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (ValueError, binascii.Error):
+        raise HTTPException(400, "圖片不是合法的 base64")
+    if raw[:8] != b"\x89PNG\r\n\x1a\n":
+        raise HTTPException(400, "只接受 PNG")
+    filename = f"comic_{comic_id}_{int(time.time())}.png"
+    image_dir = settings_store.get_image_dir()
+    image_dir.mkdir(parents=True, exist_ok=True)
+    (image_dir / filename).write_bytes(raw)
+    url = f"/images/{filename}"
+    comic = comics_store.get(comic_id)
+    if comic:
+        comics_store.upsert({**comic, "pageUrl": url})
+    return {"url": url}
+
+
 class ImageRequest(BaseModel):
     prompt: str
     image_settings: dict[str, Any] | None = None
@@ -627,7 +746,8 @@ async def generate_image(req: ImageRequest) -> dict[str, Any]:
     try:
         return await tools_run(req)
     except Exception as e:
-        raise HTTPException(502, f"圖片生成失敗：{e}")
+        log.exception("圖片生成失敗")
+        raise HTTPException(502, f"圖片生成失敗：{describe(e)}")
 
 
 async def tools_run(req: ImageRequest) -> dict[str, Any]:
@@ -650,16 +770,96 @@ class StoryboardRequest(BaseModel):
     style: str = ""
     lang: str = "zh-TW"
     num_ctx: int | None = None
+    # Ollama 思考型模型是否先思考（None＝模型預設；前端有開關）
+    think: bool | None = None
     # 使用者自訂的額外指示（指引 AI 分鏡的風格/語氣/內容）
     system: str = ""
     # 覆寫內建的分鏡 system 範本（空＝用預設）
     system_base: str = ""
 
 
+# ---- 圖片說故事（上傳圖片 → LLM 看圖生成故事或漫畫腳本；與漫畫工作室分開的入口）----
+class StoryRequest(BaseModel):
+    engine: str = "ollama"
+    model: str
+    # base64（可含 data URL 前綴）；張數不限，context 夠不夠由前端預估提醒
+    images: list[str]
+    mode: str = "story"  # story | comic | panels（每張圖一格，補文字）
+    lang: str = "zh-TW"
+    instructions: str = ""
+    length: str = "medium"  # story：short | medium | long
+    panel_count: int = 6  # comic
+    num_ctx: int | None = None
+    think: bool | None = None
+
+
+@app.post("/api/story/from-image")
+async def story_from_image(req: StoryRequest) -> dict[str, Any]:
+    try:
+        return await story_mod.from_image(
+            engine=req.engine,
+            model=req.model,
+            images=req.images,
+            mode=req.mode,
+            lang=req.lang,
+            instructions=req.instructions,
+            length=req.length,
+            panel_count=req.panel_count,
+            num_ctx=req.num_ctx,
+            think=req.think,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("生成失敗")
+        raise HTTPException(502, f"生成失敗：{describe(e)}")
+
+
 @app.get("/api/comic/system-default")
 def comic_system_default() -> dict[str, str]:
     """內建分鏡 system 範本，給前端「載入預設」編輯。"""
     return {"system": comic_mod.default_system()}
+
+
+class PanelPromptRequest(BaseModel):
+    engine: str = "ollama"
+    model: str
+    # 整份分鏡（prompt / expression / characters / dialogue / caption），給模型看前後文
+    panels: list[dict[str, Any]]
+    index: int  # 要重生的那一格（0 起算）
+    premise: str = ""
+    characters: list[dict[str, Any]] | None = None
+    style: str = ""
+    lang: str = "zh-TW"
+    instruction: str = ""  # 使用者對這格的要求（選填）
+    num_ctx: int | None = None
+    think: bool | None = None
+    system: str = ""
+
+
+@app.post("/api/comic/panel-prompt")
+async def comic_panel_prompt(req: PanelPromptRequest) -> dict[str, Any]:
+    """只為一格重新產生場景關鍵字與表情。"""
+    try:
+        return await comic_mod.panel_prompt(
+            engine=req.engine,
+            model=req.model,
+            panels=req.panels,
+            index=req.index,
+            premise=req.premise,
+            characters=req.characters,
+            style=req.style,
+            lang=req.lang,
+            instruction=req.instruction,
+            num_ctx=req.num_ctx,
+            system=req.system,
+            think=req.think,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("關鍵字生成失敗")
+        raise HTTPException(502, f"關鍵字生成失敗：{describe(e)}")
 
 
 @app.post("/api/comic/storyboard")
@@ -674,10 +874,12 @@ async def comic_storyboard(req: StoryboardRequest) -> dict[str, Any]:
             style=req.style,
             lang=req.lang,
             num_ctx=req.num_ctx,
+            think=req.think,
             system=req.system,
             system_base=req.system_base,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
-        raise HTTPException(502, f"分鏡生成失敗：{e}")
+        log.exception("分鏡生成失敗")
+        raise HTTPException(502, f"分鏡生成失敗：{describe(e)}")

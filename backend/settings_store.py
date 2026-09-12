@@ -1,8 +1,13 @@
 """執行期可切換、且持久化的應用設定（目前：圖片儲存目錄）。
 
-- image_dir：生成圖片儲存與服務的目錄，可在 UI 中切換。
-- known_dirs：歷來用過的目錄；切換後舊圖仍能被 /images 服務找到。
+- image_dir：生成圖片儲存與服務的目錄，可在 UI 中切換。空字串＝預設 DATA_DIR/images。
+- known_dirs：歷來用過的「自訂」目錄；切換後舊圖仍能被 /images 服務找到。
 設定存於 DATA_DIR/app_settings.json（DATA_DIR 本身固定，不隨 image_dir 變動）。
+
+預設目錄一律以「空字串」存檔、執行期才解析成 DATA_DIR/images：同一份設定檔會被主機上的
+開發後端（DATA_DIR=backend/data）與容器（DATA_DIR=/data，綁定到同一個資料夾）共用，
+若把某一邊的絕對路徑寫進檔案，另一邊就會往不存在（容器裡則是未掛載、重建即消失）的
+路徑存圖。舊版寫進去的絕對路徑在載入時會被正規化回空字串。
 """
 from __future__ import annotations
 
@@ -36,8 +41,8 @@ def _default_web() -> dict:
 
 
 _settings: dict = {
-    "image_dir": str(DEFAULT_IMAGE_DIR),
-    "known_dirs": [str(DEFAULT_IMAGE_DIR)],
+    "image_dir": "",  # 空字串＝預設 DATA_DIR/images
+    "known_dirs": [],
     # 提示詞歷史目錄的 UI 覆寫（空字串＝沿用 env 預設 PROMPT_HISTORY_DIR）
     "prompt_history_dir": "",
     # 技能目錄的 UI 覆寫（空字串＝沿用 env 預設 SKILLS_DIR）；所有 SKILL.md 放這裡
@@ -69,8 +74,26 @@ def _save() -> None:
     )
 
 
+def _looks_default(path: str) -> bool:
+    """長得像預設目錄（<…>/data/images）的絕對路徑：主機或容器任一邊的預設，一律視為預設。"""
+    try:
+        q = Path(path)
+    except TypeError:
+        return False
+    return q.name == "images" and q.parent.name == "data"
+
+
+def _usable(p: Path) -> bool:
+    """能建出來且可寫。"""
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+        return os.access(p, os.W_OK)
+    except Exception:
+        return False
+
+
 def load() -> dict:
-    """啟動時載入；確保目前目錄存在。"""
+    """啟動時載入；把舊版寫成絕對路徑的預設目錄正規化回空字串，並確保預設目錄存在。"""
     if SETTINGS_FILE.exists():
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -78,45 +101,59 @@ def load() -> dict:
                 _settings.update(data)
         except Exception:
             pass
-    _settings.setdefault("known_dirs", [])
     _settings.setdefault("skills_dir", "")
-    if _settings["image_dir"] not in _settings["known_dirs"]:
-        _settings["known_dirs"].insert(0, _settings["image_dir"])
+    before = (_settings.get("image_dir"), list(_settings.get("known_dirs") or []))
+    img = str(_settings.get("image_dir") or "").strip()
+    if _looks_default(img):
+        img = ""
+    _settings["image_dir"] = img
+    _settings["known_dirs"] = [
+        d for d in dict.fromkeys(str(x) for x in (_settings.get("known_dirs") or []) if x)
+        if not _looks_default(d)
+    ]
     _normalize_sources()
     _settings["web"] = {**_default_web(), **(_settings.get("web") or {})}
-    try:
-        Path(_settings["image_dir"]).mkdir(parents=True, exist_ok=True)
-    except Exception:
-        # 目錄無法建立時退回預設
-        _settings["image_dir"] = str(DEFAULT_IMAGE_DIR)
-        Path(_settings["image_dir"]).mkdir(parents=True, exist_ok=True)
+    DEFAULT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    if before != (_settings["image_dir"], _settings["known_dirs"]):
+        _save()  # 舊格式改寫回檔案，主機與容器才能共用同一份
     return _settings
 
 
 def get_image_dir() -> Path:
-    return Path(_settings["image_dir"])
+    """有效的圖片目錄：自訂目錄可用就用它，否則（未設定、建不出來、不可寫）用預設 DATA_DIR/images。"""
+    custom = str(_settings.get("image_dir") or "").strip()
+    if custom:
+        p = Path(custom)
+        if _usable(p):
+            return p
+    DEFAULT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    return DEFAULT_IMAGE_DIR
 
 
 def set_image_dir(path: str) -> Path:
-    """切換儲存目錄；會建立目錄並檢查可寫。"""
+    """切換儲存目錄；會建立目錄並檢查可寫。選到預設目錄就存成空字串。"""
     p = Path(path).expanduser()
     if not p.is_absolute():
         raise ValueError("請提供絕對路徑")
     p.mkdir(parents=True, exist_ok=True)
     if not os.access(p, os.W_OK):
         raise PermissionError("此資料夾無法寫入")
-    p_str = str(p.resolve())
-    _settings["image_dir"] = p_str
-    if p_str not in _settings["known_dirs"]:
-        _settings["known_dirs"].insert(0, p_str)
+    p = p.resolve()
+    p_str = str(p)
+    if p == DEFAULT_IMAGE_DIR.resolve() or _looks_default(p_str):
+        _settings["image_dir"] = ""
+    else:
+        _settings["image_dir"] = p_str
+        if p_str not in _settings["known_dirs"]:
+            _settings["known_dirs"].insert(0, p_str)
     _save()
-    return p
+    return get_image_dir()
 
 
 def find_image(filename: str) -> Path | None:
-    """在目前與歷來目錄中尋找圖片檔（供 /images 服務，避免切換後舊圖失聯）。"""
+    """在目前、預設與歷來目錄中尋找圖片檔（供 /images 服務，避免切換後舊圖失聯）。"""
     name = Path(filename).name  # 防止路徑穿越
-    candidates = [_settings["image_dir"], *_settings.get("known_dirs", [])]
+    candidates = [str(get_image_dir()), str(DEFAULT_IMAGE_DIR), *_settings.get("known_dirs", [])]
     seen = set()
     for d in candidates:
         if d in seen:
@@ -137,6 +174,8 @@ def info() -> dict:
         count = 0
     return {
         "image_dir": str(d),
+        "is_default": not str(_settings.get("image_dir") or "").strip(),
+        "default_dir": str(DEFAULT_IMAGE_DIR),
         "writable": os.access(d, os.W_OK),
         "count": count,
         "known_dirs": _settings.get("known_dirs", []),

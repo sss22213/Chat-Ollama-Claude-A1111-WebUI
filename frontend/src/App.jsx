@@ -28,6 +28,7 @@ export default function App() {
           onOpenHistory={() => setHistoryOpen(true)}
           onOpenLoras={() => setLoraBrowserOpen(true)}
           onOpenComic={() => navigate("comic")}
+          onOpenStory={() => navigate("story")}
           onOpenSkills={() => setSkillsOpen(true)}
         />
         <ChatView />

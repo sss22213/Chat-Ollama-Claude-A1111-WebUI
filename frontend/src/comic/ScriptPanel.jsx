@@ -14,6 +14,8 @@ import { useChat } from "../store/chat";
 import { useCT } from "./comicI18n";
 import { fetchComicSystemDefault } from "../lib/comicApi";
 import CharacterCast from "./CharacterCast";
+import VersionList from "./VersionList";
+import { noticeText } from "./notices";
 
 function Labeled({ label, children }) {
   return (
@@ -37,12 +39,13 @@ export default function ScriptPanel() {
   const lang = useChat((s) => s.settings.lang);
   const numCtx = useChat((s) => s.settings.numCtx);
   const chatModel = useChat((s) => s.settings.chatModel);
-  const currentConv = useChat((s) => s.currentConversation());
   const [err, setErr] = useState("");
   const [showSysTpl, setShowSysTpl] = useState(false);
   const [loadingDefault, setLoadingDefault] = useState(false);
 
-  const model = currentConv?.model || chatModel;
+  // 用頂列下拉選的模型（settings.chatModel）。以前會優先用聊天頁「目前對話」的模型，
+  // 導致在這裡換了模型、生成分鏡卻還是用聊天對話的那個。
+  const model = chatModel;
   const s = c.settings;
 
   const loadDefaultSystem = async () => {
@@ -186,6 +189,20 @@ export default function ScriptPanel() {
         </div>
       </div>
 
+      {engine === "ollama" && (
+              <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-ink-700 bg-ink-850 px-2 py-1.5">
+                <input
+                  type="checkbox"
+                  checked={!!c.think}
+                  onChange={(e) => c.set({ think: e.target.checked })}
+                  className="mt-0.5 shrink-0 accent-emerald-500"
+                />
+                <span className="min-w-0 text-xs">
+                  <span className="text-gray-200">{ct("thinkLabel")}</span>
+                  <span className="mt-0.5 block leading-relaxed text-gray-500">{ct("thinkHint")}</span>
+                </span>
+              </label>
+            )}
       <button
         onClick={doStoryboard}
         disabled={c.storyboarding || !c.premise.trim()}
@@ -207,6 +224,27 @@ export default function ScriptPanel() {
           <span>{err}</span>
         </div>
       )}
+      {/* 後端提醒：例如思考模式沒給出答案、已自動改用不思考 */}
+      {c.notices.map((n, i) => (
+        <div
+          key={i}
+          data-testid="notice"
+          className="flex items-start gap-1.5 rounded-md border border-amber-700/60 bg-amber-900/20 px-2 py-1.5 text-xs text-amber-200"
+        >
+          <AlertCircle size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1 leading-relaxed">{noticeText(n, ct)}</span>
+          <button
+            onClick={() => c.set({ notices: c.notices.filter((_, j) => j !== i) })}
+            className="shrink-0 text-amber-400 hover:text-amber-200"
+            title="✕"
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+
+      {/* 分鏡版本歷史 */}
+      <VersionList />
 
       {/* 角色卡 */}
       <section>

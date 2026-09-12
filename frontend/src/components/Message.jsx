@@ -56,7 +56,7 @@ export default function Message({ msg }) {
         <span className="text-xs font-bold">AI</span>
       </div>
       <div className="min-w-0 flex-1 space-y-2">
-        {msg.compacted && <CompactBadge />}
+        {msg.compacted && <CompactBadge notices={msg.notices} />}
 
         {msg.thinking ? (
           <Thinking text={msg.thinking} streaming={msg.status === "streaming"} />
@@ -118,11 +118,25 @@ function StreamingDots() {
   );
 }
 
-function CompactBadge() {
+function CompactBadge({ notices }) {
   const t = useT();
   return (
-    <div className="inline-flex items-center gap-1.5 rounded-md bg-ink-700 px-2 py-0.5 text-xs text-gray-300">
-      <Combine size={13} /> {t("summaryBadge")}
+    <div className="space-y-1">
+      <div className="inline-flex items-center gap-1.5 rounded-md bg-ink-700 px-2 py-0.5 text-xs text-gray-300">
+        <Combine size={13} /> {t("summaryBadge")}
+      </div>
+      {/* 後端提醒：例如思考模式沒給出答案、摘要改用不思考產生 */}
+      {(notices || []).map((n, i) => (
+        <div
+          key={i}
+          data-testid="notice"
+          className="rounded-md border border-amber-700/60 bg-amber-900/20 px-2 py-1 text-xs leading-relaxed text-amber-200"
+        >
+          {n.code === "think_fallback"
+            ? t(n.reason === "truncated" ? "noticeThinkTruncated" : "noticeThinkEmpty")
+            : n.code}
+        </div>
+      ))}
     </div>
   );
 }

@@ -11,12 +11,15 @@ import {
   FileText,
   Copy,
   Check,
+  Sparkles,
+  Undo2,
 } from "lucide-react";
 import { useComic } from "../store/comic";
+import { hasName } from "./names";
 import { useChat } from "../store/chat";
 import { useCT } from "./comicI18n";
+import { BUBBLE_STYLES, TAIL_DIRS, hasTail, styleKey, tailKey } from "./bubbleShape";
 
-const BUBBLE_TYPES = ["speech", "thought", "caption"];
 
 // 小複製按鈕：複製文字並短暫顯示「已複製」
 function CopyBtn({ text, ct }) {
@@ -58,7 +61,25 @@ export default function PanelCard({ panel, index }) {
   const updateBubble = useComic((s) => s.updateBubble);
   const removeBubble = useComic((s) => s.removeBubble);
   const health = useChat((s) => s.health);
+  const engine = useChat((s) => s.settings.engine);
+  const chatModel = useChat((s) => s.settings.chatModel);
+  const lang = useChat((s) => s.settings.lang);
+  const numCtx = useChat((s) => s.settings.numCtx);
+  const regeneratePrompt = useComic((s) => s.regeneratePrompt);
+  const undoPrompt = useComic((s) => s.undoPrompt);
+  const promptBusy = useComic((s) => !!s.promptBusy[panel.id]);
+  const promptError = useComic((s) => s.promptError[panel.id] || "");
+  const promptUndo = useComic((s) => s.promptUndo[panel.id]);
   const [showFull, setShowFull] = useState(false);
+  const [regenOpen, setRegenOpen] = useState(false);
+  const [regenHint, setRegenHint] = useState("");
+  const doRegen = () =>
+    regeneratePrompt(panel.id, regenHint, {
+      engine,
+      model: chatModel, // 頂列下拉選的模型（不是聊天頁目前對話的）
+      lang,
+      numCtx,
+    });
 
   const gen = panel.status === "generating";
   const namedCast = characters.filter((c) => c.name.trim());
@@ -175,6 +196,59 @@ export default function PanelCard({ panel, index }) {
           rows={2}
           className={`${inputCls} resize-y font-mono`}
         />
+        {/* 重新生成關鍵字：AI 只重寫這格的場景 tag 與表情，可附一句要求；重生前的可復原 */}
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            onClick={() => (regenOpen ? doRegen() : setRegenOpen(true))}
+            disabled={promptBusy}
+            title={ct("regenPromptTitle")}
+            data-testid="regen-prompt"
+            className="flex items-center gap-1 rounded-md border border-ink-600 px-1.5 py-0.5 text-[11px] text-gray-300 hover:bg-ink-750 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {promptBusy ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Sparkles size={12} />
+            )}
+            {promptBusy ? ct("regenPromptBusy") : ct("regenPrompt")}
+          </button>
+          {promptUndo && !promptBusy && (
+            <button
+              onClick={() => undoPrompt(panel.id)}
+              title={ct("regenPromptUndo")}
+              data-testid="undo-prompt"
+              className="flex items-center gap-1 rounded-md border border-ink-600 px-1.5 py-0.5 text-[11px] text-gray-400 hover:bg-ink-750"
+            >
+              <Undo2 size={12} /> {ct("regenPromptUndo")}
+            </button>
+          )}
+        </div>
+        {regenOpen && (
+          <div className="flex items-center gap-1">
+            <input
+              value={regenHint}
+              onChange={(e) => setRegenHint(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) doRegen();
+              }}
+              placeholder={ct("regenPromptHintPh")}
+              data-testid="regen-hint"
+              className={`${inputCls} min-w-0 flex-1`}
+            />
+            <button
+              onClick={() => setRegenOpen(false)}
+              className="shrink-0 rounded-md px-1.5 py-1 text-[11px] text-gray-500 hover:bg-ink-750"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        {promptError && (
+          <div className="flex items-start gap-1 text-[11px] text-red-300">
+            <AlertCircle size={12} className="mt-0.5 shrink-0" />
+            <span className="break-words">{promptError}</span>
+          </div>
+        )}
 
         {/* 表情：獨立欄位，出圖時加權放在畫風之後，才不會被角色固定 tag / LoRA 壓過 */}
         <div className="flex items-center gap-1.5">
@@ -194,7 +268,7 @@ export default function PanelCard({ panel, index }) {
         {namedCast.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {namedCast.map((c) => {
-              const on = panel.characters.includes(c.name);
+              const on = hasName(panel.characters, c.name);
               return (
                 <button
                   key={c.id}
@@ -216,23 +290,34 @@ export default function PanelCard({ panel, index }) {
         <div className="space-y-1.5">
           {panel.bubbles.map((b) => (
             <div key={b.id} className="flex items-start gap-1">
-              <select
-                value={b.type}
-                onChange={(e) => updateBubble(panel.id, b.id, { type: e.target.value })}
-                className="shrink-0 rounded-md border border-ink-600 bg-ink-850 px-1 py-1 text-[11px] outline-none focus:border-ink-500"
-              >
-                {BUBBLE_TYPES.map((tp) => (
-                  <option key={tp} value={tp}>
-                    {ct(
-                      tp === "speech"
-                        ? "bubbleSpeech"
-                        : tp === "thought"
-                        ? "bubbleThought"
-                        : "bubbleCaption"
-                    )}
-                  </option>
-                ))}
-              </select>
+              <div className="flex shrink-0 flex-col gap-1">
+                <select
+                  value={b.type}
+                  onChange={(e) => updateBubble(panel.id, b.id, { type: e.target.value })}
+                  title={ct("bubbleStyle")}
+                  className="rounded-md border border-ink-600 bg-ink-850 px-1 py-1 text-[11px] outline-none focus:border-ink-500"
+                >
+                  {BUBBLE_STYLES.map((tp) => (
+                    <option key={tp} value={tp}>
+                      {ct(styleKey(tp))}
+                    </option>
+                  ))}
+                </select>
+                {hasTail(b.type) && (
+                  <select
+                    value={b.tail || "down"}
+                    onChange={(e) => updateBubble(panel.id, b.id, { tail: e.target.value })}
+                    title={ct("tailDir")}
+                    className="rounded-md border border-ink-600 bg-ink-850 px-1 py-1 text-[11px] outline-none focus:border-ink-500"
+                  >
+                    {TAIL_DIRS.map((d) => (
+                      <option key={d} value={d}>
+                        {ct(tailKey(d))}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
               <div className="min-w-0 flex-1 space-y-1">
                 {b.type !== "caption" && (
                   <input

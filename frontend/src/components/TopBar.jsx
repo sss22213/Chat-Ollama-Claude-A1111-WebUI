@@ -9,6 +9,7 @@ import {
   Layers,
   BookOpen,
   Sparkles,
+  Images,
 } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
@@ -19,6 +20,7 @@ export default function TopBar({
   onOpenHistory,
   onOpenLoras,
   onOpenComic,
+  onOpenStory,
   onOpenSkills,
 }) {
   const t = useT();
@@ -62,7 +64,9 @@ export default function TopBar({
   };
 
   return (
-    <header className="flex items-center gap-1.5 border-b border-ink-700 bg-ink-850 px-2 py-2 sm:gap-3 sm:px-3">
+    <header className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-ink-700 bg-ink-850 px-2 py-1.5 md:flex-nowrap md:gap-3 md:px-3 md:py-2">
+      {/* 第一列（手機）／左半（桌面）：側欄、引擎、模型。手機時設定鈕也放這列右端，確保永遠點得到 */}
+      <div className="flex min-w-0 basis-full items-center gap-1.5 md:min-w-min md:basis-auto md:gap-3">
       <button
         onClick={onToggleSidebar}
         className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750"
@@ -76,7 +80,7 @@ export default function TopBar({
         value={settings.engine}
         onChange={(e) => setEngine(e.target.value)}
         title={t("engine")}
-        className="shrink-0 rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500"
+        className="max-w-[7.5rem] shrink-0 rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500 md:max-w-none"
       >
         <option value="ollama">Ollama</option>
         <option value="claude_cli" disabled={!engines.claude_cli}>
@@ -88,11 +92,11 @@ export default function TopBar({
       </select>
 
       {/* 模型選擇 */}
-      <div className="relative min-w-0">
+      <div className="relative min-w-0 flex-1 md:min-w-[9rem] md:flex-initial">
         <select
           value={activeModel}
           onChange={(e) => onChangeModel(e.target.value)}
-          className="w-full max-w-[36vw] truncate rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500 sm:max-w-[20rem] sm:px-3"
+          className="w-full truncate rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500 md:max-w-[20rem] md:px-3"
         >
           {models.length === 0 && <option>{t("modelLoading")}</option>}
           {models.map((m) => (
@@ -110,6 +114,17 @@ export default function TopBar({
         </select>
       </div>
 
+      <button
+        onClick={onOpenSettings}
+        className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750 md:hidden"
+        title={t("settings")}
+      >
+        <Settings size={18} />
+      </button>
+      </div>
+
+      {/* 第二列（手機，可橫向捲動）／右半（桌面）：工具與功能。寬度不夠時捲動而不是被裁掉 */}
+      <div className="scrollbar-none flex min-w-0 basis-full items-center gap-1.5 overflow-x-auto md:basis-auto md:grow md:gap-3">
       {/* 圖片工具開關（小螢幕只顯示圖示） */}
       <button
         onClick={() => setSettings({ toolsEnabled: !settings.toolsEnabled })}
@@ -124,7 +139,7 @@ export default function TopBar({
         }`}
       >
         <Wand2 size={15} />
-        <span className="hidden sm:inline">
+        <span className="hidden lg:inline">
           {t("imageTool")}{" "}
           {settings.toolsEnabled && toolsAvailable ? t("on") : t("off")}
         </span>
@@ -144,7 +159,7 @@ export default function TopBar({
         }`}
       >
         <Globe size={15} />
-        <span className="hidden sm:inline">
+        <span className="hidden lg:inline">
           {t("webTool")}{" "}
           {settings.webEnabled && toolsAvailable ? t("on") : t("off")}
         </span>
@@ -171,7 +186,7 @@ export default function TopBar({
           ) : (
             <Combine size={14} />
           )}
-          <span className="hidden md:inline">
+          <span className="hidden lg:inline">
             {compacting ? t("compacting") : t("compact")}
           </span>
         </button>
@@ -194,7 +209,7 @@ export default function TopBar({
         }`}
       >
         <Sparkles size={15} />
-        <span className="hidden max-w-[8rem] truncate sm:inline">
+        <span className="hidden max-w-[8rem] truncate lg:inline">
           {skillLabel || t("skills")}
         </span>
       </button>
@@ -205,7 +220,16 @@ export default function TopBar({
         title={t("comicStudio")}
       >
         <BookOpen size={16} />
-        <span className="hidden sm:inline">{t("comicStudio")}</span>
+        <span className="hidden lg:inline">{t("comicStudio")}</span>
+      </button>
+
+      <button
+        onClick={onOpenStory}
+        className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-2 py-1.5 text-sm text-gray-300 hover:bg-ink-750 sm:px-3"
+        title={t("storyStudio")}
+      >
+        <Images size={16} />
+        <span className="hidden lg:inline">{t("storyStudio")}</span>
       </button>
 
       <button
@@ -228,11 +252,12 @@ export default function TopBar({
 
       <button
         onClick={onOpenSettings}
-        className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750"
+        className="hidden shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750 md:block"
         title={t("settings")}
       >
         <Settings size={18} />
       </button>
+      </div>
     </header>
   );
 }

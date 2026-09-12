@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   BookOpen,
   LayoutGrid,
   StretchHorizontal,
   Download,
+  FolderOpen,
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -23,6 +24,7 @@ import ComicPage from "./ComicPage";
 import SettingsModal from "../components/SettingsModal";
 import HistoryModal from "../components/HistoryModal";
 import LoraBrowser from "../components/LoraBrowser";
+import ComicLibrary from "./ComicLibrary";
 import { exportComicPng } from "./exportComic";
 
 export default function ComicStudio() {
@@ -36,6 +38,10 @@ export default function ComicStudio() {
   const title = useComic((s) => s.title);
   const applyHistorySettings = useComic((s) => s.applyHistorySettings);
   const appendStyle = useComic((s) => s.appendStyle);
+  const saveState = useComic((s) => s.saveState);
+  const savedAt = useComic((s) => s.savedAt);
+  const syncProject = useComic((s) => s.syncProject);
+  const savePage = useComic((s) => s.savePage);
 
   const models = useChat((s) => s.models);
   const engine = useChat((s) => s.settings.engine);
@@ -51,21 +57,40 @@ export default function ComicStudio() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loraOpen, setLoraOpen] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+
+  // 進入頁面時對一次伺服器上的作品（別的裝置改過就更新；伺服器沒有就重新存）
+  useEffect(() => {
+    syncProject();
+  }, [syncProject]);
 
   const onExport = async () => {
     if (!panels.length || exporting) return;
     setExporting(true);
     try {
-      await exportComicPng({ panels, layout, settings, title });
+      const dataUrl = await exportComicPng({ panels, layout, settings, title });
+      // 下載之外，同一張整頁圖也存進圖片目錄（永久保存、作品庫縮圖）；失敗不影響下載
+      await savePage(dataUrl).catch(() => {});
     } finally {
       setExporting(false);
     }
   };
 
+  const saveLabel =
+    saveState === "saving"
+      ? ct("saving")
+      : saveState === "error"
+        ? ct("saveError")
+        : saveState === "saved" && savedAt
+          ? ct("savedAt", { t: new Date(savedAt * 1000).toLocaleTimeString() })
+          : "";
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-ink-900 text-[#ececec]">
       {/* 頂列 */}
-      <header className="flex items-center gap-1.5 border-b border-ink-700 bg-ink-850 px-2 py-2 sm:gap-2 sm:px-3">
+      <header className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-ink-700 bg-ink-850 px-2 py-1.5 md:flex-nowrap md:gap-2 md:px-3 md:py-2">
+        {/* 第一列（手機）／左半（桌面）：返回、標題、劇本開關、引擎、模型、手機用設定鈕 */}
+        <div className="flex min-w-0 basis-full items-center gap-1.5 md:min-w-min md:basis-auto md:gap-2">
         <button
           onClick={() => navigate("")}
           title={ct("backToChat")}
@@ -75,8 +100,18 @@ export default function ComicStudio() {
         </button>
         <h1 className="flex shrink-0 items-center gap-1.5 text-sm font-semibold">
           <BookOpen size={17} />
-          <span className="hidden sm:inline">{ct("comicTitle")}</span>
+          <span className="hidden lg:inline">{ct("comicTitle")}</span>
         </h1>
+        {saveLabel && (
+          <span
+            data-testid="save-state"
+            className={`hidden shrink-0 text-[11px] md:inline ${
+              saveState === "error" ? "text-red-400" : "text-gray-500"
+            }`}
+          >
+            {saveLabel}
+          </span>
+        )}
 
         <button
           onClick={() => setPanelOpen((v) => !v)}
@@ -91,7 +126,7 @@ export default function ComicStudio() {
           value={engine}
           onChange={(e) => setEngine(e.target.value)}
           title={ct("engine")}
-          className="shrink-0 rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500"
+          className="max-w-[7.5rem] shrink-0 rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500 md:max-w-none"
         >
           <option value="ollama">Ollama</option>
           <option value="claude_cli" disabled={!engines.claude_cli}>
@@ -104,7 +139,7 @@ export default function ComicStudio() {
         <select
           value={chatModel}
           onChange={(e) => setSettings({ chatModel: e.target.value })}
-          className="min-w-0 max-w-[28vw] truncate rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500 sm:max-w-[16rem]"
+          className="min-w-0 flex-1 truncate rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500 md:min-w-[8rem] md:max-w-[16rem] md:flex-initial"
         >
           {models.length === 0 && <option>{chatModel || "—"}</option>}
           {models.map((m) => (
@@ -113,7 +148,17 @@ export default function ComicStudio() {
             </option>
           ))}
         </select>
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750 md:hidden"
+          title={t("settings")}
+        >
+          <Settings size={18} />
+        </button>
+        </div>
 
+        {/* 第二列（手機，可橫向捲動）／右半（桌面）：檢視切換、匯出、狀態、LoRA、歷史、設定 */}
+        <div className="scrollbar-none flex min-w-0 basis-full items-center gap-1.5 overflow-x-auto md:basis-auto md:grow md:gap-2">
         <div className="flex-1" />
 
         {/* Context window 計量（沿用聊天頁的用量；無用量時顯示視窗大小） */}
@@ -131,7 +176,7 @@ export default function ComicStudio() {
             title={ct("gridView")}
           >
             <LayoutGrid size={14} />
-            <span className="hidden sm:inline">{ct("gridView")}</span>
+            <span className="hidden lg:inline">{ct("gridView")}</span>
           </button>
           <button
             onClick={() => setView("page")}
@@ -143,7 +188,7 @@ export default function ComicStudio() {
             title={ct("pageView")}
           >
             <StretchHorizontal size={14} />
-            <span className="hidden sm:inline">{ct("pageView")}</span>
+            <span className="hidden lg:inline">{ct("pageView")}</span>
           </button>
         </div>
 
@@ -158,7 +203,7 @@ export default function ComicStudio() {
           ) : (
             <Download size={14} />
           )}
-          <span className="hidden md:inline">
+          <span className="hidden lg:inline">
             {exporting ? ct("exporting") : ct("exportPng")}
           </span>
         </button>
@@ -173,6 +218,15 @@ export default function ComicStudio() {
             A1111
           </span>
         </div>
+
+        {/* 作品庫（伺服器上永久保存的作品） */}
+        <button
+          onClick={() => setLibraryOpen(true)}
+          className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750"
+          title={ct("library")}
+        >
+          <FolderOpen size={18} />
+        </button>
 
         {/* LoRA 參考 */}
         <button
@@ -196,22 +250,23 @@ export default function ComicStudio() {
 
         <button
           onClick={() => setSettingsOpen(true)}
-          className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750"
+          className="hidden shrink-0 rounded-lg p-2 text-gray-400 hover:bg-ink-750 md:block"
           title={t("settings")}
         >
           <Settings size={18} />
         </button>
+        </div>
       </header>
 
       {/* 內容 */}
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         {panelOpen && (
-          <aside className="shrink-0 overflow-y-auto border-b border-ink-700 lg:w-[360px] lg:border-b-0 lg:border-r">
+          <aside className="shrink-0 border-b border-ink-700 lg:w-[360px] lg:overflow-y-auto lg:border-b-0 lg:border-r">
             <ScriptPanel />
           </aside>
         )}
 
-        <main className="min-w-0 flex-1 overflow-y-auto">
+        <main className="min-w-0 flex-1 lg:overflow-y-auto">
           {panels.length === 0 ? (
             <div className="flex h-full items-center justify-center p-8">
               <p className="max-w-md text-center text-sm leading-relaxed text-gray-500">
@@ -231,6 +286,7 @@ export default function ComicStudio() {
       </div>
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {libraryOpen && <ComicLibrary onClose={() => setLibraryOpen(false)} />}
 
       {/* LoRA 參考：「帶入」改為接到漫畫畫風，隱藏聊天專屬的「直接生成」 */}
       {loraOpen && (

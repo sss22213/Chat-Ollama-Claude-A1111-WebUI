@@ -177,6 +177,30 @@ export default function SettingsModal({ onClose }) {
               onChange={(v) => setSettings({ sendGenInfo: v })}
               hint={t("sendGenInfoHint")}
             />
+            <Toggle
+              label={t("autoCompact")}
+              checked={!!settings.autoCompact}
+              onChange={(v) => setSettings({ autoCompact: v })}
+              hint={t("autoCompactHint")}
+            />
+            {settings.autoCompact && (
+              <div className="flex items-center gap-3">
+                <span className="w-32 shrink-0 text-sm text-gray-300">
+                  {t("autoCompactAt")}
+                </span>
+                <select
+                  value={String(settings.autoCompactAt || 0.8)}
+                  onChange={(e) => setSettings({ autoCompactAt: Number(e.target.value) })}
+                  className="flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-1.5 text-sm outline-none focus:border-ink-500"
+                >
+                  {["0.6", "0.7", "0.8", "0.9"].map((v) => (
+                    <option key={v} value={v}>
+                      {Math.round(Number(v) * 100)}%
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <Field label={t("effortLabel")}>
               <div className="space-y-2">
                 {EFFORT_ENGINES.map(({ key, label, options }) => {

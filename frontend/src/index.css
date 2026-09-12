@@ -10,13 +10,44 @@ body,
 #root {
   height: 100%;
 }
+/* iOS Safari：100% 會算到位址列後面；有 dvh 的瀏覽器改用動態視窗高度 */
+@supports (height: 100dvh) {
+  html,
+  body,
+  #root {
+    height: 100dvh;
+  }
+}
 
 body {
   margin: 0;
   background: #0f0f0f;
   color: #ececec;
+  /* 瀏海 / 底部 home bar 的安全區域（viewport-fit=cover 時才有值） */
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  /* 內層容器各自捲動，避免整頁在 iOS 上被拉出橡皮筋空白 */
+  overscroll-behavior-y: none;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+}
+
+/* iOS Safari：輸入框字級 < 16px 時聚焦會自動放大整頁，只在 iOS 上把表單元件補到 16px */
+@supports (-webkit-touch-callout: none) {
+  input,
+  select,
+  textarea {
+    font-size: max(16px, 1em);
+  }
+}
+
+/* 橫向捲動的工具列：隱藏捲軸但保留可捲動 */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
 }
 
 /* 捲軸 */
