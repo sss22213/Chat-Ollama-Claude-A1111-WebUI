@@ -1,0 +1,157 @@
+{
+  "base_url": "{a1111_url}/civitai-helper/v1",
+  "tools": [
+    {
+      "name": "civitai_lora_inventory",
+      "description": "Inventory of the LoRAs installed in the local Stable Diffusion WebUI. Each item has: name (file), prompt_tag (ready-to-use <lora:name:1>), subfolder, size, civitai info when known (model_name, version_name, base_model, trained_words = trigger words, nsfw, model_url) and training metadata read from the file itself (training.base_model_version, training.top_tags) so LoRAs that are not on civitai still show what they were trained on. Optional q filters by file name, model name, trigger word or training tag. Use it for 'what LoRAs do I have', 'which LoRA fits X', or to pick a LoRA and its trigger words for a prompt. Results are paged: use q to narrow, or offset to see more.",
+      "method": "GET",
+      "path": "/loras",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "q": { "type": "string", "description": "Optional case-insensitive substring filter (file name, model name, trigger word or training tag)" },
+          "limit": { "type": "integer", "description": "Max items to return (default 15; keep it small, entries are ~600 chars each)" },
+          "offset": { "type": "integer", "description": "Skip this many items (for paging)" }
+        }
+      },
+      "defaults": { "limit": 15, "metadata": true, "compact": true },
+      "timeout": 180,
+      "max_chars": 12000,
+      "result_note": "In an image prompt use prompt_tag (adjust the weight, e.g. :0.8) plus the civitai.trained_words; when there are none, use a few training.top_tags instead. Mention base_model / training.base_model_version so the user picks a LoRA that matches the checkpoint. 'total' is the number of LoRAs matching; if it exceeds 'count', say so and offer to narrow with q."
+    },
+    {
+      "name": "civitai_list_local_models",
+      "description": "List models installed in the local Stable Diffusion WebUI of one type (lora, ckp = checkpoint, ti = textual-inversion embedding, hyper = hypernetwork), with civitai info when known: model name, base model and trained_words (the trigger words). Optional q filters by file name, model name or trigger word. For LoRAs prefer civitai_lora_inventory (richer); use this for checkpoints, embeddings and hypernetworks, or for a compact LoRA list.",
+      "method": "GET",
+      "path": "/models",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["lora", "ckp", "ti", "hyper"], "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)" },
+          "q": { "type": "string", "description": "Optional case-insensitive substring filter on file name, model name or trigger word" },
+          "no_info_only": { "type": "boolean", "description": "Only models that have no civitai info file yet" },
+          "limit": { "type": "integer", "description": "Max items to return (default 50)" }
+        },
+        "required": ["type"]
+      },
+      "defaults": { "limit": 50 },
+      "max_chars": 7000,
+      "result_note": "A LoRA is used in a prompt as <lora:FILE_NAME_WITHOUT_EXTENSION:0.8>, and its civitai.trained_words are the trigger words to add to the prompt."
+    },
+    {
+      "name": "civitai_local_model_info",
+      "description": "Civitai details stored for ONE installed model: model/version ids, model name, base model, trigger words, and whether a preview exists. Give the file name (e.g. foo.safetensors) or the path relative to the model folder.",
+      "method": "GET",
+      "path": "/models/{type}/info",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["lora", "ckp", "ti", "hyper"], "description": "Model type" },
+          "name": { "type": "string", "description": "File name or relative path inside the model folder" }
+        },
+        "required": ["type", "name"]
+      }
+    },
+    {
+      "name": "civitai_lookup_model",
+      "description": "Look up a model on civitai by its model id or model page URL (https://civitai.com/models/12345/...). Returns name, type, nsfw flag, creator, description, the target model folder with its existing subfolders, and every version (id, name, base model, trigger words, files). Versions are listed newest first. Use it before downloading, or when the user pastes a civitai link.",
+      "method": "GET",
+      "path": "/model-info",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url_or_id": { "type": "string", "description": "civitai model id or model page URL" }
+        },
+        "required": ["url_or_id"]
+      },
+      "max_chars": 7000,
+      "result_note": "Summarize for the user: name, type, base model of the newest version, trigger words, file size, and nsfw if true. Ask which version/subfolder to use only if it is unclear."
+    },
+    {
+      "name": "civitai_download_model",
+      "description": "Download a civitai model version into the WebUI's model folder for its type (LoRA, checkpoint, embedding or hypernetwork), then save its civitai info file and preview image. Defaults to the newest version and the folder root. The call waits up to ~9 minutes; larger checkpoints may still be running afterwards.",
+      "method": "POST",
+      "path": "/download",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url_or_id": { "type": "string", "description": "civitai model id or model page URL" },
+          "version_id": { "type": "integer", "description": "Version id to download (default: newest)" },
+          "version": { "type": "string", "description": "Version name, alternative to version_id" },
+          "subfolder": { "type": "string", "description": "Subfolder under the model type folder, e.g. '/' (default) or '/characters'" },
+          "create_subfolder": { "type": "boolean", "description": "Create the subfolder if it does not exist" },
+          "dl_all": { "type": "boolean", "description": "Download every file of the version instead of only the primary one" }
+        },
+        "required": ["url_or_id"]
+      },
+      "defaults": { "wait": true, "timeout": 540 },
+      "timeout": 580,
+      "result_note": "If status is 'done': report result.file and result.trained_words, then call refresh_loras (for a LoRA) or refresh_checkpoints (for a checkpoint) so the WebUI sees the new file. If status is 'running': tell the user the download continues in the background and check later with civitai_task_status using the task id. If status is 'error': relay the error (a login/API-key error means the civitai API key must be set in the WebUI Settings → Civitai Helper)."
+    },
+    {
+      "name": "civitai_scan_models",
+      "description": "Scan the local model folders of the given types and fetch the missing civitai info files and preview images (matches files by SHA256 against civitai). Use when the user wants trigger words / previews for models that lack them, or after copying models in manually. Can take minutes for many models.",
+      "method": "POST",
+      "path": "/scan",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model_types": { "type": "array", "items": { "type": "string", "enum": ["lora", "ckp", "ti", "hyper"] }, "description": "Model types to scan" }
+        },
+        "required": ["model_types"]
+      },
+      "defaults": { "wait": true, "timeout": 540 },
+      "timeout": 580,
+      "result_note": "If status is 'running', the scan continues in the background; check later with civitai_task_status."
+    },
+    {
+      "name": "civitai_check_new_versions",
+      "description": "Check which installed models of the given types have a newer version on civitai. Returns, per model, the new version name, description, download URL and preview URL. Can take minutes for many models.",
+      "method": "POST",
+      "path": "/check-new-version",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model_types": { "type": "array", "items": { "type": "string", "enum": ["lora", "ckp", "ti", "hyper"] }, "description": "Model types to check" }
+        },
+        "required": ["model_types"]
+      },
+      "defaults": { "wait": true, "timeout": 540 },
+      "timeout": 580,
+      "result_note": "Present the list to the user (model name → new version). To install one, call civitai_download_model with its model_id and the new_version_id."
+    },
+    {
+      "name": "civitai_task_status",
+      "description": "Poll a background Civitai Helper task (download / scan / check-new-version) by its id. Waits up to 60 s for it to finish before returning.",
+      "method": "GET",
+      "path": "/tasks/{task_id}",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task_id": { "type": "string", "description": "Task id returned by a previous download/scan/check call" }
+        },
+        "required": ["task_id"]
+      },
+      "defaults": { "wait": true, "timeout": 60 },
+      "timeout": 90
+    },
+    {
+      "name": "refresh_loras",
+      "description": "Make the WebUI re-scan its LoRA folder so a newly downloaded LoRA can be used immediately. Call it after a successful LoRA download.",
+      "method": "POST",
+      "base_url": "{a1111_url}",
+      "path": "/sdapi/v1/refresh-loras",
+      "parameters": { "type": "object", "properties": {} },
+      "max_chars": 300
+    },
+    {
+      "name": "refresh_checkpoints",
+      "description": "Make the WebUI re-scan its checkpoint folder so a newly downloaded checkpoint appears in the model list. Call it after a successful checkpoint download.",
+      "method": "POST",
+      "base_url": "{a1111_url}",
+      "path": "/sdapi/v1/refresh-checkpoints",
+      "parameters": { "type": "object", "properties": {} },
+      "max_chars": 300
+    }
+  ]
+}

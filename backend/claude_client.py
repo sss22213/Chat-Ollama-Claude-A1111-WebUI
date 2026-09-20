@@ -31,37 +31,73 @@ def available() -> bool:
 _1M = 1_000_000
 _200K = 200_000
 
-# Claude Code CLI（2.1.261）內建模型目錄：名稱 → (顯示名稱, context 視窗)。
+# 推理強度等級（CLI --effort 接受的全集；個別模型的支援範圍見 MODEL_CATALOG）
+_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+_EFFORTS_FULL = ("low", "medium", "high", "xhigh", "max")  # Claude 5 系列、Opus 4.7+
+_EFFORTS_NO_XHIGH = ("low", "medium", "high", "max")  # Opus 4.6 / Sonnet 4.6
+_NO_EFFORT: tuple[str, ...] = ()  # Haiku 4.5 與更舊的模型：CLI 不接受 --effort
+
+# Claude Code CLI（2.1.278，2026-09-20 從執行檔目錄比對）內建模型目錄：
+# 名稱 → (顯示名稱, context 視窗, 支援的推理強度)。
 # 別名由 CLI 解析成該系列最新版；也可直接填完整 ID。
-# Opus 4.7+ / Sonnet 5 / Fable 原生 1M；Opus 4.6 / Sonnet 4.6 / Haiku 4.5 為 200K
-# （前兩者加 "[1m]" 後綴可開 1M，見 model_info）。
-MODEL_CATALOG: dict[str, tuple[str, int]] = {
+# Fable / Opus 5 / Opus 4.7+ / Sonnet 5 原生 1M；Opus 4.6 / Sonnet 4.6 / Haiku 4.5 為 200K
+# （加 "[1m]" 後綴可開 1M，見 model_info）。Mythos 5 / 5.1 也在 CLI 目錄裡，但只開放給
+# 核准的組織，所以不列預設；填完整 ID 一樣能用。
+MODEL_CATALOG: dict[str, tuple[str, int, tuple[str, ...]]] = {
     # 別名（永遠指向最新版）
-    "fable": ("Fable 5.1", _1M),
-    "opus": ("Opus 5", _1M),
-    "sonnet": ("Sonnet 5", _1M),
-    "haiku": ("Haiku 4.5", _200K),
+    "fable": ("Fable 5.1", _1M, _EFFORTS_FULL),
+    "opus": ("Opus 5", _1M, _EFFORTS_FULL),
+    "sonnet": ("Sonnet 5", _1M, _EFFORTS_FULL),
+    "haiku": ("Haiku 4.5", _200K, _NO_EFFORT),
     # 完整 ID（固定版本）
-    "claude-fable-5-1": ("Fable 5.1", _1M),
-    "claude-fable-5": ("Fable 5", _1M),
-    "claude-opus-5": ("Opus 5", _1M),
-    "claude-opus-4-8": ("Opus 4.8", _1M),
-    "claude-opus-4-7": ("Opus 4.7", _1M),
-    "claude-opus-4-6": ("Opus 4.6", _200K),
-    "claude-sonnet-5": ("Sonnet 5", _1M),
-    "claude-sonnet-4-6": ("Sonnet 4.6", _200K),
-    "claude-haiku-4-5": ("Haiku 4.5", _200K),
+    "claude-fable-5-1": ("Fable 5.1", _1M, _EFFORTS_FULL),
+    "claude-fable-5": ("Fable 5", _1M, _EFFORTS_FULL),
+    "claude-mythos-5-1": ("Mythos 5.1", _1M, _EFFORTS_FULL),
+    "claude-mythos-5": ("Mythos 5", _1M, _NO_EFFORT),
+    "claude-opus-5": ("Opus 5", _1M, _EFFORTS_FULL),
+    "claude-opus-4-8": ("Opus 4.8", _1M, _EFFORTS_FULL),
+    "claude-opus-4-7": ("Opus 4.7", _1M, _EFFORTS_FULL),
+    "claude-opus-4-6": ("Opus 4.6", _200K, _EFFORTS_NO_XHIGH),
+    "claude-opus-4-5": ("Opus 4.5", _200K, _NO_EFFORT),
+    "claude-sonnet-5": ("Sonnet 5", _1M, _EFFORTS_FULL),
+    "claude-sonnet-4-6": ("Sonnet 4.6", _200K, _EFFORTS_NO_XHIGH),
+    "claude-sonnet-4-5": ("Sonnet 4.5", _200K, _NO_EFFORT),
+    "claude-haiku-4-5": ("Haiku 4.5", _200K, _NO_EFFORT),
 }
+
+
+def _base_name(name: str) -> str:
+    return name[:-4] if name.endswith("[1m]") else name
 
 
 def model_info(name: str) -> tuple[str, int]:
     """(顯示名稱, context)。目錄外的名稱原樣顯示、context 用 200K 保守值；
     "[1m]" 後綴＝CLI 的 1M 視窗開關。"""
-    base = name[:-4] if name.endswith("[1m]") else name
-    label, ctx = MODEL_CATALOG.get(base, (base, _200K))
+    base = _base_name(name)
+    label, ctx, _ = MODEL_CATALOG.get(base, (base, _200K, _EFFORTS_FULL))
     if base != name:
         label, ctx = f"{label} · 1M", _1M
     return label, ctx
+
+
+def efforts_for(name: str) -> tuple[str, ...]:
+    """該模型接受的推理強度；目錄外的名稱假設是新模型（全部等級）。"""
+    return MODEL_CATALOG.get(_base_name(name), ("", 0, _EFFORTS_FULL))[2]
+
+
+def clamp_effort(model: str, effort: str | None) -> str | None:
+    """把設定裡的強度調成該模型接受的：不支援 --effort 的模型回 None（不送），
+    xhigh 在沒有 xhigh 的模型上退成 high。"""
+    if effort not in _EFFORTS:
+        return None
+    supported = efforts_for(model)
+    if not supported:
+        return None
+    if effort in supported:
+        return effort
+    order = [e for e in _EFFORTS if e in supported]
+    lower = [e for e in order if _EFFORTS.index(e) < _EFFORTS.index(effort)]
+    return lower[-1] if lower else order[0]
 
 
 def context_length_for(model: str) -> int:
@@ -83,6 +119,8 @@ def list_models() -> list[dict[str, Any]]:
                 "supports_tools": True,
                 "supports_vision": True,
                 "context_length": context_length_for(m),
+                # 該模型接受的推理強度（Haiku 4.5 為空＝不送 --effort）；設定頁的下拉用
+                "efforts": list(efforts_for(m)),
                 "engine": "claude_cli",
             }
         )
@@ -139,9 +177,6 @@ def _build_user_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return content
 
 
-_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-
-
 def _base_args(
     model: str, system: str, output_format: str, effort: str | None = None
 ) -> list[str]:
@@ -161,7 +196,8 @@ def _base_args(
         "--system-prompt",
         system,
     ]
-    if effort in _EFFORTS:
+    effort = clamp_effort(model, effort)  # 依模型能力修正；不支援的模型不送
+    if effort:
         args += ["--effort", effort]  # 推理強度：low/medium/high/xhigh/max
     args += [*CLAUDE_EXTRA_ARGS]
     return args

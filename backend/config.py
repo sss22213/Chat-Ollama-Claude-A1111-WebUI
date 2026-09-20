@@ -74,7 +74,7 @@ CODEX_MODELS = [
     m.strip()
     for m in (
         os.getenv("CODEX_MODELS")
-        or "gpt-6-astra,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5,gpt-5.4-mini"
+        or "gpt-6-astra,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5"
     ).split(",")
     if m.strip()
 ]
@@ -94,6 +94,14 @@ PROMPT_HISTORY_DIR = os.getenv("PROMPT_HISTORY_DIR", "").strip()
 SKILLS_DIR = Path(os.getenv("SKILLS_DIR", Path(__file__).parent / "skills"))
 # 注入給模型的技能提示詞長度上限（字元）；保護 context 較小的本地模型。
 SKILL_MAX_CHARS = int(os.getenv("SKILL_MAX_CHARS", "8000"))
+# 技能腳本（設定頁「允許技能執行腳本」開啟後，模型可用 run_skill_script 跑技能內的 *.py）。
+# 腳本只拿到最小環境；此處列出的環境變數名稱（逗號分隔，例如 API token）若存在於
+# 後端環境才會一併透傳給腳本。另外 DATA_DIR/skill-work/<技能>/.env 的內容也會帶入。
+SKILL_SCRIPT_ENV = [
+    s.strip() for s in os.getenv("SKILL_SCRIPT_ENV", "").split(",") if s.strip()
+]
+# 單次腳本執行的秒數上限（tools.json 可縮短、不可超過）；逾時直接 kill。
+SKILL_SCRIPT_TIMEOUT = float(os.getenv("SKILL_SCRIPT_TIMEOUT", "300"))
 
 # ---- 伺服器端目錄瀏覽 / 圖片目錄 白名單 ----
 # /api/browse、/api/browse/mkdir 與圖片儲存位置只能落在這些根目錄之內

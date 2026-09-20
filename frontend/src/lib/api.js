@@ -386,6 +386,18 @@ export async function saveSkillsDir(dir) {
   return r.json();
 }
 
+// 允許技能執行腳本（run_skill_script）；回傳與 fetchSkillsDir 相同的狀態物件
+export async function saveSkillScripts(enabled) {
+  const r = await fetch("/api/skills-scripts", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: !!enabled }),
+  });
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "設定失敗");
+  return r.json();
+}
+
 export async function fetchHealth() {
   try {
     const r = await fetch("/api/health");

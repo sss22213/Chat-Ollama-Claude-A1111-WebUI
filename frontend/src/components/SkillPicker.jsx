@@ -14,7 +14,7 @@ import {
   ArrowLeft,
   AlertCircle,
 } from "lucide-react";
-import { useChat } from "../store/chat";
+import { useChat, skillSelection } from "../store/chat";
 import { useT } from "../i18n";
 import {
   fetchSkill,
@@ -43,7 +43,9 @@ Generate images with the app's built-in image tool (local Stable Diffusion).
 export default function SkillPicker({ onClose }) {
   const t = useT();
   const skills = useChat((s) => s.skills);
-  const active = useChat((s) => s.settings.skill) || "";
+  const settings = useChat((s) => s.settings);
+  const selected = skillSelection(settings);
+  const isAuto = selected.includes("__auto__");
   const setSettings = useChat((s) => s.setSettings);
   const reloadSkills = useChat((s) => s.reloadSkills);
 
@@ -55,7 +57,16 @@ export default function SkillPicker({ onClose }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  const choose = (slug) => setSettings({ skill: slug });
+  // 多選：每個技能各自開關；「自動」與手動選擇互斥；「不啟用」清空
+  const setSkills = (list) => setSettings({ skills: list, skill: undefined });
+  const chooseNone = () => setSkills([]);
+  const chooseAuto = () => setSkills(["__auto__"]);
+  const toggleSkill = (slug) => {
+    const manual = selected.filter((x) => x !== "__auto__");
+    setSkills(
+      manual.includes(slug) ? manual.filter((x) => x !== slug) : [...manual, slug]
+    );
+  };
 
   const toggleView = async (slug) => {
     if (viewing === slug) return setViewing(null);
@@ -238,16 +249,16 @@ export default function SkillPicker({ onClose }) {
               <Row
                 icon={<Ban size={15} className="text-gray-400" />}
                 label={t("skillNone")}
-                on={active === ""}
-                onClick={() => choose("")}
+                on={selected.length === 0}
+                onClick={chooseNone}
               />
               {/* 自動 */}
               <Row
                 icon={<Wand2 size={15} className="text-violet-300" />}
                 label={t("skillAuto")}
                 desc={t("skillAutoDesc")}
-                on={active === "__auto__"}
-                onClick={() => choose("__auto__")}
+                on={isAuto}
+                onClick={chooseAuto}
               />
 
               {skills.length === 0 && (
@@ -257,7 +268,7 @@ export default function SkillPicker({ onClose }) {
               )}
 
               {skills.map((s) => {
-                const on = active === s.slug;
+                const on = selected.includes(s.slug);
                 return (
                   <div
                     key={s.slug}
@@ -275,6 +286,24 @@ export default function SkillPicker({ onClose }) {
                             {t("skillActive")}
                           </span>
                         )}
+                        {s.has_tools && (
+                          <span
+                            data-testid="chip-tools"
+                            title={t("skillChipToolsHint")}
+                            className="shrink-0 rounded bg-sky-600/20 px-1.5 py-0.5 text-[10px] text-sky-300"
+                          >
+                            {t("skillChipTools")}
+                          </span>
+                        )}
+                        {s.has_scripts && (
+                          <span
+                            data-testid="chip-scripts"
+                            title={t("skillChipScriptsHint")}
+                            className="shrink-0 rounded bg-amber-600/20 px-1.5 py-0.5 text-[10px] text-amber-300"
+                          >
+                            {t("skillChipScripts")}
+                          </span>
+                        )}
                       </div>
                       {s.description && (
                         <p className="mt-0.5 line-clamp-3 text-xs leading-snug text-gray-500">
@@ -284,7 +313,8 @@ export default function SkillPicker({ onClose }) {
                     </div>
                     <div className="flex items-center gap-1.5 border-t border-ink-700/60 px-3 py-2">
                       <button
-                        onClick={() => choose(on ? "" : s.slug)}
+                        data-testid={`skill-toggle-${s.slug}`}
+                        onClick={() => toggleSkill(s.slug)}
                         className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium ${
                           on
                             ? "bg-ink-700 text-gray-200 hover:bg-ink-600"

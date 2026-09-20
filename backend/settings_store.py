@@ -47,6 +47,8 @@ _settings: dict = {
     "prompt_history_dir": "",
     # 技能目錄的 UI 覆寫（空字串＝沿用 env 預設 SKILLS_DIR）；所有 SKILL.md 放這裡
     "skills_dir": "",
+    # 允許模型執行技能資料夾內的 Python 腳本（run_skill_script）；預設關閉
+    "skill_scripts": False,
     "sources": {
         "ollama": _default_source(OLLAMA_URL, 11434),
         "a1111": _default_source(A1111_URL, 7860),
@@ -102,6 +104,7 @@ def load() -> dict:
         except Exception:
             pass
     _settings.setdefault("skills_dir", "")
+    _settings.setdefault("skill_scripts", False)
     before = (_settings.get("image_dir"), list(_settings.get("known_dirs") or []))
     img = str(_settings.get("image_dir") or "").strip()
     if _looks_default(img):
@@ -263,7 +266,19 @@ def skills_dir_info() -> dict:
         "override": (_settings.get("skills_dir") or ""),
         "writable": os.access(d, os.W_OK) if d.exists() else False,
         "count": count,
+        "scripts_enabled": get_skill_scripts(),
     }
+
+
+def get_skill_scripts() -> bool:
+    """是否允許模型執行技能內的腳本（設定頁開關，持久化）。"""
+    return bool(_settings.get("skill_scripts"))
+
+
+def set_skill_scripts(enabled: bool) -> dict:
+    _settings["skill_scripts"] = bool(enabled)
+    _save()
+    return skills_dir_info()
 
 
 # ---- 服務來源（Ollama / A1111）----

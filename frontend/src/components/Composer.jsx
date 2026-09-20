@@ -14,6 +14,7 @@ export default function Composer() {
   const t = useT();
   const [text, setText] = useState("");
   const streaming = useChat((s) => s.streaming);
+  const sendKey = useChat((s) => s.settings.sendKey); // enter | shiftEnter（設定頁可改）
   const sendMessage = useChat((s) => s.sendMessage);
   const stopStreaming = useChat((s) => s.stopStreaming);
   const attachments = useChat((s) => s.attachments);
@@ -83,8 +84,12 @@ export default function Composer() {
   };
 
   const onKeyDown = (e) => {
-    // Shift+Enter 送出；Enter 換行
-    if (e.key === "Enter" && e.shiftKey) {
+    if (e.key !== "Enter") return;
+    // 輸入法選字中的 Enter（isComposing / keyCode 229）只是確定字詞，不送出
+    if (e.nativeEvent?.isComposing || e.keyCode === 229) return;
+    // 預設 Enter 送出、Shift+Enter 換行；設定改成 shiftEnter 則相反
+    const wantsShift = sendKey === "shiftEnter";
+    if (e.shiftKey === wantsShift && !e.ctrlKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
       submit();
     }

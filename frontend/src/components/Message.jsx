@@ -12,6 +12,7 @@ import {
   ExternalLink,
   Combine,
   FileText,
+  Wrench,
 } from "lucide-react";
 import ImageBlock from "./ImageBlock";
 import { useT } from "../i18n";
@@ -67,6 +68,9 @@ export default function Message({ msg }) {
             <WebActivity toolName={msg.toolName} />
           ) : msg.toolName === "read_png_info" ? (
             <PngInfoActivity />
+          ) : msg.toolName &&
+            !["generate_image", "edit_image"].includes(msg.toolName) ? (
+            <ToolActivity toolName={msg.toolName} />
           ) : (
             <GenProgress
               progress={msg.progress}
@@ -159,6 +163,19 @@ function WebActivity({ toolName }) {
       <Loader2 size={15} className="animate-spin" />
       <Globe size={14} />
       {toolName === "fetch_url" ? t("readingPage") : t("searching")}
+    </div>
+  );
+}
+
+// 技能 API 工具（tools.json 宣告的自訂工具）執行中的提示
+function ToolActivity({ toolName }) {
+  const t = useT();
+  return (
+    <div className="flex items-center gap-2 rounded-lg bg-ink-800 px-3 py-2 text-sm text-amber-300">
+      <Loader2 size={15} className="animate-spin" />
+      <Wrench size={14} />
+      {t("callingTool")}
+      <code className="text-xs opacity-80">{toolName}</code>
     </div>
   );
 }

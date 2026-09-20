@@ -11,7 +11,7 @@ import {
   Sparkles,
   Images,
 } from "lucide-react";
-import { useChat } from "../store/chat";
+import { useChat, skillSelection } from "../store/chat";
 import { useT } from "../i18n";
 
 export default function TopBar({
@@ -45,11 +45,20 @@ export default function TopBar({
     : settings.chatModel;
   const activeModelMeta = models.find((m) => m.name === activeModel);
   const toolsAvailable = !!activeModelMeta?.supports_tools;
-  const skillOn = !!settings.skill;
-  const skillLabel =
-    settings.skill === "__auto__"
-      ? t("skillAuto")
-      : skills.find((s) => s.slug === settings.skill)?.name;
+  const selectedSkills = skillSelection(settings);
+  const skillOn = selectedSkills.length > 0;
+  const skillNames = selectedSkills
+    .filter((x) => x !== "__auto__")
+    .map((slug) => skills.find((s) => s.slug === slug)?.name || slug);
+  // 自動 → 「自動」；一個 → 名稱；多個 → 「第一個 +N」
+  const skillLabel = selectedSkills.includes("__auto__")
+    ? t("skillAuto")
+    : skillNames.length > 1
+      ? `${skillNames[0]} +${skillNames.length - 1}`
+      : skillNames[0];
+  const skillTitle = selectedSkills.includes("__auto__")
+    ? t("skillAuto")
+    : skillNames.join(", ");
 
   const onChangeModel = (name) => {
     setSettings({ chatModel: name });
@@ -201,7 +210,8 @@ export default function TopBar({
       {/* 技能（Agent Skills）：啟用時高亮並顯示名稱 */}
       <button
         onClick={onOpenSkills}
-        title={skillLabel || t("skills")}
+        title={skillTitle || t("skills")}
+        data-testid="skill-button"
         className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-sm transition sm:px-3 ${
           skillOn
             ? "border-violet-600/50 bg-violet-600/15 text-violet-300"

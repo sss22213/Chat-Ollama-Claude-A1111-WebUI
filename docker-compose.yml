@@ -26,6 +26,11 @@ services:
       CODEX_MODELS: ${CODEX_MODELS:-}
       # 提示詞歷史：容器內固定讀此掛載點；實際主機目錄由下方 volume 的 PROMPT_HISTORY_DIR 決定。
       PROMPT_HISTORY_DIR: /data/prompt-history
+      # 技能腳本（設定頁「允許技能執行腳本」）：要透傳給腳本的環境變數名稱（逗號分隔，
+      # 例如 CIVITAI_API_KEY）。列出的變數也要像下面這樣一併傳進容器，compose 不會自動帶入。
+      # 另一個做法：把 KEY=VALUE 寫在 backend/data/skill-work/<技能>/.env（volume 內，免重啟）。
+      SKILL_SCRIPT_ENV: ${SKILL_SCRIPT_ENV:-}
+      CIVITAI_API_KEY: ${CIVITAI_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -10,6 +10,7 @@ import a1111_client
 import claude_client
 import codex_client
 import ollama_client
+import skill_tools
 import skills_store
 import tools as tools_mod
 import web_tools
@@ -120,8 +121,11 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _SALVAGE_TOOLS = ("generate_image", "edit_image", "web_search", "fetch_url", "read_png_info")
 
 
-def _salvage_tool_calls(text: str) -> list[dict[str, Any]]:
-    """模型沒發出正式 tool call、卻把呼叫 JSON 印在文字裡時，撿回來照常執行。"""
+def _salvage_tool_calls(text: str, extra: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    """模型沒發出正式 tool call、卻把呼叫 JSON 印在文字裡時，撿回來照常執行。
+
+    extra：本回合額外允許的工具名（技能 API 工具）。"""
+    allowed = set(_SALVAGE_TOOLS) | set(extra)
     calls: list[dict[str, Any]] = []
     seen: set[str] = set()
     candidates = _TOOL_CALL_BLOCK_RE.findall(text) + _JSON_FENCE_RE.findall(text)
@@ -136,7 +140,7 @@ def _salvage_tool_calls(text: str) -> list[dict[str, Any]]:
             d = d["function"]
         name = d.get("name")
         args = d.get("arguments") or d.get("parameters") or {}
-        if name not in _SALVAGE_TOOLS or not isinstance(args, dict):
+        if name not in allowed or not isinstance(args, dict):
             continue
         key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False)}"
         if key in seen:
@@ -265,11 +269,15 @@ async def run_chat(
     """
     # 啟用技能：把指示注入 system（全引擎通用）
     messages = _inject_skill(messages, skill)
+    # 技能宣告的 API 工具（tools.json）：ollama 走 function calling、Claude 走 [[CALL]]；codex 暫不支援
+    skill_tool_defs = skills_store.tools_for(skill)
+    skill_tool_map = {t["name"]: t for t in skill_tool_defs}
 
     if engine == "claude_cli":
         async for s in _run_cli_engine(
             claude_client, _claude_ctx(model),
-            model, messages, tools_enabled, image_settings, bool(think), effort
+            model, messages, tools_enabled, image_settings, bool(think), effort,
+            skill_tool_defs=skill_tool_defs,
         ):
             yield s
         return
@@ -295,6 +303,8 @@ async def run_chat(
         tool_schema += tools_mod.image_tools(bool(init_image))
     if can_tools and web_enabled:
         tool_schema += tools_mod.web_tools_schema()
+    if can_tools and skill_tool_defs:
+        tool_schema += skill_tools.ollama_schema(skill_tool_defs)
     tool_schema = tool_schema or None
 
     convo = [dict(m) for m in messages]
@@ -347,8 +357,8 @@ async def run_chat(
                 await stream.aclose()  # 確實斷線，讓 ollama 停止生成
 
             # 防遺忘 3)：沒有正式 tool call 時，撿模型印在文字裡的呼叫殘骸
-            if not tool_calls and can_tools and tools_enabled and assistant_content:
-                tool_calls = _salvage_tool_calls(assistant_content)
+            if not tool_calls and can_tools and (tools_enabled or skill_tool_map) and assistant_content:
+                tool_calls = _salvage_tool_calls(assistant_content, tuple(skill_tool_map))
 
             if not tool_calls:
                 # 防遺忘 2)：使用者明顯要圖卻整輪沒生圖 → 補一輪糾正重試
@@ -389,7 +399,8 @@ async def run_chat(
                     image_generated = True
 
                 async for content in _run_tool(
-                    name, args, image_settings, init_image, png_source
+                    name, args, image_settings, init_image, png_source,
+                    skill_tool_map=skill_tool_map,
                 ):
                     if isinstance(content, str):
                         convo.append({"role": "tool", "content": content})
@@ -426,8 +437,8 @@ async def run_chat(
 # 而是請模型在文字裡輸出一段指令標記（directive），由後端邊串流邊解析出來、
 # 跑 A1111、把圖塞回對話。Claude 與 Codex 共用同一條解析路徑。
 
-_OPENERS = {"[[GENIMG]]": "genimg", "[[EDITIMG]]": "editimg"}
-_CLOSERS = {"genimg": "[[/GENIMG]]", "editimg": "[[/EDITIMG]]"}
+_OPENERS = {"[[GENIMG]]": "genimg", "[[EDITIMG]]": "editimg", "[[CALL]]": "call"}
+_CLOSERS = {"genimg": "[[/GENIMG]]", "editimg": "[[/EDITIMG]]", "call": "[[/CALL]]"}
 
 
 def _safe_emit_len(buf: str, openers: list[str]) -> int:
@@ -496,17 +507,26 @@ def _base_system(messages: list[dict[str, Any]]) -> str:
 
 
 def _directive_system(
-    messages: list[dict[str, Any]], tools_enabled: bool, has_init_image: bool
+    messages: list[dict[str, Any]],
+    tools_enabled: bool,
+    has_init_image: bool,
+    skill_tool_defs: list[dict[str, Any]] | None = None,
 ) -> str:
     base = _base_system(messages)
+    tool_instr = skill_tools.directive_instructions(skill_tool_defs or [])
     if not tools_enabled:
-        return base
+        return base + tool_instr
 
+    no_tools = (
+        "do NOT use any tools other than the [[CALL]] skill API tools described below."
+        if tool_instr
+        else "do NOT use any tools."
+    )
     instr = [
         "",
         "# Image generation (IMPORTANT)",
         "You are a chat assistant with NO file system and NO shell. Do NOT run "
-        "commands, do NOT create or edit files, do NOT use any tools. You cannot "
+        f"commands, do NOT create or edit files, {no_tools} You cannot "
         "save an image to disk.",
         "The ONLY way to show the user an image is to print this marker inline in "
         "your reply (the app intercepts it, runs Stable Diffusion / A1111, and "
@@ -532,7 +552,44 @@ def _directive_system(
             '[[EDITIMG]]{"prompt": "desired result as english tags", '
             '"negative_prompt": "optional", "denoising_strength": 0.6}[[/EDITIMG]]',
         ]
-    return base + "\n".join(instr)
+    return base + "\n".join(instr) + tool_instr
+
+
+async def _run_call_directive(
+    payload: str, skill_tool_map: dict[str, dict[str, Any]]
+) -> AsyncIterator[Any]:
+    """執行 [[CALL]] 技能工具指令。yield dict=SSE 事件、yield str=要回給模型的結果文字。"""
+    try:
+        req = json.loads(payload.strip())
+        if not isinstance(req, dict):
+            raise ValueError("not an object")
+    except (json.JSONDecodeError, ValueError):
+        yield {"type": "error", "message": "技能工具指令解析失敗"}
+        yield "Tool call failed: the [[CALL]] payload was not a JSON object with 'tool' and 'args'."
+        return
+    name = str(req.get("tool") or req.get("name") or "").strip()
+    args = req.get("args") or req.get("arguments") or {}
+    if not isinstance(args, dict):
+        args = {}
+    tool = skill_tool_map.get(name)
+    if not tool:
+        yield f"Tool call failed: unknown tool '{name}'. Available tools: {', '.join(skill_tool_map) or '(none)'}."
+        return
+    yield {"type": "tool_call", "name": name, "args": args}
+    try:
+        yield await skill_tools.call(tool, args)
+    except Exception as e:
+        yield {"type": "error", "message": f"技能工具失敗：{e}"}
+        yield f"Tool {name} failed: {e}"
+
+
+def _tool_results_message(results: list[str]) -> str:
+    return (
+        "(tool results — sent by the app, not by the user)\n\n"
+        + "\n\n".join(results)
+        + "\n\nContinue your reply to the user using these results, in the user's "
+        "language. Emit another [[CALL]] marker only if you still need more data."
+    )
 
 
 async def _run_directive(
@@ -585,11 +642,14 @@ async def _run_cli_engine(
     image_settings: dict[str, Any] | None,
     think: bool,
     effort: str | None = None,
+    skill_tool_defs: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
-    """通用 CLI 引擎路徑：串流文字 + 解析生圖指令。client 為 claude_client / codex_client。"""
+    """通用 CLI 引擎路徑：串流文字 + 解析生圖指令 + 技能工具（[[CALL]]，結果回填後再跑一輪）。
+
+    client 為 claude_client / codex_client。"""
     init_image = _last_init_image(messages)
-    system = _directive_system(messages, tools_enabled, bool(init_image))
-    parser = _DirectiveParser()
+    skill_tool_map = {t["name"]: t for t in (skill_tool_defs or [])}
+    system = _directive_system(messages, tools_enabled, bool(init_image), skill_tool_defs)
     prompt_tokens = 0
     image_done = False  # 本回合是否出現過生圖指令
     reply_text = ""     # 完整回覆文字（補救重試時當歷史）
@@ -599,49 +659,76 @@ async def _run_cli_engine(
         else messages
     )
 
-    degen = _DegenWatch()
-
     try:
-        stream = client.chat_stream(
-            model, send_messages, system, think=think, effort=effort
-        )
-        try:
-            async for ev in stream:
-                kind = ev.get("type")
-                if kind == "error":
-                    yield _sse({"type": "error", "message": ev["message"]})
-                    yield _sse({"type": "done"})
-                    return
-                degenerated = False
-                if kind == "usage":
-                    prompt_tokens = ev["prompt_tokens"]
-                elif kind == "thinking":
-                    yield _sse({"type": "thinking", "delta": ev["delta"]})
-                    degenerated = degen.feed(ev["delta"])
-                elif kind == "text":
-                    degenerated = degen.feed(ev["delta"])
-                    for item in parser.feed(ev["delta"]):
-                        if item[0] == "text":
-                            if item[1]:
-                                reply_text += item[1]
-                                yield _sse({"type": "token", "delta": item[1]})
-                        else:
-                            image_done = True
-                            async for out in _run_directive(
-                                item[1], item[2], image_settings, init_image
-                            ):
-                                yield _sse(out)
-                if degenerated:
-                    # 模型陷入重複迴圈：中止串流（client 端會 kill 子行程），
-                    # 讓下面的補救重試接手
-                    yield _sse({"type": "thinking", "delta": _DEGEN_NOTE})
-                    break
-        finally:
-            await stream.aclose()
-        for item in parser.flush():
-            if item[1]:
-                reply_text += item[1]
-                yield _sse({"type": "token", "delta": item[1]})
+        round_messages = send_messages
+        for _round in range(MAX_TOOL_ROUNDS + 1):
+            parser = _DirectiveParser()
+            degen = _DegenWatch()
+            round_text = ""
+            tool_results: list[str] = []
+
+            stream = client.chat_stream(
+                model, round_messages, system, think=think, effort=effort
+            )
+            try:
+                async for ev in stream:
+                    kind = ev.get("type")
+                    if kind == "error":
+                        yield _sse({"type": "error", "message": ev["message"]})
+                        yield _sse({"type": "done"})
+                        return
+                    degenerated = False
+                    if kind == "usage":
+                        prompt_tokens = ev["prompt_tokens"]
+                    elif kind == "thinking":
+                        yield _sse({"type": "thinking", "delta": ev["delta"]})
+                        degenerated = degen.feed(ev["delta"])
+                    elif kind == "text":
+                        degenerated = degen.feed(ev["delta"])
+                        for item in parser.feed(ev["delta"]):
+                            if item[0] == "text":
+                                if item[1]:
+                                    round_text += item[1]
+                                    yield _sse({"type": "token", "delta": item[1]})
+                            elif item[1] == "call":
+                                async for out in _run_call_directive(item[2], skill_tool_map):
+                                    if isinstance(out, str):
+                                        tool_results.append(out)
+                                    else:
+                                        yield _sse(out)
+                            else:
+                                image_done = True
+                                async for out in _run_directive(
+                                    item[1], item[2], image_settings, init_image
+                                ):
+                                    yield _sse(out)
+                    if degenerated:
+                        # 模型陷入重複迴圈：中止串流（client 端會 kill 子行程），
+                        # 讓下面的補救重試接手
+                        yield _sse({"type": "thinking", "delta": _DEGEN_NOTE})
+                        break
+            finally:
+                await stream.aclose()
+            for item in parser.flush():
+                if item[1]:
+                    round_text += item[1]
+                    yield _sse({"type": "token", "delta": item[1]})
+            reply_text += round_text
+
+            if not tool_results:
+                break
+            if _round >= MAX_TOOL_ROUNDS:
+                yield _sse({"type": "token", "delta": "\n[技能工具呼叫次數已達上限]\n"})
+                break
+            # 技能工具結果當下一輪輸入，讓模型接著回答
+            round_messages = [
+                *round_messages,
+                {"role": "assistant", "content": round_text or "(called a tool)"},
+                {"role": "user", "content": _tool_results_message(tool_results)},
+            ]
+            if round_text and not round_text.endswith("\n"):
+                yield _sse({"type": "token", "delta": "\n\n"})
+                reply_text += "\n\n"
 
         # 防遺忘 2)：使用者明顯要圖卻沒出現指令 → 補跑一次，只取指令、不重複輸出文字
         if tools_enabled and not image_done and _wants_image(messages):
@@ -663,7 +750,7 @@ async def _run_cli_engine(
                         if retry_degen.feed(ev["delta"]):
                             break  # 補救輪也退化：直接放棄，別等到逾時
                         for item in retry_parser.feed(ev["delta"]):
-                            if item[0] == "directive":
+                            if item[0] == "directive" and item[1] != "call":
                                 async for out in _run_directive(
                                     item[1], item[2], image_settings, init_image
                                 ):
@@ -882,8 +969,19 @@ async def _run_tool(
     image_settings: dict[str, Any] | None,
     init_image: str | None,
     png_source: str | None = None,
+    skill_tool_map: dict[str, dict[str, Any]] | None = None,
 ) -> AsyncIterator[Any]:
     """執行單一工具。yield dict=SSE 事件、yield str=要 append 回對話的 tool 訊息。"""
+    # --- 技能 API 工具（tools.json）---
+    if skill_tool_map and name in skill_tool_map:
+        yield {"type": "tool_call", "name": name, "args": args}
+        try:
+            yield await skill_tools.call(skill_tool_map[name], args)
+        except Exception as e:
+            yield {"type": "error", "message": f"技能工具失敗：{e}"}
+            yield f"Tool {name} failed: {e}"
+        return
+
     # --- 讀 PNG 生成參數 ---
     if name == "read_png_info":
         yield {"type": "tool_call", "name": "read_png_info", "args": {}}

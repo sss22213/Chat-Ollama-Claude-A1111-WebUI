@@ -23,6 +23,31 @@ import {
 // engine / chatModel 是「裝置本機」設定，不跨裝置同步：
 // 各裝置可用的引擎與模型不同，同步會導致某裝置切了引擎、其他裝置的模型清單也被換掉。
 const DEVICE_LOCAL_SETTINGS = ["engine", "chatModel"];
+// 技能選擇：settings.skills 陣列（相容舊版單一字串 settings.skill）
+export function skillSelection(settings) {
+  if (Array.isArray(settings?.skills)) return settings.skills;
+  const legacy = settings?.skill || "";
+  return legacy ? legacy.split(",").map((x) => x.trim()).filter(Boolean) : [];
+}
+// 送給後端的參數："__auto__" / "a,b" / ""
+export function skillParam(settings) {
+  const sel = skillSelection(settings);
+  return sel.includes("__auto__") ? "__auto__" : sel.join(",");
+}
+// 依後端技能清單整理選擇：__auto__ 保留、已被移除的技能剔除；回 null 表示不用改
+function _normalizedSkills(settings, list) {
+  const sel = skillSelection(settings);
+  const next = sel.includes("__auto__")
+    ? ["__auto__"]
+    : sel.filter((slug) => list.some((s) => s.slug === slug));
+  const same =
+    Array.isArray(settings.skills) &&
+    !("skill" in settings) &&
+    next.length === settings.skills.length &&
+    next.every((x, i) => x === settings.skills[i]);
+  return same ? null : next;
+}
+
 function _syncableSettings(settings) {
   const out = { ...settings };
   for (const k of DEVICE_LOCAL_SETTINGS) delete out[k];
@@ -171,6 +196,7 @@ export const useChat = create(
         toolsEnabled: true,
         webEnabled: false,
         sendGenInfo: true, // 把最近一張生成圖的參數（PNG info）提供給模型
+        sendKey: "enter", // 送出按鍵：enter（Enter 送出、Shift+Enter 換行）| shiftEnter（相反）
         autoCompact: false, // 回覆結束後 context 用量達門檻就自動壓縮對話
         autoCompactAt: 0.8, // 門檻（用量 / num_ctx）
         think: false,
@@ -178,7 +204,9 @@ export const useChat = create(
         numCtx: 8192,
         systemPrompt: "",
         lang: "zh-TW",
-        skill: "", // 啟用的技能 slug（Agent Skill）；空＝不啟用
+        // 啟用的技能 slug 清單（Agent Skill）；可多選；["__auto__"]＝模型自選；空＝不啟用
+        // （舊版單一字串 settings.skill 會在啟動時自動轉成這個陣列）
+        skills: [],
         imageSettings: { ...DEFAULT_IMAGE_SETTINGS },
       },
 
@@ -266,11 +294,15 @@ export const useChat = create(
             fetchSkills(),
           ]);
 
-        // 啟用中的技能若已不在清單（被移除）→ 取消啟用
-        let skill = get().settings.skill || "";
-        if (skill && !skills.some((s) => s.slug === skill)) skill = "";
-        if (skill !== get().settings.skill) {
-          set((st) => ({ settings: { ...st.settings, skill } }));
+        // 啟用中的技能若已不在清單（被移除）→ 剔除；「自動」與其餘選擇保留（含舊版字串轉陣列）
+        {
+          const next = _normalizedSkills(get().settings, skills);
+          if (next) {
+            set((st) => {
+              const { skill: _legacy, ...rest } = st.settings;
+              return { settings: { ...rest, skills: next } };
+            });
+          }
         }
 
         set({
@@ -301,19 +333,14 @@ export const useChat = create(
         await get().loadConversations();
       },
 
-      // 重抓技能清單（新增/編輯/刪除後刷新）；啟用中技能若被刪則取消
+      // 重抓技能清單（新增/編輯/刪除後刷新）；啟用中技能若被刪則剔除
       async reloadSkills() {
         const skills = await fetchSkills();
         set((st) => {
-          const cur = st.settings.skill || "";
-          const stillThere =
-            cur === "" || cur === "__auto__" || skills.some((s) => s.slug === cur);
-          return {
-            skills,
-            settings: stillThere
-              ? st.settings
-              : { ...st.settings, skill: "" },
-          };
+          const next = _normalizedSkills(st.settings, skills);
+          if (!next) return { skills };
+          const { skill: _legacy, ...rest } = st.settings;
+          return { skills, settings: { ...rest, skills: next } };
         });
         return skills;
       },
@@ -590,12 +617,15 @@ export const useChat = create(
         const canTools = get().modelSupportsTools(model);
         const toolsEnabled = settings.toolsEnabled && canTools;
         const webEnabled = settings.webEnabled && canTools;
-        // 取當前引擎自己的 effort；codex 依所選模型能力修正
-        // （例如設定殘留 5.6 才有的 ultra、卻換回 5.5 → 退回 medium，避免 CLI 報錯）
+        // 取當前引擎自己的 effort；codex / claude 依所選模型能力修正
+        // （例如設定殘留 5.6 才有的 ultra、卻換回 5.5 → 退回 medium，避免 CLI 報錯；
+        // Haiku 4.5 宣告空清單＝不支援，後端不會送 --effort）
         let effort = normEffort(settings.effort)[effortKeyFor(settings.engine)];
-        if (settings.engine === "codex") {
+        if (settings.engine === "codex" || settings.engine === "claude_cli") {
           const supported = get().models.find((m) => m.name === model)?.efforts;
-          if (supported?.length && !supported.includes(effort)) effort = "medium";
+          if (supported?.length && !supported.includes(effort)) {
+            effort = supported.includes("medium") ? "medium" : supported[0];
+          }
         }
 
         const abort = streamChat(
@@ -610,7 +640,7 @@ export const useChat = create(
             imageSources,
             engine: settings.engine,
             effort,
-            skill: settings.skill || "",
+            skill: skillParam(settings),
           },
           (e) => {
             if (e.type === "thinking") {

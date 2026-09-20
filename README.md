@@ -118,6 +118,10 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
 - 💾 **Server-side persistence** — conversations (SQLite) and settings are stored on the
   backend for cross-device, long-term history, with a `localStorage` cache for speed;
   images live on the backend and only their URLs are stored.
+- 🧩 **Skills (Agent Skills plugin)** — drop community `SKILL.md` folders into the skills
+  directory and enable any number of them (or let the model pick) from the ✨ button. Skills can declare
+  HTTP API tools (`tools.json`) and, once you enable it in Settings, the model can run the
+  skill's bundled Python scripts on the server. *(See [Skills](#skills-agent-skills-plugin).)*
 - ⌨️ `/image <prompt>` generates directly, skipping the LLM (a manual fallback).
 
 ## Requirements
@@ -231,8 +235,9 @@ npm run dev
     script can be opened there directly — **Open & render all** imports the cast and
     panels and starts rendering. Needs a vision-capable model (👁 in the dropdown).
 
-> **Keyboard:** **Shift + Enter** sends a message; **Enter** inserts a newline. (This keeps
-> Enter from sending mid-composition when typing with an IME.)
+> **Keyboard:** **Enter** sends a message and **Shift + Enter** inserts a newline by default;
+> ⚙️ Settings → *Send key* swaps the two. Enter never sends while an IME is still composing
+> (e.g. picking characters in a Chinese/Japanese input method).
 
 > **Storage location in Docker mode:** the picker browses the **backend container's**
 > filesystem. By default images go to the bind-mounted `backend/data/images` (stored in
@@ -315,28 +320,38 @@ and logged in, it's auto-detected — no config needed.
 **Claude CLI.** The dropdown shows whatever `CLAUDE_MODELS` contains (default
 `sonnet,opus,fable,haiku`). Aliases are resolved by the installed Claude Code CLI to the
 newest model of that family, so they never go stale; full IDs pin a specific version. The
-table reflects Claude Code 2.1.261:
+table reflects Claude Code 2.1.278 (catalog read from the binary on 2026-09-20):
 
 | Entry in `CLAUDE_MODELS` | Resolves to | Context | Reasoning effort |
 |---|---|---|---|
-| `fable` | Claude Fable 5.1 (`claude-fable-5-1`) | 1M | low · medium · high · xhigh · max |
-| `opus` | Claude Opus 5 (`claude-opus-5`) | 1M | low · medium · high · xhigh · max |
-| `sonnet` | Claude Sonnet 5 (`claude-sonnet-5`) | 1M | low · medium · high · xhigh · max |
+| `fable` | Claude Fable 5.1 (`claude-fable-5-1`) | 1M | low · medium · high · xhigh · max (default high) |
+| `opus` | Claude Opus 5 (`claude-opus-5`) | 1M | low · medium · high · xhigh · max (default high) |
+| `sonnet` | Claude Sonnet 5 (`claude-sonnet-5`) | 1M | low · medium · high · xhigh · max (default high) |
 | `haiku` | Claude Haiku 4.5 (`claude-haiku-4-5`) | 200K | — |
 
-Full IDs accepted as well: `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`,
-`claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-5`,
-`claude-sonnet-4-6`, `claude-haiku-4-5`. Fable / Opus 5 / Opus 4.7+ / Sonnet 5 use a native
-1M window; Opus 4.6, Sonnet 4.6 and Haiku 4.5 are 200K — append `[1m]` (e.g. `sonnet[1m]`,
-`claude-opus-4-6[1m]`) to turn on the CLI's 1M window for those. The dropdown shows the
-resolved name next to each entry (e.g. `opus · Opus 5`); set `CLAUDE_CONTEXT_LENGTH` to
-force one context size for every Claude model.
+Full IDs accepted as well:
+
+| Full ID | Context | Reasoning effort |
+|---|---|---|
+| `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5` | 1M | low · medium · high · xhigh · max (default high) |
+| `claude-opus-4-7` | 1M | low · medium · high · xhigh · max (default xhigh) |
+| `claude-opus-4-6`, `claude-sonnet-4-6` | 200K | low · medium · high · max (no xhigh) |
+| `claude-haiku-4-5`, `claude-opus-4-5`, `claude-sonnet-4-5` | 200K | — |
+
+Fable / Opus 5 / Opus 4.7+ / Sonnet 5 use a native 1M window; the 200K models accept a
+`[1m]` suffix (e.g. `sonnet-4-6[1m]`, `claude-opus-4-6[1m]`, `haiku[1m]`) to turn on the
+CLI's 1M window. The dropdown shows the resolved name next to each entry (e.g.
+`opus · Opus 5`); set `CLAUDE_CONTEXT_LENGTH` to force one context size for every Claude
+model. The effort selector in ⚙️ Settings only offers the levels the selected model
+declares, and `--effort` is not sent for models that do not support it. `claude-mythos-5-1`
+/ `claude-mythos-5` are in the CLI catalog too but only for approved organizations, so they
+are not in the default list.
 
 **Codex CLI.** The dropdown is built from `~/.codex/models_cache.json` — the models your
 account can actually use — so it updates whenever the `codex` CLI refreshes its catalog
 (run `codex debug models` or any `codex` session on the host; Docker sees the mounted
 cache). Hidden / non-chat entries (`gpt-reserve`, `codex-auto-review`) are filtered out.
-Catalog as of 2026-09-06 (codex 0.144.1):
+Catalog as of 2026-09-20 (codex 0.155.1; `gpt-5.4-mini` has been removed):
 
 | Model | Reasoning effort | Context |
 |---|---|---|
@@ -345,11 +360,64 @@ Catalog as of 2026-09-06 (codex 0.144.1):
 | `gpt-5.6-terra` | low · medium · high · xhigh · max · ultra (default medium) | 272K |
 | `gpt-5.6-luna` | low · medium · high · xhigh · max (default medium) | 272K |
 | `gpt-5.5` | low · medium · high · xhigh (default medium) | 272K |
-| `gpt-5.4-mini` | low · medium · high · xhigh (default medium) | 272K |
 
 The effort selector in ⚙️ Settings only offers the levels the selected model declares. Set
 `CODEX_MODELS=gpt-6-astra,gpt-5.5` to pin the dropdown; the same list above is the built-in
 fallback when no cache exists yet.
+
+## Skills (Agent Skills plugin)
+
+A skill is a folder under the skills directory (default `backend/skills/`, changeable in
+⚙️ Settings → Skills) with a `SKILL.md` (YAML `name` / `description` + Markdown
+instructions), optional `references/*.md`, optional `scripts/*.py`, and an optional
+`tools.json`. The format is the same one Anthropic / Codex / ClawHub skills use, so
+community skills can be dropped in as-is. Pick a skill from the ✨ button in the chat top
+bar, or choose **Auto** to let the model decide per request. Skills work on every engine
+(Ollama / Claude CLI / Codex CLI) because they are injected into the system prompt, and a
+runtime-adapter note maps a skill's assumed `image_gen` to the app's A1111 generation.
+Several skills can be enabled at once: their instructions are injected together (each gets a
+share of the `SKILL_MAX_CHARS` budget) and their tools are all available. The selection is
+saved with the other settings on the backend, so it survives reloads and follows you across
+devices.
+
+**Three ways a skill can act**
+
+| Mechanism | Declared in | What the model gets |
+|---|---|---|
+| Instructions | `SKILL.md`, `references/` | Injected into the system prompt (capped by `SKILL_MAX_CHARS`). |
+| HTTP API tools | `tools.json` (`kind` omitted or `"http"`) | A function per tool; the backend performs the request. `base_url` may use `{a1111_url}` / `{ollama_url}`. |
+| Python scripts | `scripts/*.py`, and optionally `tools.json` entries with `"kind": "script"` | A `run_skill_script(script, args[])` function (plus any declared fixed-script tools). Off by default: enable **Allow skills to run scripts** in Settings → Skills. |
+
+Tools are available with Ollama (native function calling) and Claude CLI (a `[[CALL]]`
+marker the backend intercepts); Codex CLI only gets the instructions for now. The chat shows
+each tool call while it runs.
+
+**How scripts run.** The backend executes the file with its own Python interpreter (no
+shell, arguments passed as a list), inside a persistent per-skill work folder at
+`DATA_DIR/skill-work/<skill>/` (a Docker volume path, so files a skill writes survive
+restarts). The script only sees a minimal environment: `PATH`, `HOME` set to the work
+folder (so mounted CLI credentials are not exposed), `PYTHONPATH` pointing at the skill
+folder, proxy variables, plus the variables named in `SKILL_SCRIPT_ENV` and any
+`KEY=VALUE` lines in `<work folder>/.env`. Those values are masked as `***` in the output
+the model sees. Runs are killed after `SKILL_SCRIPT_TIMEOUT` seconds (default 300) and
+output is truncated to a few thousand characters. Only the standard library and the
+backend's own dependencies are importable; there is no `pip install`. Review third-party
+skills before enabling scripts for them.
+
+**Installing a ClawHub skill.** Either paste the folder into the skills directory, or:
+
+```bash
+npx -y clawhub install civitai-api          # downloads to ./skills/civitai-api
+cp -r skills/civitai-api backend/skills/    # or into the folder chosen in Settings
+```
+
+Bundled skills:
+
+| Skill | What it does |
+|---|---|
+| `generate-manga-page` | agent-mangaka-forge's consistency workflow adapted to A1111 LoRA / seed reuse. |
+| `civitai-helper` | HTTP tools against the A1111 **Civitai Helper** extension: local LoRA / checkpoint inventory with trigger words, model lookup by URL or id, download into the WebUI, scan, check for new versions, refresh lists. |
+| `civitai-api` | [stanestane/civitai-api](https://clawhub.ai/stanestane/skills/civitai-api) (MIT-0): searches the public Civitai REST API by keyword / tag / creator / hash and returns model versions with trigger words and example-image URLs. Needs scripts enabled; put `CIVITAI_API_KEY=…` in `backend/data/skill-work/civitai-api/.env` if you want authenticated calls. |
 
 ## Prompt history (sd-webui-prompt-history)
 
@@ -449,6 +517,8 @@ their `images` stripped automatically.
 | `backend/prompt_history_store.py` | reads the `sd-webui-prompt-history` extension's `data.json` + thumbnails (cached, paginated, searchable) |
 | `backend/booru_characters.py` | character keyword search (Drawing Spells + danbooru + seed; fuzzy/alias matching) |
 | `backend/docker_probe.py` | best-effort container listing via the docker socket |
+| `backend/skills_store.py` | skill discovery / SKILL.md parsing / prompt injection (pinned or Auto) + runtime-adapter note |
+| `backend/skill_tools.py` | skill tools: `tools.json` HTTP tools, fixed-script tools, and the `run_skill_script` runner (sandboxed env, work folder, timeout, secret masking) |
 | `frontend/src/store/chat.js` | zustand state + streaming coordination + persistence |
 | `frontend/src/lib/api.js` | SSE parsing, storage/browse/sources/engine calls |
 | `frontend/src/i18n.js` | 5-language dictionary + `useT()` hook |
@@ -458,7 +528,8 @@ their `images` stripped automatically.
 
 Copy `.env.example` and override via environment variables (addresses, default model,
 timeouts, Claude / Codex credentials and model lists (`CLAUDE_MODELS`, `CODEX_MODELS`),
-prompt-history folder). In dev mode the frontend proxy target is in
+prompt-history folder, skills folder and script settings `SKILLS_DIR` / `SKILL_MAX_CHARS` /
+`SKILL_SCRIPT_ENV` / `SKILL_SCRIPT_TIMEOUT`). In dev mode the frontend proxy target is in
 `frontend/vite.config.js` (`BACKEND_URL`, default `127.0.0.1:8000`); in Docker mode
 `frontend/nginx.conf` proxies `/api` and `/images` to `backend:8000`.
 

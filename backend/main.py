@@ -463,6 +463,16 @@ def skills_dir_set(req: SkillsDirRequest) -> dict[str, Any]:
         raise HTTPException(400, str(e))
 
 
+class SkillScriptsRequest(BaseModel):
+    enabled: bool = False
+
+
+@app.put("/api/skills-scripts")
+def skills_scripts_set(req: SkillScriptsRequest) -> dict[str, Any]:
+    """開關「允許技能執行腳本」（run_skill_script 工具）；回傳與 GET /api/skills-dir 相同的狀態。"""
+    return settings_store.set_skill_scripts(req.enabled)
+
+
 @app.get("/api/skills")
 def skills_list() -> list[dict[str, Any]]:
     """列出可用技能（給前端選單）。"""

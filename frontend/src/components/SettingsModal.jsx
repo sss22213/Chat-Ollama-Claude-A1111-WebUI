@@ -8,6 +8,7 @@ import {
   fetchPromptHistoryDir,
   fetchSkillsDir,
   saveSkillsDir,
+  saveSkillScripts,
 } from "../lib/api";
 import DirectoryPicker from "./DirectoryPicker";
 import SourcesPanel from "./SourcesPanel";
@@ -15,8 +16,9 @@ import WebPanel from "./WebPanel";
 
 // 各引擎可用的推理強度（統一在設定裡呈現，不需切換引擎即可分別調整）
 // ollama 的 effort 僅 gpt-oss 會用到（其他模型用上方 think 開關）
-// codex 的 options 是「模型能力未知時」的後備；引擎為 codex 時會改用
-// 所選模型宣告的 efforts（GPT-6 / 5.6 系列多了 max/ultra）
+// codex / claude 的 options 是「模型能力未知時」的後備；目前引擎是它們時會改用
+// 所選模型宣告的 efforts（GPT-6 / 5.6 系列多了 max/ultra；Opus 4.6 / Sonnet 4.6 沒有 xhigh、
+// Haiku 4.5 不支援）
 const EFFORT_ENGINES = [
   { key: "claude_cli", label: "Claude", options: ["low", "medium", "high", "xhigh", "max"] },
   { key: "codex", label: "Codex", options: ["low", "medium", "high", "xhigh"] },
@@ -38,13 +40,13 @@ export default function SettingsModal({ onClose }) {
   const eff = normEffort(settings.effort);
   const setEffortFor = (key, v) =>
     setSettings({ effort: { ...normEffort(settings.effort), [key]: v } });
-  // codex：所選模型宣告的推理強度（models 只載目前引擎的清單，故僅 codex 時可得）
-  const codexModelEfforts =
-    settings.engine === "codex"
+  // codex / claude：所選模型宣告的推理強度（models 只載目前引擎的清單，故只有目前引擎可得）
+  const modelEfforts =
+    settings.engine === "codex" || settings.engine === "claude_cli"
       ? models.find((m) => m.name === settings.chatModel)?.efforts
       : null;
   const effortOptionsFor = (key, fallback) =>
-    key === "codex" && codexModelEfforts?.length ? codexModelEfforts : fallback;
+    key === settings.engine && modelEfforts ? modelEfforts : fallback;
 
   // 圖片儲存位置（伺服器端設定）
   const [storage, setStorageState] = useState(null);
@@ -106,6 +108,17 @@ export default function SettingsModal({ onClose }) {
     }
   };
 
+  const onSetSkillScripts = async (enabled) => {
+    setSkillsErr("");
+    try {
+      const info = await saveSkillScripts(enabled);
+      setSkillsDir(info);
+      await reloadSkills(); // 工具清單（run_skill_script）跟著變
+    } catch (e) {
+      setSkillsErr(e.message);
+    }
+  };
+
   const onSetSkillsDir = async (dir) => {
     setSkillsSaving(true);
     setSkillsErr("");
@@ -155,6 +168,18 @@ export default function SettingsModal({ onClose }) {
                   </option>
                 ))}
               </select>
+            </Field>
+            <Field label={t("sendKey")}>
+              <select
+                value={settings.sendKey === "shiftEnter" ? "shiftEnter" : "enter"}
+                onChange={(e) => setSettings({ sendKey: e.target.value })}
+                data-testid="send-key"
+                className="w-full rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-sm outline-none focus:border-ink-500"
+              >
+                <option value="enter">{t("sendKeyEnter")}</option>
+                <option value="shiftEnter">{t("sendKeyShiftEnter")}</option>
+              </select>
+              <p className="text-xs text-gray-500">{t("sendKeyHint")}</p>
             </Field>
             <Field label={t("systemPrompt")}>
               <textarea
@@ -210,17 +235,29 @@ export default function SettingsModal({ onClose }) {
                       <span className="w-32 shrink-0 text-sm text-gray-300">
                         {label}
                       </span>
-                      <select
-                        value={opts.includes(eff[key]) ? eff[key] : "medium"}
-                        onChange={(e) => setEffortFor(key, e.target.value)}
-                        className="flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-sm outline-none focus:border-ink-500"
-                      >
-                        {opts.map((lvl) => (
-                          <option key={lvl} value={lvl}>
-                            {lvl}
-                          </option>
-                        ))}
-                      </select>
+                      {opts.length === 0 ? (
+                        /* 所選模型宣告不支援推理強度（例如 Haiku 4.5）：不送 --effort */
+                        <select
+                          disabled
+                          data-testid={`effort-${key}`}
+                          className="flex-1 rounded-lg border border-ink-700 bg-ink-850 px-3 py-2 text-sm text-gray-500"
+                        >
+                          <option>{t("effortNotSupported")}</option>
+                        </select>
+                      ) : (
+                        <select
+                          value={opts.includes(eff[key]) ? eff[key] : opts.includes("medium") ? "medium" : opts[0]}
+                          onChange={(e) => setEffortFor(key, e.target.value)}
+                          data-testid={`effort-${key}`}
+                          className="flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-sm outline-none focus:border-ink-500"
+                        >
+                          {opts.map((lvl) => (
+                            <option key={lvl} value={lvl}>
+                              {lvl}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </div>
                   );
                 })}
@@ -391,6 +428,14 @@ export default function SettingsModal({ onClose }) {
               </p>
             )}
             <p className="text-xs text-gray-500">{t("skillsDirHint")}</p>
+            <div data-testid="skill-scripts" className="rounded-lg border border-ink-700 p-3">
+              <Toggle
+                label={t("skillScriptsLabel")}
+                checked={!!skillsDir?.scripts_enabled}
+                onChange={onSetSkillScripts}
+                hint={t("skillScriptsHint")}
+              />
+            </div>
             {skillsErr && (
               <p className="flex items-center gap-1.5 text-xs text-red-300">
                 <AlertTriangle size={13} /> {skillsErr}
