@@ -9,15 +9,28 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "q": { "type": "string", "description": "Optional case-insensitive substring filter (file name, model name, trigger word or training tag)" },
-          "limit": { "type": "integer", "description": "Max items to return (default 15; keep it small, entries are ~600 chars each)" },
-          "offset": { "type": "integer", "description": "Skip this many items (for paging)" }
+          "q": {
+            "type": "string",
+            "description": "Optional case-insensitive substring filter (file name, model name, trigger word or training tag)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max items to return (default 15; keep it small, entries are ~600 chars each)"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Skip this many items (for paging)"
+          }
         }
       },
-      "defaults": { "limit": 15, "metadata": true, "compact": true },
+      "defaults": {
+        "limit": 15,
+        "metadata": true,
+        "compact": true
+      },
       "timeout": 180,
       "max_chars": 12000,
-      "result_note": "In an image prompt use prompt_tag (adjust the weight, e.g. :0.8) plus the civitai.trained_words; when there are none, use a few training.top_tags instead. Mention base_model / training.base_model_version so the user picks a LoRA that matches the checkpoint. 'total' is the number of LoRAs matching; if it exceeds 'count', say so and offer to narrow with q."
+      "result_note": "In an image prompt use prompt_tag (adjust the weight, e.g. :0.8) plus the civitai.trained_words; when there are none, use a few training.top_tags instead. Mention base_model / training.base_model_version so the user picks a LoRA that matches the checkpoint. 'total' is the number of LoRAs matching; if it exceeds 'count', say so and offer to narrow with q. 'examples' is the number of example images saved locally; civitai_model_examples gives the example prompts of one LoRA."
     },
     {
       "name": "civitai_list_local_models",
@@ -27,30 +40,100 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "type": { "type": "string", "enum": ["lora", "ckp", "ti", "hyper"], "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)" },
-          "q": { "type": "string", "description": "Optional case-insensitive substring filter on file name, model name or trigger word" },
-          "no_info_only": { "type": "boolean", "description": "Only models that have no civitai info file yet" },
-          "limit": { "type": "integer", "description": "Max items to return (default 50)" }
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)"
+          },
+          "q": {
+            "type": "string",
+            "description": "Optional case-insensitive substring filter on file name, model name or trigger word"
+          },
+          "no_info_only": {
+            "type": "boolean",
+            "description": "Only models that have no civitai info file yet"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max items to return (default 50)"
+          }
         },
-        "required": ["type"]
+        "required": [
+          "type"
+        ]
       },
-      "defaults": { "limit": 50 },
+      "defaults": {
+        "limit": 50
+      },
       "max_chars": 7000,
       "result_note": "A LoRA is used in a prompt as <lora:FILE_NAME_WITHOUT_EXTENSION:0.8>, and its civitai.trained_words are the trigger words to add to the prompt."
     },
     {
       "name": "civitai_local_model_info",
-      "description": "Civitai details stored for ONE installed model: model/version ids, model name, base model, trigger words, and whether a preview exists. Give the file name (e.g. foo.safetensors) or the path relative to the model folder.",
+      "description": "Civitai details stored for ONE installed model: model/version ids, model name, base model, trigger words, whether a preview exists, how many example images are saved locally (examples) and whether the card has description info (has_card_info). Give the file name (e.g. foo.safetensors) or the path relative to the model folder. For the example prompts / images themselves use civitai_model_examples.",
       "method": "GET",
       "path": "/models/{type}/info",
       "parameters": {
         "type": "object",
         "properties": {
-          "type": { "type": "string", "enum": ["lora", "ckp", "ti", "hyper"], "description": "Model type" },
-          "name": { "type": "string", "description": "File name or relative path inside the model folder" }
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type"
+          },
+          "name": {
+            "type": "string",
+            "description": "File name or relative path inside the model folder"
+          }
         },
-        "required": ["type", "name"]
+        "required": [
+          "type",
+          "name"
+        ]
       }
+    },
+    {
+      "name": "civitai_model_examples",
+      "description": "The civitai EXAMPLE images of ONE installed model, each with its generation parameters: prompt, negative_prompt, steps, sampler, cfg_scale, seed, size, model (checkpoint used), nsfw flag, the civitai image url, and local_file / local_url when the image was saved locally with civitai_download_examples. Also returns trained_words, base_model, downloaded/total counts, has_preview and has_card_info. Use it when the user asks for example prompts, sample images, 'how do I use this LoRA', 'show me what it looks like', or wants a proven prompt to start from.",
+      "method": "GET",
+      "path": "/models/{type}/examples",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)"
+          },
+          "name": {
+            "type": "string",
+            "description": "File name (e.g. foo.safetensors) or path relative to the model folder"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ]
+      },
+      "max_chars": 14000,
+      "result_note": "Present 1-3 of the examples that have a prompt: the prompt (shortened if very long), negative prompt, steps / sampler / cfg / seed and checkpoint, plus the LoRA's prompt_tag and trigger words. The images are already shown to the user as a gallery; never write image markdown or URLs. If images are attached for you, you may describe what they show. Offer to generate with a prompt, to save the images locally (civitai_download_examples), or to write the prompts onto the card (civitai_write_card_info).",
+      "postprocess": "civitai_examples",
+      "vision_max": 4
     },
     {
       "name": "civitai_lookup_model",
@@ -60,9 +143,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "url_or_id": { "type": "string", "description": "civitai model id or model page URL" }
+          "url_or_id": {
+            "type": "string",
+            "description": "civitai model id or model page URL"
+          }
         },
-        "required": ["url_or_id"]
+        "required": [
+          "url_or_id"
+        ]
       },
       "max_chars": 7000,
       "result_note": "Summarize for the user: name, type, base model of the newest version, trigger words, file size, and nsfw if true. Ask which version/subfolder to use only if it is unclear."
@@ -75,16 +163,39 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "url_or_id": { "type": "string", "description": "civitai model id or model page URL" },
-          "version_id": { "type": "integer", "description": "Version id to download (default: newest)" },
-          "version": { "type": "string", "description": "Version name, alternative to version_id" },
-          "subfolder": { "type": "string", "description": "Subfolder under the model type folder, e.g. '/' (default) or '/characters'" },
-          "create_subfolder": { "type": "boolean", "description": "Create the subfolder if it does not exist" },
-          "dl_all": { "type": "boolean", "description": "Download every file of the version instead of only the primary one" }
+          "url_or_id": {
+            "type": "string",
+            "description": "civitai model id or model page URL"
+          },
+          "version_id": {
+            "type": "integer",
+            "description": "Version id to download (default: newest)"
+          },
+          "version": {
+            "type": "string",
+            "description": "Version name, alternative to version_id"
+          },
+          "subfolder": {
+            "type": "string",
+            "description": "Subfolder under the model type folder, e.g. '/' (default) or '/characters'"
+          },
+          "create_subfolder": {
+            "type": "boolean",
+            "description": "Create the subfolder if it does not exist"
+          },
+          "dl_all": {
+            "type": "boolean",
+            "description": "Download every file of the version instead of only the primary one"
+          }
         },
-        "required": ["url_or_id"]
+        "required": [
+          "url_or_id"
+        ]
       },
-      "defaults": { "wait": true, "timeout": 540 },
+      "defaults": {
+        "wait": true,
+        "timeout": 540
+      },
       "timeout": 580,
       "result_note": "If status is 'done': report result.file and result.trained_words, then call refresh_loras (for a LoRA) or refresh_checkpoints (for a checkpoint) so the WebUI sees the new file. If status is 'running': tell the user the download continues in the background and check later with civitai_task_status using the task id. If status is 'error': relay the error (a login/API-key error means the civitai API key must be set in the WebUI Settings → Civitai Helper)."
     },
@@ -96,11 +207,28 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "model_types": { "type": "array", "items": { "type": "string", "enum": ["lora", "ckp", "ti", "hyper"] }, "description": "Model types to scan" }
+          "model_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "lora",
+                "ckp",
+                "ti",
+                "hyper"
+              ]
+            },
+            "description": "Model types to scan"
+          }
         },
-        "required": ["model_types"]
+        "required": [
+          "model_types"
+        ]
       },
-      "defaults": { "wait": true, "timeout": 540 },
+      "defaults": {
+        "wait": true,
+        "timeout": 540
+      },
       "timeout": 580,
       "result_note": "If status is 'running', the scan continues in the background; check later with civitai_task_status."
     },
@@ -112,27 +240,203 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "model_types": { "type": "array", "items": { "type": "string", "enum": ["lora", "ckp", "ti", "hyper"] }, "description": "Model types to check" }
+          "model_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "lora",
+                "ckp",
+                "ti",
+                "hyper"
+              ]
+            },
+            "description": "Model types to check"
+          }
         },
-        "required": ["model_types"]
+        "required": [
+          "model_types"
+        ]
       },
-      "defaults": { "wait": true, "timeout": 540 },
+      "defaults": {
+        "wait": true,
+        "timeout": 540
+      },
       "timeout": 580,
       "result_note": "Present the list to the user (model name → new version). To install one, call civitai_download_model with its model_id and the new_version_id."
     },
     {
+      "name": "civitai_fetch_previews",
+      "description": "Download the missing card preview image (.preview.png) for installed models that have none, using the example images already stored in their civitai info (tries every example image; no civitai API lookup, so it is fast and safe to run on all models). Batch mode: model_types. Single model: type + name. Use when cards show no picture, after civitai_scan_models reported failures, or when the user asks to fix / restore previews.",
+      "method": "POST",
+      "path": "/fetch-previews",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "lora",
+                "ckp",
+                "ti",
+                "hyper"
+              ]
+            },
+            "description": "Batch mode: model types to process (omit when giving type + name)"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Single model mode: file name (e.g. foo.safetensors) or path relative to the model folder"
+          }
+        }
+      },
+      "defaults": {
+        "wait": true,
+        "timeout": 540
+      },
+      "timeout": 580,
+      "max_chars": 4000,
+      "result_note": "Report result.downloaded / exists / failed / no_info. Models listed in failed_models have example images that civitai deleted (404): they cannot be fixed automatically; the user can drop any image next to the model file as <model>.preview.png. If status is 'running', check later with civitai_task_status. After success call refresh_loras / refresh_checkpoints so the WebUI shows the new previews."
+    },
+    {
+      "name": "civitai_download_examples",
+      "description": "Save the civitai example images of installed models next to the model file as <model>.example_NN.<ext> (NN = position in the civitai list, matching the prompts from civitai_model_examples). Batch mode: model_types (+ max_images per model, 0 = all). Single model: type + name. Honors the WebUI's 'Skip NSFW Preview Images' setting. Many models x ~10 images takes a long time and disk space, so for batch mode confirm with the user first and suggest max_images (e.g. 3).",
+      "method": "POST",
+      "path": "/download-examples",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "lora",
+                "ckp",
+                "ti",
+                "hyper"
+              ]
+            },
+            "description": "Batch mode: model types to process (omit when giving type + name)"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Single model mode: file name (e.g. foo.safetensors) or path relative to the model folder"
+          },
+          "max_images": {
+            "type": "integer",
+            "description": "Example images to keep per model (0 = all, default 0). Suggest 3-5 for batch runs."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Re-download images that already exist (default false)"
+          }
+        }
+      },
+      "defaults": {
+        "wait": true,
+        "timeout": 540
+      },
+      "timeout": 580,
+      "max_chars": 4000,
+      "result_note": "Report result.downloaded / existed / skipped_nsfw / failed (and models_with_failures = images civitai has deleted). If status is 'running' the download continues in the background; check later with civitai_task_status. The saved files are listed by civitai_model_examples as local_file."
+    },
+    {
+      "name": "civitai_write_card_info",
+      "description": "Write the trigger words and example prompts into the WebUI's Extra Networks card metadata (<model>.json): 'description' = trigger words + first example prompt / negative / steps / sampler / cfg / seed (shown on the card face), 'notes' = every example prompt in full (shown in the card's edit dialog), and 'sd version' (Forge preset: sd / xl / flux ...) derived from the civitai base model when unknown. By default only EMPTY fields are filled, so hand-written descriptions survive; overwrite=true replaces description / notes. Batch mode: model_types. Single model: type + name. Use when the user wants example prompts visible on the cards / in the WebUI, or asks to 'add descriptions to my LoRAs'.",
+      "method": "POST",
+      "path": "/write-card-info",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "lora",
+                "ckp",
+                "ti",
+                "hyper"
+              ]
+            },
+            "description": "Batch mode: model types to process (omit when giving type + name)"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Single model mode: file name (e.g. foo.safetensors) or path relative to the model folder"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Replace existing description / notes (default false = fill empty fields only)"
+          },
+          "set_sd_version": {
+            "type": "boolean",
+            "description": "Also fill the card's 'sd version' from the civitai base model when unknown (default true)"
+          }
+        }
+      },
+      "defaults": {
+        "wait": true,
+        "timeout": 300
+      },
+      "timeout": 340,
+      "max_chars": 4000,
+      "result_note": "Report result.written / unchanged / no_info / bad_json. Tell the user to click Refresh in the WebUI's Extra Networks (LoRA) tab to see the new descriptions; cards show 3 lines and expand on hover, the full example prompts are in the card's edit (pencil) dialog under Notes."
+    },
+    {
       "name": "civitai_task_status",
-      "description": "Poll a background Civitai Helper task (download / scan / check-new-version) by its id. Waits up to 60 s for it to finish before returning.",
+      "description": "Poll a background Civitai Helper task (download / scan / check-new-version / fetch-previews / download-examples / write-card-info) by its id. Waits up to 60 s for it to finish before returning.",
       "method": "GET",
       "path": "/tasks/{task_id}",
       "parameters": {
         "type": "object",
         "properties": {
-          "task_id": { "type": "string", "description": "Task id returned by a previous download/scan/check call" }
+          "task_id": {
+            "type": "string",
+            "description": "Task id returned by a previous download/scan/check call"
+          }
         },
-        "required": ["task_id"]
+        "required": [
+          "task_id"
+        ]
       },
-      "defaults": { "wait": true, "timeout": 60 },
+      "defaults": {
+        "wait": true,
+        "timeout": 60
+      },
       "timeout": 90
     },
     {
@@ -141,7 +445,10 @@
       "method": "POST",
       "base_url": "{a1111_url}",
       "path": "/sdapi/v1/refresh-loras",
-      "parameters": { "type": "object", "properties": {} },
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
       "max_chars": 300
     },
     {
@@ -150,7 +457,10 @@
       "method": "POST",
       "base_url": "{a1111_url}",
       "path": "/sdapi/v1/refresh-checkpoints",
-      "parameters": { "type": "object", "properties": {} },
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
       "max_chars": 300
     }
   ]

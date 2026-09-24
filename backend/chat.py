@@ -10,6 +10,7 @@ import a1111_client
 import claude_client
 import codex_client
 import ollama_client
+import settings_store
 import skill_tools
 import skills_store
 import tools as tools_mod
@@ -198,6 +199,64 @@ def _last_init_image(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _load_generated(url: str) -> str | None:
+    """/images/<檔名>（本 app 生成或編輯後存下的圖）→ base64；找不到回 None。"""
+    import base64
+
+    name = str(url or "").split("?", 1)[0].rsplit("/", 1)[-1]
+    if not name:
+        return None
+    fp = settings_store.find_image(name)
+    if not fp:
+        return None
+    try:
+        return base64.b64encode(fp.read_bytes()).decode()
+    except OSError:
+        return None
+
+
+def _last_edit_image(messages: list[dict[str, Any]]) -> str | None:
+    """技能編輯工具要改的圖：對話中「最近」的一張——使用者附的圖，或助理訊息裡
+    A1111 生成 / sd.cpp 編輯後的圖（前端以 generated_images 帶 /images 網址），取較新者。"""
+    for m in reversed(messages):
+        if m.get("role") == "user" and m.get("images"):
+            return m["images"][0]
+        if m.get("role") == "assistant":
+            for url in reversed(m.get("generated_images") or []):
+                b64 = _load_generated(url)
+                if b64:
+                    return b64
+    return None
+
+
+def _tool_message_with_images(result: dict[str, Any], can_see: bool) -> dict[str, Any]:
+    """技能工具附帶的圖（如 Civitai 範例圖）：視覺模型就附在工具訊息的 images 上讓它真的看到；
+    否則只給文字並說明看不到。"""
+    labels = ", ".join(result.get("labels") or []) or f"{len(result.get('images') or [])} images"
+    if can_see and result.get("images"):
+        return {
+            "role": "tool",
+            "content": result["content"]
+            + f"\n\n(Example images {labels} are attached to this message in that order. Look at them: you "
+            "can describe what they show, compare them, and use them when recommending a prompt.)",
+            "images": result["images"],
+        }
+    return {
+        "role": "tool",
+        "content": result["content"]
+        + "\n\n(The example images could not be attached because this model cannot view images; "
+        "rely on the prompts above and do not describe the pictures.)",
+    }
+
+
+def _strip_client_fields(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """移除只給後端用的欄位，避免送進各引擎。"""
+    return [
+        {k: v for k, v in m.items() if k != "generated_images"} if "generated_images" in m else m
+        for m in messages
+    ]
+
+
 async def _generate_with_progress(
     kind: str, kwargs: dict[str, Any]
 ) -> AsyncIterator[dict[str, Any]]:
@@ -267,6 +326,9 @@ async def run_chat(
 
     事件型別：thinking / token / tool_call / progress / image / sources / usage / error / done
     """
+    # 技能編輯工具的來源圖（含 A1111 生成的圖）；取完就剝掉前端專用欄位
+    edit_image = _last_edit_image(messages)
+    messages = _strip_client_fields(messages)
     # 啟用技能：把指示注入 system（全引擎通用）
     messages = _inject_skill(messages, skill)
     # 技能宣告的 API 工具（tools.json）：ollama 走 function calling、Claude 走 [[CALL]]；codex 暫不支援
@@ -277,7 +339,7 @@ async def run_chat(
         async for s in _run_cli_engine(
             claude_client, _claude_ctx(model),
             model, messages, tools_enabled, image_settings, bool(think), effort,
-            skill_tool_defs=skill_tool_defs,
+            skill_tool_defs=skill_tool_defs, edit_image=edit_image,
         ):
             yield s
         return
@@ -312,7 +374,8 @@ async def run_chat(
     if can_tools and tools_enabled:
         convo = _append_to_last_user(convo, _OLLAMA_TAIL_REMINDER)
     # 非 vision 模型若收到 images 會 500，先剝除（img2img 仍可用 init_image）
-    if not await ollama_client.model_supports_vision(model):
+    can_see = await ollama_client.model_supports_vision(model)
+    if not can_see:
         for m in convo:
             m.pop("images", None)
 
@@ -401,9 +464,12 @@ async def run_chat(
                 async for content in _run_tool(
                     name, args, image_settings, init_image, png_source,
                     skill_tool_map=skill_tool_map,
+                    edit_image=edit_image,
                 ):
                     if isinstance(content, str):
                         convo.append({"role": "tool", "content": content})
+                    elif content.get("type") == "_tool_result":
+                        convo.append(_tool_message_with_images(content, can_see))
                     else:
                         yield _sse(content)
 
@@ -556,7 +622,7 @@ def _directive_system(
 
 
 async def _run_call_directive(
-    payload: str, skill_tool_map: dict[str, dict[str, Any]]
+    payload: str, skill_tool_map: dict[str, dict[str, Any]], init_image: str | None = None
 ) -> AsyncIterator[Any]:
     """執行 [[CALL]] 技能工具指令。yield dict=SSE 事件、yield str=要回給模型的結果文字。"""
     try:
@@ -577,7 +643,10 @@ async def _run_call_directive(
         return
     yield {"type": "tool_call", "name": name, "args": args}
     try:
-        yield await skill_tools.call(tool, args)
+        out = await skill_tools.call_full(tool, args, image=init_image)
+        for ev in out.events:  # 例如 civitai 候選卡片、sd.cpp 編輯後的圖
+            yield ev
+        yield out.text
     except Exception as e:
         yield {"type": "error", "message": f"技能工具失敗：{e}"}
         yield f"Tool {name} failed: {e}"
@@ -643,6 +712,7 @@ async def _run_cli_engine(
     think: bool,
     effort: str | None = None,
     skill_tool_defs: list[dict[str, Any]] | None = None,
+    edit_image: str | None = None,
 ) -> AsyncIterator[str]:
     """通用 CLI 引擎路徑：串流文字 + 解析生圖指令 + 技能工具（[[CALL]]，結果回填後再跑一輪）。
 
@@ -691,7 +761,7 @@ async def _run_cli_engine(
                                     round_text += item[1]
                                     yield _sse({"type": "token", "delta": item[1]})
                             elif item[1] == "call":
-                                async for out in _run_call_directive(item[2], skill_tool_map):
+                                async for out in _run_call_directive(item[2], skill_tool_map, edit_image or init_image):
                                     if isinstance(out, str):
                                         tool_results.append(out)
                                     else:
@@ -970,13 +1040,20 @@ async def _run_tool(
     init_image: str | None,
     png_source: str | None = None,
     skill_tool_map: dict[str, dict[str, Any]] | None = None,
+    edit_image: str | None = None,
 ) -> AsyncIterator[Any]:
     """執行單一工具。yield dict=SSE 事件、yield str=要 append 回對話的 tool 訊息。"""
     # --- 技能 API 工具（tools.json）---
     if skill_tool_map and name in skill_tool_map:
         yield {"type": "tool_call", "name": name, "args": args}
         try:
-            yield await skill_tools.call(skill_tool_map[name], args)
+            out = await skill_tools.call_full(skill_tool_map[name], args, image=edit_image or init_image)
+            for ev in out.events:  # 例如 civitai 候選卡片、範例圖庫、sd.cpp 編輯後的圖
+                yield ev
+            if out.vision:  # 要給視覺模型看的圖：由主迴圈附在工具訊息上
+                yield {"type": "_tool_result", "content": out.text, "images": out.vision, "labels": out.vision_labels}
+            else:
+                yield out.text
         except Exception as e:
             yield {"type": "error", "message": f"技能工具失敗：{e}"}
             yield f"Tool {name} failed: {e}"

@@ -13,6 +13,7 @@ import {
   Save,
   ArrowLeft,
   AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 import { useChat, skillSelection } from "../store/chat";
 import { useT } from "../i18n";
@@ -56,6 +57,26 @@ export default function SkillPicker({ onClose }) {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [scanNote, setScanNote] = useState(""); // 重新掃描後的提示（新增了幾個）
+
+  // 手動重新掃描技能資料夾：把放進去的新技能帶進清單（不需重新整理頁面）
+  const rescan = async () => {
+    setScanning(true);
+    setErr("");
+    const before = new Set(skills.map((s) => s.slug));
+    try {
+      const next = await reloadSkills();
+      const added = next.filter((s) => !before.has(s.slug)).length;
+      const removed = [...before].filter((slug) => !next.some((s) => s.slug === slug)).length;
+      setScanNote(t("skillRescanDone", { count: next.length, added, removed }));
+      setTimeout(() => setScanNote(""), 4000);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   // 多選：每個技能各自開關；「自動」與手動選擇互斥；「不啟用」清空
   const setSkills = (list) => setSettings({ skills: list, skill: undefined });
@@ -162,6 +183,18 @@ export default function SkillPicker({ onClose }) {
           </h2>
           {mode === "list" && (
             <button
+              onClick={rescan}
+              disabled={scanning}
+              title={t("skillRescan")}
+              data-testid="skill-rescan"
+              className="flex shrink-0 items-center gap-1 rounded-lg border border-ink-600 px-2 py-1 text-xs text-gray-200 hover:bg-ink-750 disabled:opacity-60"
+            >
+              <RefreshCw size={14} className={scanning ? "animate-spin" : ""} />
+              {t("skillRescan")}
+            </button>
+          )}
+          {mode === "list" && (
+            <button
               onClick={openNew}
               className="flex shrink-0 items-center gap-1 rounded-lg border border-ink-600 px-2 py-1 text-xs text-gray-200 hover:bg-ink-750"
             >
@@ -244,6 +277,14 @@ export default function SkillPicker({ onClose }) {
             <p className="border-b border-ink-700 px-4 py-2 text-xs leading-snug text-gray-500">
               {t("skillHint")}
             </p>
+            {scanNote && (
+              <p
+                data-testid="skill-rescan-note"
+                className="border-b border-ink-700 bg-emerald-600/10 px-4 py-1.5 text-xs text-emerald-300"
+              >
+                {scanNote}
+              </p>
+            )}
             <div className="flex-1 overflow-y-auto p-2">
               {/* 不啟用 */}
               <Row

@@ -1,0 +1,44 @@
+{
+  "base_url": "{a1111_url}",
+  "tools": [
+    {
+      "name": "a1111_memory",
+      "description": "Show memory usage of the A1111 / Forge WebUI (the app's image generator): system RAM, the whole GPU's VRAM used/free (shared with Ollama and sd.cpp), how much VRAM A1111 itself holds, whether the checkpoint is currently on the GPU, and the out-of-memory count.",
+      "method": "GET",
+      "path": "/sdapi/v1/memory",
+      "postprocess": "a1111_memory",
+      "timeout": 30,
+      "max_chars": 1500
+    },
+    {
+      "name": "a1111_unload_checkpoint",
+      "description": "Unload the A1111 checkpoint to free memory. full=false (default): free VRAM only, the model stays in system RAM so the next generation starts fastest. full=true: free both VRAM and RAM; the next generation re-reads the model file from disk automatically (slower). Returns the memory state afterwards.",
+      "method": "POST",
+      "path": "/sdapi/v1/unload-checkpoint",
+      "query_params": [
+        "full"
+      ],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "full": {
+            "type": "boolean",
+            "description": "true = also free system RAM (next generation reloads from disk). Default false = VRAM only."
+          }
+        }
+      },
+      "postprocess": "a1111_memory_after",
+      "timeout": 120,
+      "max_chars": 1500
+    },
+    {
+      "name": "a1111_reload_checkpoint",
+      "description": "Load the A1111 checkpoint back into memory now (mainly after a full unload, so the next generation does not have to read the file from disk). On Forge the weights only move onto the GPU when the next image is generated, so VRAM use will not rise until then. Returns the memory state afterwards.",
+      "method": "POST",
+      "path": "/sdapi/v1/reload-checkpoint",
+      "postprocess": "a1111_memory_after",
+      "timeout": 300,
+      "max_chars": 1500
+    }
+  ]
+}

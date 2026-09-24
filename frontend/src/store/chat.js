@@ -112,6 +112,14 @@ function paramsToText(p) {
 // 注意：只會附在「最後一則」有圖的助理訊息（見 send 的歷史組裝）——每則都附會讓
 // 歷史充滿 prompt/negative 純文字範本，誘導模型模仿著印文字而不呼叫工具，
 // 也是退化重複迴圈的素材來源。可在設定用 sendGenInfo 整個關閉。
+// 模型偶爾會把給它看的「系統備註」原樣抄進回覆；從標記起到結尾一律切掉（顯示、保存、再送回模型都用）
+const NOTE_MARKER = "[系統備註，使用者看不到";
+export function stripEchoedNote(text) {
+  if (typeof text !== "string") return text;
+  const i = text.indexOf(NOTE_MARKER);
+  return i < 0 ? text : text.slice(0, i).trimEnd();
+}
+
 export function genInfoForModel(images) {
   if (!images?.length) return "";
   const blocks = images
@@ -220,6 +228,8 @@ export const useChat = create(
       health: { ollama: true, a1111: true },
       streaming: false,
       _abort: null,
+      _convosLoaded: false, // 已從後端載過對話清單（之後才做跨裝置刷新）
+      _lastRefresh: 0,
       attachments: [], // 待送出的附件圖 [{id, dataUrl}]
       usage: null, // {prompt_tokens, num_ctx} 上一輪 context 用量
       compacting: false,
@@ -386,13 +396,52 @@ export const useChat = create(
         if (!conversations.some((c) => c.id === currentId)) {
           currentId = conversations[0]?.id || null;
         }
-        set({ conversations, currentId });
+        set({ conversations, currentId, _convosLoaded: true, _lastRefresh: Date.now() });
 
         if (conversations.length === 0) {
           get().createConversation();
         } else if (currentId) {
           get()._ensureLoaded(currentId);
         }
+      },
+
+      // 跨裝置同步：重抓後端摘要清單並合併到本機狀態。
+      // - 後端較新的對話（updated_at 比本機大）丟掉本機快取的 messages，下次顯示時重新載入
+      // - 後端已刪的對話移除；尚未存到後端的新對話（本機才有）保留在最上面
+      // - 串流 / 壓縮中不做，避免覆蓋進行中的對話
+      async refreshConversations() {
+        if (!get()._convosLoaded || get().streaming || get().compacting) return false;
+        let summaries;
+        try {
+          summaries = await listConversations();
+        } catch {
+          return false; // 後端連不上：維持現狀
+        }
+        set({ _lastRefresh: Date.now() });
+        const local = get().conversations;
+        const localById = new Map(local.map((c) => [c.id, c]));
+        const serverIds = new Set(summaries.map((sm) => sm.id));
+        const merged = summaries.map((sm) => {
+          const loc = localById.get(sm.id);
+          if (!loc) return { ...sm, messages: undefined };
+          const stale =
+            Array.isArray(loc.messages) &&
+            (sm.updated_at || 0) > (loc.updated_at || 0) + 1e-6;
+          return stale
+            ? { ...loc, ...sm, messages: undefined }
+            : { ...loc, title: sm.title ?? loc.title, updated_at: sm.updated_at };
+        });
+        // 本機才有：還沒同步過（沒有 updated_at）的對話保留；曾在後端、現在不見＝別的裝置刪了
+        const localOnly = local.filter((c) => !serverIds.has(c.id) && !c.updated_at);
+        const conversations = [...localOnly, ...merged];
+        let currentId = get().currentId;
+        if (!conversations.some((c) => c.id === currentId)) {
+          currentId = conversations[0]?.id || null;
+        }
+        set({ conversations, currentId });
+        if (conversations.length === 0) get().createConversation();
+        else if (currentId) get()._ensureLoaded(currentId);
+        return true;
       },
 
       // 確保某對話的 messages 已從後端載入（messages 為陣列即視為已載入）
@@ -420,9 +469,20 @@ export const useChat = create(
       _syncConversation(id) {
         const c = get().conversations.find((x) => x.id === id);
         if (!c || !Array.isArray(c.messages) || c.messages.length === 0) return;
-        putConversation(c).catch(() => {
-          /* 同步失敗：下次互動會再試 */
-        });
+        putConversation(c)
+          .then((stored) => {
+            // 記下後端時間戳，refreshConversations 才知道哪邊比較新
+            set((st) => ({
+              conversations: st.conversations.map((x) =>
+                x.id === id
+                  ? { ...x, created_at: stored.created_at, updated_at: stored.updated_at }
+                  : x
+              ),
+            }));
+          })
+          .catch(() => {
+            /* 同步失敗：下次互動會再試 */
+          });
       },
 
       // 切換 AI 引擎（ollama / claude_cli）：重抓該引擎的模型清單並選預設
@@ -531,6 +591,9 @@ export const useChat = create(
         const trimmed = text.trim();
         if (!trimmed || get().streaming) return;
 
+        if (Date.now() - get()._lastRefresh > 5000) {
+          await get().refreshConversations();
+        }
         let convo = get().currentConversation();
         if (!convo) {
           get().createConversation();
@@ -592,12 +655,20 @@ export const useChat = create(
           }
         }
         const history = sendable.map((m, i) => {
-          const base = { role: m.role, content: m.content };
+          const base = {
+            role: m.role,
+            content: m.role === "assistant" ? stripEchoedNote(m.content) : m.content,
+          };
           if (i === lastGenIdx) {
             base.content = (m.content || "") + genInfoForModel(m.images);
           }
           if (m.attachments?.length) {
             base.images = m.attachments.map((a) => stripPrefix(a.dataUrl));
+          }
+          // 助理訊息裡生成 / 編輯出的圖（只帶網址）：讓編輯技能能直接改「剛剛那張」
+          if (m.role === "assistant" && m.images?.length) {
+            const urls = m.images.map((im) => im?.url).filter((u) => typeof u === "string" && u.startsWith("/images/"));
+            if (urls.length) base.generated_images = urls;
           }
           return base;
         });
@@ -658,6 +729,22 @@ export const useChat = create(
                 toolName: e.name,
                 progress: null,
               });
+            } else if (e.type === "gallery") {
+              // 技能工具回傳的圖庫（如 Civitai Helper 的本地範例圖＋提示詞）
+              get()._patchMessage(assistantMsg.id, (m) => ({
+                galleries: [
+                  ...(m.galleries || []),
+                  { title: e.title || "", trained_words: e.trained_words || [], items: e.items || [] },
+                ],
+              }));
+            } else if (e.type === "candidates") {
+              // 技能工具回傳的候選清單（如 civitai 搜尋結果卡片）
+              get()._patchMessage(assistantMsg.id, (m) => ({
+                candidates: [
+                  ...(m.candidates || []),
+                  { kind: e.kind, items: e.items || [], next_cursor: e.next_cursor || null },
+                ],
+              }));
             } else if (e.type === "sources") {
               get()._patchMessage(assistantMsg.id, (m) => {
                 const seen = new Set((m.sources || []).map((s) => s.url));
@@ -704,11 +791,12 @@ export const useChat = create(
             }
           },
           () => {
-            get()._patchMessage(assistantMsg.id, {
+            get()._patchMessage(assistantMsg.id, (m) => ({
               status: "done",
               toolRunning: false,
               progress: null,
-            });
+              content: stripEchoedNote(m.content),
+            }));
             set({ streaming: false, _abort: null });
             get()._syncConversation(convId); // 保存到後端（跨裝置）
             get()._maybeAutoCompact();
@@ -930,3 +1018,15 @@ export const useChat = create(
     }
   )
 );
+
+// 跨裝置同步的觸發點：分頁重新可見、視窗取得焦點、以及每 30 秒（僅在可見時）
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  const refresh = () => {
+    if (document.visibilityState === "visible") {
+      useChat.getState().refreshConversations();
+    }
+  };
+  document.addEventListener("visibilitychange", refresh);
+  window.addEventListener("focus", refresh);
+  window.setInterval(refresh, 30_000);
+}

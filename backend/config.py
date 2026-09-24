@@ -49,7 +49,7 @@ CLAUDE_TIMEOUT = float(os.getenv("CLAUDE_TIMEOUT", "300"))
 # 額外傳給 claude 的旗標（空白分隔），需要時可加 --effort low 之類。
 CLAUDE_EXTRA_ARGS = os.getenv("CLAUDE_EXTRA_ARGS", "").split()
 # 下拉可選的 Claude 模型。可填別名（由 CLI 解析成該系列最新版：
-# sonnet→Sonnet 5、opus→Opus 5、fable→Fable 5.1、haiku→Haiku 4.5）或完整 ID
+# sonnet→Sonnet 5、opus→Opus 5.5、fable→Fable 5.1、haiku→Haiku 4.5）或完整 ID
 # （claude-opus-4-8、claude-sonnet-4-6 …）；200K 模型可加 "[1m]" 後綴開 1M 視窗。
 # 各模型的顯示名稱與 context 見 claude_client.MODEL_CATALOG。
 CLAUDE_MODELS = [
@@ -57,7 +57,7 @@ CLAUDE_MODELS = [
     for m in (os.getenv("CLAUDE_MODELS") or "sonnet,opus,fable,haiku").split(",")
     if m.strip()
 ]
-# context 視窗：0（預設）＝依模型目錄（Fable/Opus 5/Opus 4.7+/Sonnet 5 為 1M，
+# context 視窗：0（預設）＝依模型目錄（Fable/Opus 5.5/Opus 5/Opus 4.7+/Sonnet 5 為 1M，
 # Opus 4.6/Sonnet 4.6/Haiku 4.5 為 200K）；設正整數則所有 Claude 模型一律用該值。
 CLAUDE_CONTEXT_LENGTH = int(os.getenv("CLAUDE_CONTEXT_LENGTH", "0"))
 
@@ -74,7 +74,7 @@ CODEX_MODELS = [
     m.strip()
     for m in (
         os.getenv("CODEX_MODELS")
-        or "gpt-6-astra,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5"
+        or "gpt-6-astra,gpt-6-sol,gpt-6-luna,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5"
     ).split(",")
     if m.strip()
 ]
@@ -87,6 +87,10 @@ CODEX_SANDBOX_MODE = os.getenv("CODEX_SANDBOX_MODE", "read-only")
 # 指向該擴充的 data 目錄（含 data.json 與 <id>.jpg）。空字串＝功能停用。
 # docker 模式由 compose 固定掛到 /data/prompt-history；本機開發可直接指主機路徑。
 PROMPT_HISTORY_DIR = os.getenv("PROMPT_HISTORY_DIR", "").strip()
+
+# stable-diffusion.cpp 伺服器（/sdcpp/v1/img_gen；圖片編輯技能用，可跑 Qwen-Image-Edit 等）。
+# tools.json 以 {sdcpp_url} 佔位符引用；docker 模式由 compose 指到主機的 port。
+SDCPP_URL = os.getenv("SDCPP_URL", "http://127.0.0.1:7861").rstrip("/")
 
 # ---- 技能（Agent Skills）外掛 ----
 # 放 SKILL.md 外掛的目錄；每個子資料夾＝一個技能（SKILL.md + 選用 references/ scripts/）。

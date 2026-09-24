@@ -1,0 +1,130 @@
+{
+  "base_url": "{sdcpp_url}",
+  "tools": [
+    {
+      "name": "sdcpp_edit_image",
+      "description": "Edit the most recent image in this conversation, following a text instruction, with the image-editing model loaded in the stable-diffusion.cpp server (e.g. Qwen-Image 2.1). The source image is picked automatically: the user's newest attachment, or otherwise the last image generated (A1111) or edited in this chat, whichever is more recent. You only pass the instruction. The result is shown to the user inline and becomes the source for the next edit. Use this whenever the user asks to change, modify, replace, add, remove, recolor, restyle or fix something in a picture, including 'the picture you just made'.",
+      "method": "POST",
+      "path": "/sdcpp/v1/img_gen",
+      "attach_image": {
+        "field": "ref_images",
+        "as": "list",
+        "size_from_image": true,
+        "max_pixels": 1048576,
+        "multiple": 32
+      },
+      "postprocess": "sdcpp_job",
+      "defaults": {
+        "batch_count": 1,
+        "output_format": "png",
+        "auto_resize_ref_image": true,
+        "sample_params": {
+          "sample_steps": 20,
+          "sample_method": "euler",
+          "scheduler": "default",
+          "guidance": {
+            "txt_cfg": 6.0,
+            "distilled_guidance": 3.5
+          }
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "What to change, as a clear instruction that also states what must stay the same, e.g. 'Change the background to a night city street with neon lights; keep the girl, her pose, face and outfit unchanged.' English or Chinese."
+          },
+          "negative_prompt": {
+            "type": "string",
+            "description": "Optional: things to avoid (short, comma-separated)."
+          },
+          "width": {
+            "type": "integer",
+            "description": "Optional; omit to keep the attached image's aspect ratio (about 1 megapixel, multiples of 32)."
+          },
+          "height": {
+            "type": "integer",
+            "description": "Optional; omit to keep the attached image's aspect ratio (about 1 megapixel, multiples of 32)."
+          },
+          "seed": {
+            "type": "integer",
+            "description": "Optional seed; -1 or omit for random. Reuse a seed to make small variations of a previous result."
+          }
+        },
+        "required": [
+          "prompt"
+        ]
+      },
+      "timeout": 600,
+      "max_chars": 2000
+    },
+    {
+      "name": "sdcpp_img2img",
+      "description": "Re-draw the most recent image in this conversation (the user's attachment or the last generated / edited image) with a Stable Diffusion checkpoint (img2img): keeps the composition and applies a danbooru-tag prompt with a strength between 0.3 (subtle) and 0.8 (strong). Use only when the user wants a restyle / variation with tags rather than an instruction-based edit, or when the loaded model is a normal SD/SDXL checkpoint instead of an editing model.",
+      "method": "POST",
+      "path": "/sdcpp/v1/img_gen",
+      "attach_image": {
+        "field": "init_image",
+        "as": "single",
+        "size_from_image": true,
+        "max_pixels": 1048576,
+        "multiple": 32
+      },
+      "postprocess": "sdcpp_job",
+      "defaults": {
+        "batch_count": 1,
+        "output_format": "png",
+        "sample_params": {
+          "sample_steps": 24,
+          "sample_method": "euler_a",
+          "scheduler": "default",
+          "guidance": {
+            "txt_cfg": 6.0
+          }
+        }
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "Comma-separated English danbooru tags describing the desired result (see SD Prompt Guide rules; LoRA tags <lora:name:0.8> allowed)."
+          },
+          "negative_prompt": {
+            "type": "string",
+            "description": "Optional short negative tags."
+          },
+          "strength": {
+            "type": "number",
+            "description": "0.3–0.8; how much to change (default 0.55)."
+          },
+          "width": {
+            "type": "integer",
+            "description": "Optional; omit to keep the attached image's aspect ratio (about 1 megapixel, multiples of 32)."
+          },
+          "height": {
+            "type": "integer",
+            "description": "Optional; omit to keep the attached image's aspect ratio (about 1 megapixel, multiples of 32)."
+          },
+          "seed": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt"
+        ]
+      },
+      "timeout": 600,
+      "max_chars": 2000
+    },
+    {
+      "name": "sdcpp_status",
+      "description": "Check the stable-diffusion.cpp server: which model is loaded (e.g. whether it is Qwen-Image-Edit or a plain SDXL checkpoint), the supported features and size limits. Call it when an edit fails or the user asks what model is doing the editing.",
+      "method": "GET",
+      "path": "/sdcpp/v1/capabilities",
+      "max_chars": 1500,
+      "postprocess": "sdcpp_caps"
+    }
+  ]
+}

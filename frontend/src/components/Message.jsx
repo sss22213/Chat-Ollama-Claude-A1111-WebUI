@@ -1,5 +1,15 @@
 import { useState } from "react";
-import Markdown from "react-markdown";
+import Markdown, { defaultUrlTransform } from "react-markdown";
+
+// A1111 的相對圖片網址（./sd_extra_networks/thumb?filename=…）在本 app 指不到東西；
+// 模型若照抄這種網址，改走後端代理 /api/a1111-thumb 才顯示得出來。
+const A1111_THUMB = /^(?:\.?\/)?sd_extra_networks\/thumb\?/;
+export function chatUrlTransform(url, key, node) {
+  if (typeof url === "string" && A1111_THUMB.test(url)) {
+    return url.replace(A1111_THUMB, "/api/a1111-thumb?");
+  }
+  return defaultUrlTransform(url, key, node);
+}
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import {
@@ -15,7 +25,10 @@ import {
   Wrench,
 } from "lucide-react";
 import ImageBlock from "./ImageBlock";
+import CandidateCards from "./CandidateCards";
+import ExampleGallery from "./ExampleGallery";
 import { useT } from "../i18n";
+import { stripEchoedNote } from "../store/chat";
 
 export default function Message({ msg }) {
   const isUser = msg.role === "user";
@@ -83,14 +96,23 @@ export default function Message({ msg }) {
             <Markdown
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeHighlight]}
+              urlTransform={chatUrlTransform}
             >
-              {msg.content}
+              {stripEchoedNote(msg.content)}
             </Markdown>
           </div>
         ) : null}
 
         {(msg.images || []).map((img, i) => (
           <ImageBlock key={i} img={img} />
+        ))}
+
+        {(msg.candidates || []).map((group, i) => (
+          <CandidateCards key={i} group={group} />
+        ))}
+
+        {(msg.galleries || []).map((g, i) => (
+          <ExampleGallery key={i} gallery={g} />
         ))}
 
         {(msg.sources || []).length > 0 && <Sources sources={msg.sources} />}

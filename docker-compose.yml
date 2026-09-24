@@ -13,6 +13,8 @@ services:
       # 經由 host-gateway 連到主機上（ollama/A1111 容器發佈的）port
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       A1111_URL: ${A1111_URL:-http://host.docker.internal:7860}
+      # stable-diffusion.cpp 伺服器（圖片編輯技能 sdcpp-image-edit 用；沒有就不影響其他功能）
+      SDCPP_URL: ${SDCPP_URL:-http://host.docker.internal:7861}
       DATA_DIR: /data
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-600}
       # Claude CLI 引擎（與 ollama 二選一）。binary 已裝在映像內；

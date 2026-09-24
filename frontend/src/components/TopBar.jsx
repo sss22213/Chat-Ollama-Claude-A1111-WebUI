@@ -73,7 +73,7 @@ export default function TopBar({
   };
 
   return (
-    <header className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-ink-700 bg-ink-850 px-2 py-1.5 md:flex-nowrap md:gap-3 md:px-3 md:py-2">
+    <header className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-ink-700 bg-ink-850 px-2 py-1.5 md:gap-x-3 md:gap-y-1.5 md:px-3 md:py-2">
       {/* 第一列（手機）／左半（桌面）：側欄、引擎、模型。手機時設定鈕也放這列右端，確保永遠點得到 */}
       <div className="flex min-w-0 basis-full items-center gap-1.5 md:min-w-min md:basis-auto md:gap-3">
       <button
@@ -114,7 +114,7 @@ export default function TopBar({
                 (m.supports_vision ? "👁" : "") +
                 (m.supports_tools || m.supports_vision ? " " : "")}
               {m.name}
-              {/* 後端給的顯示名稱（例如 Claude 別名 opus → Opus 5）；與 name 相同時不重複 */}
+              {/* 後端給的顯示名稱（例如 Claude 別名 opus → Opus 5.5）；與 name 相同時不重複 */}
               {m.label && m.label.toLowerCase() !== m.name.toLowerCase()
                 ? ` · ${m.label}`
                 : ""}
@@ -132,8 +132,9 @@ export default function TopBar({
       </button>
       </div>
 
-      {/* 第二列（手機，可橫向捲動）／右半（桌面）：工具與功能。寬度不夠時捲動而不是被裁掉 */}
-      <div className="scrollbar-none flex min-w-0 basis-full items-center gap-1.5 overflow-x-auto md:basis-auto md:grow md:gap-3">
+      {/* 第二列（手機）／右半（桌面）：工具與功能。寬度不夠時「換行」而不是橫向捲動——
+          有些瀏覽器不能拖動隱藏捲軸的列，最右邊的按鈕會點不到 */}
+      <div data-testid="topbar-tools" className="flex min-w-0 basis-full flex-wrap items-center gap-x-1.5 gap-y-1 md:basis-auto md:grow md:justify-end md:gap-x-3 md:gap-y-1.5">
       {/* 圖片工具開關（小螢幕只顯示圖示） */}
       <button
         onClick={() => setSettings({ toolsEnabled: !settings.toolsEnabled })}
@@ -148,7 +149,7 @@ export default function TopBar({
         }`}
       >
         <Wand2 size={15} />
-        <span className="hidden lg:inline">
+        <span className="hidden xl:inline">
           {t("imageTool")}{" "}
           {settings.toolsEnabled && toolsAvailable ? t("on") : t("off")}
         </span>
@@ -168,7 +169,7 @@ export default function TopBar({
         }`}
       >
         <Globe size={15} />
-        <span className="hidden lg:inline">
+        <span className="hidden xl:inline">
           {t("webTool")}{" "}
           {settings.webEnabled && toolsAvailable ? t("on") : t("off")}
         </span>
@@ -195,14 +196,14 @@ export default function TopBar({
           ) : (
             <Combine size={14} />
           )}
-          <span className="hidden lg:inline">
+          <span className="hidden xl:inline">
             {compacting ? t("compacting") : t("compact")}
           </span>
         </button>
       )}
 
       {/* 服務狀態 */}
-      <div className="hidden items-center gap-3 text-xs text-gray-400 lg:flex">
+      <div className="hidden items-center gap-3 text-xs text-gray-400 xl:flex">
         <StatusDot ok={health.ollama} label="Ollama" />
         <StatusDot ok={health.a1111} label="A1111" />
       </div>
@@ -219,7 +220,7 @@ export default function TopBar({
         }`}
       >
         <Sparkles size={15} />
-        <span className="hidden max-w-[8rem] truncate lg:inline">
+        <span className="hidden max-w-[8rem] truncate xl:inline">
           {skillLabel || t("skills")}
         </span>
       </button>
@@ -230,7 +231,7 @@ export default function TopBar({
         title={t("comicStudio")}
       >
         <BookOpen size={16} />
-        <span className="hidden lg:inline">{t("comicStudio")}</span>
+        <span className="hidden xl:inline">{t("comicStudio")}</span>
       </button>
 
       <button
@@ -239,7 +240,7 @@ export default function TopBar({
         title={t("storyStudio")}
       >
         <Images size={16} />
-        <span className="hidden lg:inline">{t("storyStudio")}</span>
+        <span className="hidden xl:inline">{t("storyStudio")}</span>
       </button>
 
       <button

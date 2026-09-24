@@ -1,0 +1,31 @@
+{
+  "tools": [
+    {
+      "name": "civitai_search_models",
+      "kind": "script",
+      "description": "Search civitai.com for models (LoRA by default) and SHOW THE USER A PICKER: each result becomes a card with cached example images, base model, trigger words, download count and a Download button. Use this for any 'find / search / recommend a LoRA (or checkpoint) on civitai' request instead of running civitai.py by hand. Returns a numbered summary you can refer to; the user picks which one to download.",
+      "script": "civitai.py",
+      "argv": ["models"],
+      "defaults": { "types": "LORA", "limit": 6 },
+      "flags": { "query": "--query", "types": "--types", "limit": "--limit", "sort": "--sort", "period": "--period", "username": "--username", "tag": "--tag", "nsfw": "--nsfw", "cursor": "--cursor" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Search text, e.g. 'school uniform illustrious'. Put the base model name (Illustrious, Pony, SDXL, Flux) in the query to narrow results." },
+          "types": { "type": "string", "description": "Model type: LORA (default), Checkpoint, TextualInversion, LoCon, DoRA, Hypernetwork, Controlnet." },
+          "limit": { "type": "integer", "description": "How many results (1-12, default 6)." },
+          "sort": { "type": "string", "enum": ["Highest Rated", "Most Downloaded", "Newest"], "description": "Default is relevance; 'Most Downloaded' is a good choice for popular picks." },
+          "period": { "type": "string", "enum": ["AllTime", "Year", "Month", "Week", "Day"] },
+          "username": { "type": "string", "description": "Only models by this creator." },
+          "tag": { "type": "string", "description": "Only models with this civitai tag." },
+          "nsfw": { "type": "string", "enum": ["true", "false"], "description": "Include NSFW models; omit to use civitai's default." },
+          "cursor": { "type": "string", "description": "Continue from a previous result's next_cursor." }
+        },
+        "required": ["query"]
+      },
+      "postprocess": "civitai_models",
+      "timeout": 120,
+      "max_chars": 6000
+    }
+  ]
+}

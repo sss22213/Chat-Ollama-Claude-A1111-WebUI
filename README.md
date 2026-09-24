@@ -117,7 +117,9 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   denoising strength, default negative prompt, system prompt.
 - 💾 **Server-side persistence** — conversations (SQLite) and settings are stored on the
   backend for cross-device, long-term history, with a `localStorage` cache for speed;
-  images live on the backend and only their URLs are stored.
+  images live on the backend and only their URLs are stored. Open tabs re-sync the
+  conversation list when they regain focus and every 30 s, so a chat continued on your
+  phone shows up on the desktop without a reload.
 - 🧩 **Skills (Agent Skills plugin)** — drop community `SKILL.md` folders into the skills
   directory and enable any number of them (or let the model pick) from the ✨ button. Skills can declare
   HTTP API tools (`tools.json`) and, once you enable it in Settings, the model can run the
@@ -320,12 +322,12 @@ and logged in, it's auto-detected — no config needed.
 **Claude CLI.** The dropdown shows whatever `CLAUDE_MODELS` contains (default
 `sonnet,opus,fable,haiku`). Aliases are resolved by the installed Claude Code CLI to the
 newest model of that family, so they never go stale; full IDs pin a specific version. The
-table reflects Claude Code 2.1.278 (catalog read from the binary on 2026-09-20):
+table reflects Claude Code 2.1.281 (catalog read from the binary on 2026-09-25):
 
 | Entry in `CLAUDE_MODELS` | Resolves to | Context | Reasoning effort |
 |---|---|---|---|
 | `fable` | Claude Fable 5.1 (`claude-fable-5-1`) | 1M | low · medium · high · xhigh · max (default high) |
-| `opus` | Claude Opus 5 (`claude-opus-5`) | 1M | low · medium · high · xhigh · max (default high) |
+| `opus` | Claude Opus 5.5 (`claude-opus-5-5`) | 1M | low · medium · high · xhigh · max (default medium) |
 | `sonnet` | Claude Sonnet 5 (`claude-sonnet-5`) | 1M | low · medium · high · xhigh · max (default high) |
 | `haiku` | Claude Haiku 4.5 (`claude-haiku-4-5`) | 200K | — |
 
@@ -333,15 +335,16 @@ Full IDs accepted as well:
 
 | Full ID | Context | Reasoning effort |
 |---|---|---|
+| `claude-opus-5-5` | 1M | low · medium · high · xhigh · max (default medium) |
 | `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5` | 1M | low · medium · high · xhigh · max (default high) |
 | `claude-opus-4-7` | 1M | low · medium · high · xhigh · max (default xhigh) |
 | `claude-opus-4-6`, `claude-sonnet-4-6` | 200K | low · medium · high · max (no xhigh) |
 | `claude-haiku-4-5`, `claude-opus-4-5`, `claude-sonnet-4-5` | 200K | — |
 
-Fable / Opus 5 / Opus 4.7+ / Sonnet 5 use a native 1M window; the 200K models accept a
+Fable / Opus 5.5 / Opus 5 / Opus 4.7+ / Sonnet 5 use a native 1M window; the 200K models accept a
 `[1m]` suffix (e.g. `sonnet-4-6[1m]`, `claude-opus-4-6[1m]`, `haiku[1m]`) to turn on the
 CLI's 1M window. The dropdown shows the resolved name next to each entry (e.g.
-`opus · Opus 5`); set `CLAUDE_CONTEXT_LENGTH` to force one context size for every Claude
+`opus · Opus 5.5`); set `CLAUDE_CONTEXT_LENGTH` to force one context size for every Claude
 model. The effort selector in ⚙️ Settings only offers the levels the selected model
 declares, and `--effort` is not sent for models that do not support it. `claude-mythos-5-1`
 / `claude-mythos-5` are in the CLI catalog too but only for approved organizations, so they
@@ -351,11 +354,13 @@ are not in the default list.
 account can actually use — so it updates whenever the `codex` CLI refreshes its catalog
 (run `codex debug models` or any `codex` session on the host; Docker sees the mounted
 cache). Hidden / non-chat entries (`gpt-reserve`, `codex-auto-review`) are filtered out.
-Catalog as of 2026-09-20 (codex 0.155.1; `gpt-5.4-mini` has been removed):
+Catalog as of 2026-09-25 (codex 0.155.1; `gpt-6-sol` and `gpt-6-luna` are new):
 
 | Model | Reasoning effort | Context |
 |---|---|---|
 | `gpt-6-astra` | low · medium · high · xhigh · max · ultra (default low) | 272K |
+| `gpt-6-sol` | low · medium · high · xhigh · max · ultra (default medium) | 272K |
+| `gpt-6-luna` | low · medium · high · xhigh · max (default medium) | 272K |
 | `gpt-5.6-sol` | low · medium · high · xhigh · max · ultra (default low) | 272K |
 | `gpt-5.6-terra` | low · medium · high · xhigh · max · ultra (default medium) | 272K |
 | `gpt-5.6-luna` | low · medium · high · xhigh · max (default medium) | 272K |
@@ -371,8 +376,9 @@ A skill is a folder under the skills directory (default `backend/skills/`, chang
 ⚙️ Settings → Skills) with a `SKILL.md` (YAML `name` / `description` + Markdown
 instructions), optional `references/*.md`, optional `scripts/*.py`, and an optional
 `tools.json`. The format is the same one Anthropic / Codex / ClawHub skills use, so
-community skills can be dropped in as-is. Pick a skill from the ✨ button in the chat top
-bar, or choose **Auto** to let the model decide per request. Skills work on every engine
+community skills can be dropped in as-is. Enable skills from the ✨ button in the chat top
+bar, or choose **Auto** to let the model decide per request. Skills dropped into the folder
+while the app is running appear after **Rescan** in that dialog (no restart or reload needed). Skills work on every engine
 (Ollama / Claude CLI / Codex CLI) because they are injected into the system prompt, and a
 runtime-adapter note maps a skill's assumed `image_gen` to the app's A1111 generation.
 Several skills can be enabled at once: their instructions are injected together (each gets a
@@ -386,6 +392,11 @@ devices.
 |---|---|---|
 | Instructions | `SKILL.md`, `references/` | Injected into the system prompt (capped by `SKILL_MAX_CHARS`). |
 | HTTP API tools | `tools.json` (`kind` omitted or `"http"`) | A function per tool; the backend performs the request. `base_url` may use `{a1111_url}` / `{ollama_url}`. |
+| WebUI-local images | automatic for tools whose `base_url` uses `{a1111_url}` | A1111-relative image links such as Civitai Helper's `local_url` (`./sd_extra_networks/thumb?filename=…`) are rewritten to the app's `/api/a1111-thumb` proxy (resized to 1024 px and cached), and the chat renderer rewrites them too if the model copies the raw link. |
+| Images for the model to see | `tools.json` HTTP tool with `"postprocess": "civitai_examples"` (and `"vision_max"`) | The backend shows a `gallery` in the chat and attaches up to `vision_max` downscaled images to the tool message. Vision-capable Ollama models see them; other models are told they cannot. |
+| Query parameters on POST | `tools.json` HTTP tool with `"query_params": ["full"]` | Those arguments go into the URL query string instead of the JSON body (e.g. A1111's `unload-checkpoint?full=true`). |
+| Attached image | `tools.json` HTTP tool with `"attach_image": {"field": …, "as": "list" or "single"}` | The most recent image in the conversation (the user's attachment or the last generated / edited image, whichever is newer) is added to the request body as a data URL, so the model never handles image bytes. `"postprocess": "sdcpp_job"` then polls a stable-diffusion.cpp job, saves the output and shows it in the chat. `base_url` may also use `{sdcpp_url}`. |
+| Result cards | `tools.json` script tool with `"postprocess"` (currently `civitai_models`) | The backend turns the script's JSON into a compact summary for the model and a `candidates` event the chat renders as cards (thumbnails cached under `DATA_DIR/civitai-cache/`). |
 | Python scripts | `scripts/*.py`, and optionally `tools.json` entries with `"kind": "script"` | A `run_skill_script(script, args[])` function (plus any declared fixed-script tools). Off by default: enable **Allow skills to run scripts** in Settings → Skills. |
 
 Tools are available with Ollama (native function calling) and Claude CLI (a `[[CALL]]`
@@ -416,8 +427,11 @@ Bundled skills:
 | Skill | What it does |
 |---|---|
 | `generate-manga-page` | agent-mangaka-forge's consistency workflow adapted to A1111 LoRA / seed reuse. |
-| `civitai-helper` | HTTP tools against the A1111 **Civitai Helper** extension: local LoRA / checkpoint inventory with trigger words, model lookup by URL or id, download into the WebUI, scan, check for new versions, refresh lists. |
-| `civitai-api` | [stanestane/civitai-api](https://clawhub.ai/stanestane/skills/civitai-api) (MIT-0): searches the public Civitai REST API by keyword / tag / creator / hash and returns model versions with trigger words and example-image URLs. Needs scripts enabled; put `CIVITAI_API_KEY=…` in `backend/data/skill-work/civitai-api/.env` if you want authenticated calls. |
+| `sdcpp-image-edit` | Instruction-based editing of an attached image through a local **stable-diffusion.cpp** server (`SDCPP_URL`, default port 7861) running an editing model such as Qwen-Image 2.1: the app sends the most recent image in the conversation (your attachment, or the last image generated with A1111 or edited here, so "edit the picture you just made" works without re-attaching) as `ref_images`, polls the job and shows the result inline like a generated image. Also has an img2img tool and a status tool that reports whether the loaded model can edit. |
+| `a1111-memory-manager` | Memory tools for the A1111 / Forge image generator: show RAM / VRAM (`/sdapi/v1/memory`, summarized in GB), unload the checkpoint from VRAM only or fully (`/sdapi/v1/unload-checkpoint[?full=true]`), and load it back (`/sdapi/v1/reload-checkpoint`). Handy when Ollama, A1111 and sd.cpp share one GPU. |
+| `sd-prompt-guide` | Prompt-writing rules for the local SD backend: danbooru tag order, weights, negative prompt, sizes, and how to apply a LoRA (`<lora:filename:0.6–1>` plus its trigger words in the prompt); points to Civitai Helper for the installed-LoRA inventory. |
+| `civitai-helper` | HTTP tools against the A1111 **Civitai Helper** extension: local LoRA / checkpoint inventory with trigger words, model lookup by URL or id, download into the WebUI, scan, check for new versions, refresh lists. Example images of an installed model are shown as a **gallery** (local copies first, with prompts and a copy button), and the first 4 are also attached to the tool result so a vision-capable Ollama model can actually see and describe them. |
+| `civitai-api` | [stanestane/civitai-api](https://clawhub.ai/stanestane/skills/civitai-api) (MIT-0) plus an app-specific `civitai_search_models` tool: the model searches civitai.com (LoRA by default) and the chat shows the results as **cards** with server-cached example images, base model, trigger words and a **Download this** button that hands the model page to Civitai Helper. Other commands (by-hash, tags, creators…) run through `run_skill_script`. Needs scripts enabled; put `CIVITAI_API_KEY=…` in `backend/data/skill-work/civitai-api/.env` for authenticated calls. |
 
 ## Prompt history (sd-webui-prompt-history)
 

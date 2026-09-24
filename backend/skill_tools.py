@@ -25,7 +25,10 @@ tools.json 格式（放在技能資料夾內，與 SKILL.md 同層；只能由�
       "parameters": { "type": "object", "properties": {…}, "required": […] },
       "timeout": 120,                                # 選用，秒
       "max_chars": 6000,                             # 選用，回傳給模型的字元上限
-      "result_note": "…"                             # 選用，附在結果後面提示模型怎麼用
+      "result_note": "…",                            # 選用，附在結果後面提示模型怎麼用
+      "attach_image": {"field": "ref_images", "as": "list"},   # 選用：把使用者最後附的圖（data URL）放進 body
+      "query_params": ["full"],                      # 選用：POST/PUT 時這些參數改放網址查詢字串
+      "postprocess": "sdcpp_job"                     # 選用：後端接手輪詢工作、存圖、推 image 事件
     },
     {
       "name": "civitai_search",                      # 固定腳本工具
@@ -36,6 +39,7 @@ tools.json 格式（放在技能資料夾內，與 SKILL.md 同層；只能由�
       "flags": { "query": "--query", "nsfw": "--nsfw" },   # 參數 → flag；未列者用 --<name>
       "positional": ["model_id"],                    # 依序當位置參數（不加 flag）
       "parameters": { "type": "object", "properties": {…} },
+      "postprocess": "civitai_models",           # 選用：後端把原始輸出整理成摘要＋前端事件
       "timeout": 120, "max_chars": 8000, "result_note": "…"
     }
   ]
@@ -78,7 +82,7 @@ from typing import Any
 import httpx
 
 import settings_store
-from config import DATA_DIR, HTTP_TIMEOUT, OLLAMA_URL, SKILL_SCRIPT_ENV, SKILL_SCRIPT_TIMEOUT
+from config import DATA_DIR, HTTP_TIMEOUT, OLLAMA_URL, SDCPP_URL, SKILL_SCRIPT_ENV, SKILL_SCRIPT_TIMEOUT
 
 log = logging.getLogger("skill_tools")
 
@@ -138,6 +142,7 @@ def normalize(raw: dict[str, Any], slug: str) -> list[dict[str, Any]]:
                     if isinstance(flags, dict)
                     else {},
                     "positional": [str(p) for p in (t.get("positional") or [])],
+                    "postprocess": str(t.get("postprocess") or "").strip(),
                     "timeout": float(t.get("timeout") or SKILL_SCRIPT_TIMEOUT),
                     "max_chars": int(t.get("max_chars") or _SCRIPT_MAX_CHARS),
                 }
@@ -157,6 +162,12 @@ def normalize(raw: dict[str, Any], slug: str) -> list[dict[str, Any]]:
                 "method": method,
                 "base_url": str(t.get("base_url") or base_url).strip(),
                 "path": path,
+                # 把對話中最後附上的圖片塞進 body：{"field": "ref_images", "as": "list"|"single"}
+                "attach_image": t.get("attach_image") if isinstance(t.get("attach_image"), dict) else None,
+                # POST/PUT 時仍放在網址查詢字串的參數名（例如 A1111 的 ?full=true）
+                "query_params": [str(q) for q in (t.get("query_params") or []) if isinstance(q, str)],
+                "postprocess": str(t.get("postprocess") or "").strip(),
+                "vision_max": int(t.get("vision_max") or 0),
                 "timeout": float(t.get("timeout") or _DEFAULT_TIMEOUT),
                 "max_chars": int(t.get("max_chars") or _DEFAULT_MAX_CHARS),
             }
@@ -420,8 +431,12 @@ async def run_script(
     *,
     timeout: float | None = None,
     max_chars: int = _SCRIPT_MAX_CHARS,
-) -> str:
-    """執行技能內的一支 Python 腳本，回傳要給模型看的文字（成功或失敗都以文字說明）。"""
+    raw: bool = False,
+) -> str | tuple[str, str, int]:
+    """執行技能內的一支 Python 腳本，回傳要給模型看的文字（成功或失敗都以文字說明）。
+
+    raw=True 時，腳本真的跑起來後改回 (stdout, stderr, returncode) 給 postprocess 用；
+    找不到腳本等前置錯誤仍回字串。"""
     sdir = skill_dir(slug)
     if not sdir:
         return f"Script run failed: unknown skill '{slug}'."
@@ -462,6 +477,8 @@ async def run_script(
         return f"Script run failed: `{shown}` timed out after {limit:.0f}s and was killed."
     out = _redact(out_b.decode("utf-8", "replace"), secrets).strip()
     err = _redact(err_b.decode("utf-8", "replace"), secrets).strip()
+    if raw:
+        return out[:max_chars], err, int(proc.returncode or 0)
     text = f"Result of `{shown}` (exit code {proc.returncode}):\n" + _truncate(
         out or "(no stdout)", max_chars
     )
@@ -521,6 +538,7 @@ def _resolve_base(url: str) -> str:
     return (
         url.replace("{a1111_url}", settings_store.get_a1111_url().rstrip("/"))
         .replace("{ollama_url}", OLLAMA_URL.rstrip("/"))
+        .replace("{sdcpp_url}", SDCPP_URL)
         .rstrip("/")
     )
 
@@ -551,21 +569,117 @@ def _coerce(args: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_A1111_THUMB_RE = re.compile(r"(?:\.?/)?sd_extra_networks/thumb\?")
+
+
+def rewrite_a1111_thumbs(text: str) -> str:
+    """A1111 回傳的相對圖片網址（./sd_extra_networks/thumb?filename=…，例如 Civitai Helper
+    的 local_url）→ 本 app 的代理 /api/a1111-thumb?filename=…，模型拿去嵌圖才顯示得出來。"""
+    return _A1111_THUMB_RE.sub("/api/a1111-thumb?", text) if "sd_extra_networks/thumb?" in text else text
+
+
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + f"\n…(truncated, {len(text) - limit} more chars)"
 
 
-async def call(tool: dict[str, Any], args: dict[str, Any] | None) -> str:
+class ToolOutput:
+    """工具執行結果：text 給模型；events 是要順便推給前端的 SSE 事件（如候選卡片）。"""
+
+    __slots__ = ("text", "events", "vision", "vision_labels")
+
+    def __init__(self, text: str, events: list[dict[str, Any]] | None = None):
+        self.text = text
+        # "_vision" 事件不送前端：是要附在工具訊息上給視覺模型看的圖（base64）
+        self.vision: list[str] = []
+        self.vision_labels: list[str] = []
+        self.events = []
+        for ev in events or []:
+            if ev.get("type") == "_vision":
+                self.vision += list(ev.get("images") or [])
+                self.vision_labels += list(ev.get("labels") or [])
+            else:
+                self.events.append(ev)
+
+    def __str__(self) -> str:
+        return self.text
+
+
+async def _postprocess(name: str, stdout: str) -> tuple[str, list[dict[str, Any]]]:
+    """tools.json 的 "postprocess"：把腳本原始輸出換成結構化摘要＋前端事件。"""
+    if name == "civitai_models":
+        import civitai_cards
+
+        return await civitai_cards.process(stdout)
+    return stdout, []
+
+
+async def _postprocess_http(name: str, tool: dict[str, Any], base: str, data: Any) -> tuple[str, list[dict[str, Any]]]:
+    """HTTP 工具的 postprocess：拿到回應 JSON 後由後端接手（如 sd.cpp 的非同步工作）。"""
+    if name == "sdcpp_job":
+        import sdcpp_jobs
+
+        return await sdcpp_jobs.process(tool, base, data)
+    if name == "sdcpp_caps":
+        import sdcpp_jobs
+
+        return sdcpp_jobs.caps_summary(data), []
+    if name == "civitai_examples":
+        import civitai_examples
+
+        return await civitai_examples.process(tool, base, data)
+    if name == "a1111_memory":
+        import a1111_memory
+
+        return a1111_memory.summary(data), []
+    if name == "a1111_memory_after":
+        import a1111_memory
+
+        return await a1111_memory.after_action(tool, base, data), []
+    return json.dumps(data, ensure_ascii=False, indent=1), []
+
+
+async def call(tool: dict[str, Any], args: dict[str, Any] | None, image: str | None = None) -> str:
     """執行一個技能工具，回傳要給模型看的文字（成功或失敗都以文字說明）。"""
+    return (await call_full(tool, args, image=image)).text
+
+
+def _image_size(image: str, max_pixels: int, multiple: int) -> tuple[int, int] | None:
+    """附圖的輸出尺寸：保持長寬比、面積不超過 max_pixels、邊長取 multiple 的倍數（至少 256）。"""
+    import base64
+    import io
+    import math
+
+    try:
+        from PIL import Image
+
+        raw = base64.b64decode(image.split(",", 1)[1] if image.startswith("data:") else image)
+        w, h = Image.open(io.BytesIO(raw)).size
+    except Exception:  # noqa: BLE001 — 讀不到尺寸就交給伺服器預設
+        return None
+    scale = min(1.0, math.sqrt(max_pixels / float(w * h)))
+    if min(w, h) * scale < 256:  # 太小的圖等比放大到短邊 256
+        scale = 256 / float(min(w, h))
+    fit = lambda v: max(multiple, int(round(v * scale / multiple)) * multiple)  # noqa: E731
+    return fit(w), fit(h)
+
+
+def _as_data_url(image: str) -> str:
+    return image if image.startswith("data:") else f"data:image/png;base64,{image}"
+
+
+async def call_full(
+    tool: dict[str, Any], args: dict[str, Any] | None, image: str | None = None
+) -> ToolOutput:
+    """同 call，但連同要推給前端的事件一起回（chat.py 用）。image＝對話中最後附的圖（base64 或 data URL）。"""
     raw_in = dict(args or {})
     kind = tool.get("kind") or "http"
 
     # --- 腳本工具（通用 runner / tools.json 宣告） ---
     if kind in ("runner", "script"):
         if not settings_store.get_skill_scripts():
-            return (
+            return ToolOutput(
                 f"Tool {tool['name']} is disabled: skill scripts are turned off in Settings "
                 "(Skills → Allow skills to run scripts)."
             )
@@ -573,29 +687,44 @@ async def call(tool: dict[str, Any], args: dict[str, Any] | None) -> str:
             allowed = tool.get("skills") or {}
             slug = str(raw_in.get("skill") or tool.get("skill") or "").strip()
             if slug not in allowed:
-                return (
+                return ToolOutput(
                     f"Tool {tool['name']} failed: unknown skill '{slug}'. "
                     f"Choose one of: {', '.join(allowed) or '(none)'}."
                 )
-            return await run_script(
-                slug,
-                str(raw_in.get("script") or ""),
-                _runner_args(raw_in.get("args")),
-                timeout=tool.get("timeout"),
-                max_chars=int(tool.get("max_chars") or _SCRIPT_MAX_CHARS),
+            return ToolOutput(
+                await run_script(
+                    slug,
+                    str(raw_in.get("script") or ""),
+                    _runner_args(raw_in.get("args")),
+                    timeout=tool.get("timeout"),
+                    max_chars=int(tool.get("max_chars") or _SCRIPT_MAX_CHARS),
+                )
             )
         a = _coerce(raw_in, tool["parameters"])
         a = {**(tool.get("defaults") or {}), **a}
-        text = await run_script(
+        post = tool.get("postprocess") or ""
+        res = await run_script(
             tool["skill"],
             tool["script"],
             script_argv(tool, a),
             timeout=tool.get("timeout"),
-            max_chars=int(tool.get("max_chars") or _SCRIPT_MAX_CHARS),
+            # 有 postprocess 時原始輸出不會直接給模型，放寬上限讓 JSON 完整
+            max_chars=400_000 if post else int(tool.get("max_chars") or _SCRIPT_MAX_CHARS),
+            raw=bool(post),
         )
+        events: list[dict[str, Any]] = []
+        if post and isinstance(res, tuple):
+            stdout, err, code = res
+            if code == 0 and stdout.strip():
+                text, events = await _postprocess(post, stdout)
+                text = f"Result of {tool['name']}:\n" + _truncate(text, int(tool.get("max_chars") or _SCRIPT_MAX_CHARS))
+            else:
+                text = f"Tool {tool['name']} failed (exit code {code}):\n" + _truncate(err or stdout or "(no output)", _STDERR_MAX_CHARS)
+        else:
+            text = res if isinstance(res, str) else str(res)
         if tool.get("result_note"):
             text += f"\n\n{tool['result_note']}"
-        return text
+        return ToolOutput(text, events)
 
     # --- HTTP 工具 ---
     args = _coerce(raw_in, tool["parameters"])
@@ -609,6 +738,20 @@ async def call(tool: dict[str, Any], args: dict[str, Any] | None) -> str:
     url = base + ("" if path.startswith("/") else "/") + path
     method = tool["method"]
     timeout = min(float(tool.get("timeout") or _DEFAULT_TIMEOUT), HTTP_TIMEOUT)
+    attach = tool.get("attach_image")
+    if attach:
+        if not image:
+            return ToolOutput(
+                f"Tool {tool['name']} needs an image, but the user has not attached one in this "
+                "conversation. Ask the user to attach the image to edit, then call the tool again."
+            )
+        field = str(attach.get("field") or "image")
+        args[field] = [_as_data_url(image)] if attach.get("as") == "list" else _as_data_url(image)
+        # 沒指定尺寸時沿用附圖的長寬比（伺服器預設 512x512 會把圖壓成正方形）
+        if attach.get("size_from_image") and not (args.get("width") and args.get("height")):
+            size = _image_size(image, int(attach.get("max_pixels") or 1024 * 1024), int(attach.get("multiple") or 32))
+            if size:
+                args["width"], args["height"] = size
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -620,21 +763,34 @@ async def call(tool: dict[str, Any], args: dict[str, Any] | None) -> str:
                 }
                 resp = await client.request(method, url, params=query)
             else:
-                resp = await client.request(method, url, json=args)
+                tool = {**tool, "_sent": args}
+                qnames = tool.get("query_params") or []
+                query = {k: args.pop(k) for k in list(args) if k in qnames and args[k] is not None}
+                resp = await client.request(method, url, params=query or None, json=args)
     except httpx.HTTPError as e:
-        return f"Tool {tool['name']} failed: could not reach {url} ({e.__class__.__name__}: {e})"
+        msg = f"Tool {tool['name']} failed: could not reach {url} ({e.__class__.__name__}: {e})"
+        log.warning(msg)
+        return ToolOutput(msg, [{"type": "error", "message": msg}] if tool.get("postprocess") else [])
 
     body = resp.text or ""
+    data: Any = None
     try:
         data = resp.json()
         body = json.dumps(data, ensure_ascii=False, indent=1)
     except ValueError:
         pass
+    if "{a1111_url}" in tool["base_url"]:
+        body = rewrite_a1111_thumbs(body)
 
     limit = int(tool.get("max_chars") or _DEFAULT_MAX_CHARS)
     if resp.status_code >= 400:
-        return f"Tool {tool['name']} returned HTTP {resp.status_code}:\n{_truncate(body, limit)}"
+        msg = f"Tool {tool['name']} returned HTTP {resp.status_code}:\n{_truncate(body, limit)}"
+        log.warning(msg[:500])
+        return ToolOutput(msg, [{"type": "error", "message": msg[:300]}] if tool.get("postprocess") else [])
+    events: list[dict[str, Any]] = []
+    if tool.get("postprocess") and (isinstance(data, (dict, list)) or tool["postprocess"] == "a1111_memory_after"):
+        body, events = await _postprocess_http(tool["postprocess"], tool, base, data)
     text = f"Result of {tool['name']}:\n{_truncate(body, limit)}"
     if tool.get("result_note"):
         text += f"\n\n{tool['result_note']}"
-    return text
+    return ToolOutput(text, events)

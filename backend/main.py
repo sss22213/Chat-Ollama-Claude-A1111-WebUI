@@ -27,6 +27,7 @@ import claude_client
 import codex_client
 import comic as comic_mod
 import comics_store
+import config
 import conversations_store
 import docker_probe
 import loras
@@ -60,6 +61,17 @@ conversations_store.init()
 comics_store.init()
 # 背景補齊角色關鍵字（向 danbooru 抓人氣角色；失敗則只用內建清單，不阻塞啟動）
 threading.Thread(target=booru_characters.ensure_enriched, daemon=True).start()
+
+
+@app.get("/api/civitai-cache/{name}")
+async def serve_civitai_thumb(name: str):
+    """civitai 搜尋卡片的範例圖縮圖（由 civitai_cards 暫存在 DATA_DIR/civitai-cache）。"""
+    import civitai_cards
+
+    fp = civitai_cards.cache_path(name)
+    if not fp:
+        raise HTTPException(404, "找不到縮圖")
+    return FileResponse(fp)
 
 
 @app.get("/images/{filename}")
@@ -434,6 +446,37 @@ async def loras_refresh() -> dict[str, Any]:
     except Exception as e:
         raise HTTPException(502, f"無法連到 A1111 重新整理 LoRA：{describe(e)}")
     return {"count": len(items), "items": items}
+
+
+@app.get("/api/a1111-thumb")
+async def a1111_thumb(filename: str, size: int = 1024):
+    """代理 A1111 的 /sd_extra_networks/thumb（WebUI 模型資料夾裡的圖，例如 Civitai Helper
+    存的範例圖 <model>.example_NN.jpeg）。聊天介面無法直接用 A1111 的相對網址，所以由後端轉。
+    A1111 自己只允許 extra-networks 目錄內的檔案；這裡再限定副檔名，並縮圖快取。"""
+    import hashlib
+    import io
+
+    name = (filename or "").strip()
+    if not name or not name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+        raise HTTPException(400, "只支援圖片檔")
+    size = max(128, min(2048, size))
+    cache_dir = config.DATA_DIR / "a1111_thumbs"
+    cache = cache_dir / f"{hashlib.sha1(f'{name}|{size}'.encode()).hexdigest()}.jpg"
+    if not cache.is_file():
+        raw = await a1111_client.fetch_lora_preview([name])
+        if not raw:
+            raise HTTPException(404, "A1111 找不到這張圖")
+        try:
+            from PIL import Image
+
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with Image.open(io.BytesIO(raw)) as im:
+                im = im.convert("RGB")
+                im.thumbnail((size, size), Image.LANCZOS)
+                im.save(cache, "JPEG", quality=85)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"無法解碼圖片：{e}")
+    return FileResponse(cache)
 
 
 @app.get("/api/lora-thumb")
