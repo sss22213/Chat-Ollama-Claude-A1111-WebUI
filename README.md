@@ -124,6 +124,14 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   directory and enable any number of them (or let the model pick) from the ✨ button. Skills can declare
   HTTP API tools (`tools.json`) and, once you enable it in Settings, the model can run the
   skill's bundled Python scripts on the server. *(See [Skills](#skills-agent-skills-plugin).)*
+- ✏️ **Instruction-based image editing** *(optional)* — with a local
+  **stable-diffusion.cpp** server running an editing model (e.g. Qwen-Image 2.1), the
+  `sdcpp-image-edit` skill edits the latest image in the chat ("make her hair red", "remove
+  the background") and shows the result inline.
+- 🔎 **Civitai search & model examples** — search civitai.com from the chat and get result
+  **cards** (example images, base model, trigger words, a **Download this** button that hands
+  the model to A1111's Civitai Helper), or browse an installed model's example images as a
+  **gallery** that vision models can also look at.
 - ⌨️ `/image <prompt>` generates directly, skipping the LLM (a manual fallback).
 
 ## Requirements
@@ -138,6 +146,8 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   in-image install needed (see below).
 - For **Prompt history** (optional): the A1111 `sd-webui-prompt-history` extension; mount its
   `data` folder into the container (read-only) so the WebUI can read your past generations.
+- For **image editing** (optional): a stable-diffusion.cpp server (`sd-server`) at
+  `localhost:7861` (`SDCPP_URL`) with an editing model loaded. Everything else works without it.
 - Python 3.10+ and Node 18+ for local development.
 
 > Ollama and A1111 can run anywhere as long as their ports are reachable; this WebUI
@@ -162,7 +172,7 @@ docker compose down         # stop
 ```
 
 Optional: copy `.env.example` → `.env` to set `WEBUI_PORT`, override
-`OLLAMA_URL` / `A1111_URL`, or enable the Claude (`CLAUDE_CREDS_DIR`) / Codex
+`OLLAMA_URL` / `A1111_URL` / `SDCPP_URL`, or enable the Claude (`CLAUDE_CREDS_DIR`) / Codex
 (`CODEX_CREDS_DIR`) engines.
 
 > **Linux note:** the backend uses `extra_hosts: host.docker.internal:host-gateway`
@@ -386,7 +396,7 @@ share of the `SKILL_MAX_CHARS` budget) and their tools are all available. The se
 saved with the other settings on the backend, so it survives reloads and follows you across
 devices.
 
-**Three ways a skill can act**
+**How a skill can act**
 
 | Mechanism | Declared in | What the model gets |
 |---|---|---|
@@ -496,7 +506,8 @@ Frontend (React/Vite)  ──/api proxy──▶  Backend (FastAPI)
                                          ├─▶ Ollama      /api/chat (stream + tools + vision)
                                          ├─▶ Claude CLI  claude -p (stream-json subprocess)
                                          ├─▶ Codex CLI   codex exec --json (subprocess)
-                                         └─▶ A1111       /sdapi/v1/{txt2img,img2img,progress,png-info}
+                                         ├─▶ A1111       /sdapi/v1/{txt2img,img2img,progress,png-info}
+                                         └─▶ skill tools A1111 extensions, sd.cpp /sdcpp/v1, civitai.com
 Images are saved to backend/data/images/ and served by the backend at /images/
 ```
 
@@ -533,14 +544,19 @@ their `images` stripped automatically.
 | `backend/docker_probe.py` | best-effort container listing via the docker socket |
 | `backend/skills_store.py` | skill discovery / SKILL.md parsing / prompt injection (pinned or Auto) + runtime-adapter note |
 | `backend/skill_tools.py` | skill tools: `tools.json` HTTP tools, fixed-script tools, and the `run_skill_script` runner (sandboxed env, work folder, timeout, secret masking) |
+| `backend/sdcpp_jobs.py` | `sdcpp_job` postprocess: polls a stable-diffusion.cpp job, saves the output image and shows it in the chat |
+| `backend/civitai_cards.py` | `civitai_models` postprocess: Civitai search results → model summary + result cards (thumbnails cached in `DATA_DIR/civitai-cache/`) |
+| `backend/civitai_examples.py` | `civitai_examples` postprocess: Civitai Helper example images → chat gallery + downscaled vision images for the model |
+| `backend/a1111_memory.py` | `a1111_memory` postprocess: A1111 RAM / VRAM figures → readable GB summary |
 | `frontend/src/store/chat.js` | zustand state + streaming coordination + persistence |
 | `frontend/src/lib/api.js` | SSE parsing, storage/browse/sources/engine calls |
 | `frontend/src/i18n.js` | 5-language dictionary + `useT()` hook |
-| `frontend/src/components/` | UI components (TopBar, Composer, Message, ImageBlock, PngInfoModal, HistoryModal, pickers, panels) |
+| `frontend/src/components/` | UI components (TopBar, Composer, Message, ImageBlock, PngInfoModal, HistoryModal, CandidateCards, ExampleGallery, pickers, panels) |
 
 ## Configuration
 
-Copy `.env.example` and override via environment variables (addresses, default model,
+Copy `.env.example` and override via environment variables (addresses incl. the optional
+`SDCPP_URL`, default model,
 timeouts, Claude / Codex credentials and model lists (`CLAUDE_MODELS`, `CODEX_MODELS`),
 prompt-history folder, skills folder and script settings `SKILLS_DIR` / `SKILL_MAX_CHARS` /
 `SKILL_SCRIPT_ENV` / `SKILL_SCRIPT_TIMEOUT`). In dev mode the frontend proxy target is in
