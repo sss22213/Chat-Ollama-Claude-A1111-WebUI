@@ -116,15 +116,31 @@ async def health() -> dict[str, Any]:
 
 
 @app.get("/api/models")
-async def models(engine: str = "ollama") -> list[dict[str, Any]]:
+async def models(engine: str = "ollama", refresh: bool = False) -> list[dict[str, Any]]:
     if engine == "claude_cli":
         return claude_client.list_models()
     if engine == "codex":
         return codex_client.list_models()
     try:
-        return await ollama_client.list_models()
+        return await ollama_client.list_models(refresh=refresh)
     except Exception as e:
         raise HTTPException(502, f"無法連線 Ollama：{describe(e)}")
+
+
+class OllamaReloadRequest(BaseModel):
+    model: str
+    # 跟聊天送的 num_ctx 一樣，載入後第一次聊天才不會再重載
+    num_ctx: int | None = None
+
+
+@app.post("/api/ollama/reload")
+async def ollama_reload(req: OllamaReloadRequest) -> dict[str, Any]:
+    """把 Ollama 模型從記憶體卸載後重新載入。"""
+    try:
+        return await ollama_client.reload_model(req.model, req.num_ctx)
+    except Exception as e:
+        # 前綴「重新載入失敗」由前端依語言加上
+        raise HTTPException(502, describe(e))
 
 
 @app.get("/api/engines")
@@ -508,6 +524,19 @@ def skills_dir_set(req: SkillsDirRequest) -> dict[str, Any]:
 
 class SkillScriptsRequest(BaseModel):
     enabled: bool = False
+
+
+class SkillMaxCharsRequest(BaseModel):
+    value: int = 0
+
+
+@app.put("/api/skills-max-chars")
+def skills_max_chars_set(req: SkillMaxCharsRequest) -> dict[str, Any]:
+    """技能提示詞注入長度上限（字元）；0＝無上限。回傳與 GET /api/skills-dir 相同的狀態。"""
+    try:
+        return settings_store.set_skill_max_chars(req.value)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.put("/api/skills-scripts")

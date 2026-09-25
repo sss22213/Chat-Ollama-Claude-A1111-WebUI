@@ -19,7 +19,7 @@ Checkpoint families and what they expect:
 
 | Family | Quality tags | Notes |
 |---|---|---|
-| Illustrious / NoobAI / WAI | `masterpiece, best quality, very aesthetic, absurdres` | danbooru tags, character names as `name \(series\)` work well |
+| Illustrious / NoobAI / WAI | `masterpiece, best quality, amazing quality` | no extra quality / aesthetic tags (they blur the image); danbooru tags, character names as `name \(series\)` work well |
 | Pony Diffusion V6 | `score_9, score_8_up, score_7_up` first, then `source_anime` / `rating_safe` | needs the score tags |
 | Animagine XL | `masterpiece, best quality, very aesthetic` | year tags like `newest` |
 | SD 1.5 anime | `masterpiece, best quality` | 512–768 px; SD1.5 LoRAs only |

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   Settings,
   PanelLeftOpen,
@@ -10,6 +11,9 @@ import {
   BookOpen,
   Sparkles,
   Images,
+  RotateCw,
+  Check,
+  AlertCircle,
 } from "lucide-react";
 import { useChat, skillSelection } from "../store/chat";
 import { useT } from "../i18n";
@@ -122,6 +126,8 @@ export default function TopBar({
           ))}
         </select>
       </div>
+
+      {settings.engine === "ollama" && <ModelReloadButton model={activeModel} />}
 
       <button
         onClick={onOpenSettings}
@@ -270,6 +276,81 @@ export default function TopBar({
       </button>
       </div>
     </header>
+  );
+}
+
+// 重新整理 Ollama 模型清單並重新載入目前模型；結果在按鈕旁顯示幾秒
+function ModelReloadButton({ model }) {
+  const t = useT();
+  const state = useChat((s) => s.modelReload);
+  const reloadModel = useChat((s) => s.reloadModel);
+  const blocked = useChat((s) => s.streaming || s.compacting);
+  const status = state?.status;
+
+  useEffect(() => {
+    if (status !== "done" && status !== "error") return;
+    const id = setTimeout(
+      () => useChat.setState({ modelReload: null }),
+      status === "done" ? 6000 : 12000
+    );
+    return () => clearTimeout(id);
+  }, [state, status]);
+
+  const gb = (n) => (n / 1024 ** 3).toFixed(1);
+  let msg = "";
+  if (status === "busy") msg = t("modelReloading");
+  else if (status === "done") {
+    // 沒全部放進 VRAM（有一部分跑在 CPU）時顯示「VRAM / 總大小」
+    const mem = !state.size_vram
+      ? ""
+      : state.size && state.size_vram < state.size * 0.99
+        ? `VRAM ${gb(state.size_vram)} / ${gb(state.size)} GB`
+        : `VRAM ${gb(state.size_vram)} GB`;
+    msg = t("modelReloaded", { sec: state.seconds, mem }).replace(/ · $/, "");
+  } else if (status === "error") {
+    msg =
+      state.code === "gone"
+        ? t("modelGone")
+        : `${t("modelReloadFailed")}：${state.message}`;
+  }
+
+  // 訊息浮在按鈕下方，不佔版面（手機上第一列很窄，放在行內會把模型下拉擠掉）
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => reloadModel(model)}
+        disabled={!model || status === "busy" || blocked}
+        title={msg || t("modelReload")}
+        data-testid="model-reload"
+        className={`shrink-0 rounded-lg p-2 hover:bg-ink-750 disabled:opacity-60 ${
+          status === "done"
+            ? "text-emerald-400"
+            : status === "error"
+              ? "text-red-400"
+              : "text-gray-400"
+        }`}
+      >
+        {status === "busy" ? (
+          <Loader2 size={16} className="animate-spin" />
+        ) : status === "done" ? (
+          <Check size={16} />
+        ) : status === "error" ? (
+          <AlertCircle size={16} />
+        ) : (
+          <RotateCw size={16} />
+        )}
+      </button>
+      {msg && (
+        <div
+          data-testid="model-reload-msg"
+          className={`absolute right-0 top-full z-30 mt-1 w-max max-w-[80vw] rounded-lg border border-ink-600 bg-ink-800 px-2.5 py-1.5 text-xs shadow-lg md:left-0 md:right-auto md:max-w-[28rem] ${
+            status === "error" ? "text-red-400" : status === "done" ? "text-emerald-400" : "text-gray-300"
+          }`}
+        >
+          {msg}
+        </div>
+      )}
+    </div>
   );
 }
 

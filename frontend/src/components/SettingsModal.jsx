@@ -9,6 +9,7 @@ import {
   fetchSkillsDir,
   saveSkillsDir,
   saveSkillScripts,
+  saveSkillMaxChars,
 } from "../lib/api";
 import DirectoryPicker from "./DirectoryPicker";
 import SourcesPanel from "./SourcesPanel";
@@ -105,6 +106,20 @@ export default function SettingsModal({ onClose }) {
       setHistErr(e.message);
     } finally {
       setHistSaving(false);
+    }
+  };
+
+  // 技能提示詞長度上限：輸入框自己的草稿值，失焦或按 Enter 才存（避免每打一個字就存）
+  const [maxCharsDraft, setMaxCharsDraft] = useState(null);
+  const onSaveSkillMaxChars = async () => {
+    if (maxCharsDraft === null) return;
+    setSkillsErr("");
+    try {
+      const info = await saveSkillMaxChars(Math.max(0, Math.round(Number(maxCharsDraft) || 0)));
+      setSkillsDir(info);
+      setMaxCharsDraft(null);
+    } catch (e) {
+      setSkillsErr(e.message);
     }
   };
 
@@ -428,6 +443,29 @@ export default function SettingsModal({ onClose }) {
               </p>
             )}
             <p className="text-xs text-gray-500">{t("skillsDirHint")}</p>
+            <div className="space-y-1 rounded-lg border border-ink-700 p-3">
+              <label className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-300">{t("skillMaxCharsLabel")}</span>
+                <input
+                  data-testid="skill-max-chars"
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={maxCharsDraft ?? skillsDir?.max_chars ?? 0}
+                  onChange={(e) => setMaxCharsDraft(e.target.value)}
+                  onBlur={onSaveSkillMaxChars}
+                  onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                  className="w-28 rounded-lg border border-ink-600 bg-ink-800 px-2 py-1.5 text-right text-sm outline-none focus:border-ink-500"
+                />
+              </label>
+              <p data-testid="skill-max-chars-state" className="text-xs text-gray-500">
+                {(skillsDir?.max_chars || 0) > 0
+                  ? t("skillMaxCharsLimited", { n: skillsDir.max_chars })
+                  : t("skillMaxCharsUnlimited")}
+                {" "}
+                {t("skillMaxCharsHint")}
+              </p>
+            </div>
             <div data-testid="skill-scripts" className="rounded-lg border border-ink-700 p-3">
               <Toggle
                 label={t("skillScriptsLabel")}

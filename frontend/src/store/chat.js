@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import {
   fetchModels,
+  reloadOllamaModel,
   fetchSdModels,
   fetchSamplers,
   fetchDefaults,
@@ -233,6 +234,7 @@ export const useChat = create(
       attachments: [], // 待送出的附件圖 [{id, dataUrl}]
       usage: null, // {prompt_tokens, num_ctx} 上一輪 context 用量
       compacting: false,
+      modelReload: null, // 模型重新載入的狀態 {status: busy|done|error, ...}
       composerDraft: null, // 要塞進輸入框的草稿（如「套用歷史」帶入 prompt，會「取代」輸入框內容）
       composerInsert: null, // 要「附加」到輸入框的片段（如 LoRA 瀏覽器帶入 tag，保留已輸入內容）
 
@@ -483,6 +485,28 @@ export const useChat = create(
           .catch(() => {
             /* 同步失敗：下次互動會再試 */
           });
+      },
+
+      // 重新整理 Ollama 模型清單，再把目前模型從記憶體卸載後重新載入
+      //（ollama create / pull / rm 之後不用重整網頁；覆蓋同名模型後也會換成新版本）
+      async reloadModel(model) {
+        const st = get();
+        if (st.settings.engine !== "ollama" || st.modelReload?.status === "busy") return;
+        // 串流/壓縮中卸載模型會打斷那次請求
+        if (st.streaming || st.compacting) return;
+        set({ modelReload: { status: "busy", model } });
+        try {
+          const models = await fetchModels("ollama", true);
+          set({ models });
+          if (!models.some((m) => m.name === model)) {
+            set({ modelReload: { status: "error", code: "gone", model } });
+            return;
+          }
+          const info = await reloadOllamaModel(model, get().settings.numCtx);
+          set({ modelReload: { status: "done", ...info } });
+        } catch (e) {
+          set({ modelReload: { status: "error", message: e.message, model } });
+        }
       },
 
       // 切換 AI 引擎（ollama / claude_cli）：重抓該引擎的模型清單並選預設
@@ -773,7 +797,8 @@ export const useChat = create(
                 progress: null,
                 images: [
                   ...(m.images || []),
-                  { url: e.url, params: e.params, info: e.info || "" },
+                  // at：圖出現時已輸出的文字長度；訊息依此把圖插在當時那段文字下面
+                  { url: e.url, params: e.params, info: e.info || "", at: (m.content || "").length },
                 ],
               }));
             } else if (e.type === "usage") {

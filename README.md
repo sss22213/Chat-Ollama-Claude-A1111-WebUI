@@ -28,7 +28,15 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
 - 💬 **Multi-conversation chat** — streaming replies, Markdown / code highlighting,
   collapsible reasoning (thinking) blocks.
 - 🎨 **Autonomous image generation** — the model calls `generate_image` (txt2img) →
-  A1111 renders → the image is embedded inline (zoom / download / view parameters).
+  A1111 renders → the image is embedded inline (zoom / download / view parameters), right
+  under the text that was written before it, so a reply with several images reads
+  text → image → text → image. There is no limit on tool calls per reply.
+- 📚 **Illustrated stories in chat** — with the `story-illustrator` skill the model plans the
+  whole story first (cast sheet + numbered scenes, each with a one-sentence picture line),
+  then writes each scene and generates its image one at a time, so every picture sits under
+  its own scene; ask for "keywords only" to get one prompt per scene instead. If the model
+  writes the next scene and stops without its image, the backend reminds it to draw that
+  scene and finish the story.
 - 🖼️ **Image upload (vision)** — attach or paste an image and ask a vision model about it.
 - 📖 **Comic Studio** (`#/comic`) — describe a story, let the LLM break it into panels
   (8–15 scene tags led by subject-count tags, a per-panel **expression** picked from a
@@ -87,7 +95,8 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   live **usage meter** (used / limit) in the top bar, one-click **compact** that
   summarizes older messages while keeping the latest exchange, and an optional
   **auto compact** (Settings) that does it for you once usage crosses a threshold.
-- 👁/🔧 The model dropdown marks which models can **see images** (vision) and **use tools**.
+- 👁/🔧 The model dropdown marks which models can **see images** (vision) and **use tools**;
+  the ⟳ button next to it refreshes the Ollama model list and reloads the selected model.
 - 📄 **PNG Info (generation parameters)** — read the embedded SD parameters
   (prompt / negative / seed / sampler / size / model) from a generated **or uploaded**
   image, with one-click **"apply to settings"** to reproduce it. The model can also call
@@ -228,7 +237,12 @@ npm run dev
 11. **Character search:** the 👥 button (composer) opens a searchable list of 20k+ anime
     characters — **insert** one into your prompt or **generate** it directly. See
     [Character search](#character-search-wai--illustrious).
-12. **Comic Studio:** the 📖 button opens `#/comic`. Write a premise, add character cards
+12. **Reload model (Ollama):** the ⟳ button next to the model dropdown refreshes the model
+    list (models added with `ollama pull` / `ollama create` appear without reloading the
+    page), then unloads the selected model and loads it again with the chat's `num_ctx`,
+    so the next message does not trigger another load. Use it after overwriting a model
+    with `ollama create`, or when a model starts behaving oddly.
+13. **Comic Studio:** the 📖 button opens `#/comic`. Write a premise, add character cards
     (fixed appearance tags + optional LoRA; unnamed cards are auto-named), optionally tick
     **Thinking mode** for thinking-capable Ollama models, press **AI storyboard** to get
     panels with scene tags, a per-panel **Face** (expression) field, dialogue and captions,
@@ -239,13 +253,18 @@ npm run dev
     to the server as you work: 📂 **Library** reopens earlier comics, and **Storyboard
     versions** (script panel) keeps every storyboard that was replaced, with preview and
     restore.
-13. **Image Story:** the 🖼️ button opens `#/story`. Upload / paste as many images as you
+14. **Image Story:** the 🖼️ button opens `#/story`. Upload / paste as many images as you
     like (the page shows an estimated token count against the context window), pick
     **Story**, **Comic script** or **Image panels** (your images are the panels; reorder
     them with ◀ ▶), optionally add direction ("heartwarming, twist ending"),
     and press **Generate**. A story can be sent to Comic Studio as the premise; a comic
     script can be opened there directly — **Open & render all** imports the cast and
     panels and starts rendering. Needs a vision-capable model (👁 in the dropdown).
+15. **Illustrated story in chat:** enable **Story Illustrator** (and **SD Prompt Guide**)
+    with the ✨ button, then ask e.g. *"tell a story in 8 pictures: a little fox lost in a
+    snowstorm finds its way home by the stars"*. The model writes the outline, then each
+    scene's text followed by its image; say *"keywords only"* to get the prompts without
+    rendering. Put a LoRA and its trigger words in your request to use it for the heroine.
 
 > **Keyboard:** **Enter** sends a message and **Shift + Enter** inserts a newline by default;
 > ⚙️ Settings → *Send key* swaps the two. Enter never sends while an IME is still composing
@@ -392,7 +411,7 @@ while the app is running appear after **Rescan** in that dialog (no restart or r
 (Ollama / Claude CLI / Codex CLI) because they are injected into the system prompt, and a
 runtime-adapter note maps a skill's assumed `image_gen` to the app's A1111 generation.
 Several skills can be enabled at once: their instructions are injected together (each gets a
-share of the `SKILL_MAX_CHARS` budget) and their tools are all available. The selection is
+share of the skill length limit when one is set) and their tools are all available. The selection is
 saved with the other settings on the backend, so it survives reloads and follows you across
 devices.
 
@@ -400,7 +419,7 @@ devices.
 
 | Mechanism | Declared in | What the model gets |
 |---|---|---|
-| Instructions | `SKILL.md`, `references/` | Injected into the system prompt (capped by `SKILL_MAX_CHARS`). |
+| Instructions | `SKILL.md`, `references/` | Injected into the system prompt in full by default. ⚙️ Settings → Skills → **Skill prompt length limit** caps it (0 = unlimited, the default; with a limit, several enabled skills split it, at least 3000 characters each). |
 | HTTP API tools | `tools.json` (`kind` omitted or `"http"`) | A function per tool; the backend performs the request. `base_url` may use `{a1111_url}` / `{ollama_url}`. |
 | WebUI-local images | automatic for tools whose `base_url` uses `{a1111_url}` | A1111-relative image links such as Civitai Helper's `local_url` (`./sd_extra_networks/thumb?filename=…`) are rewritten to the app's `/api/a1111-thumb` proxy (resized to 1024 px and cached), and the chat renderer rewrites them too if the model copies the raw link. |
 | Images for the model to see | `tools.json` HTTP tool with `"postprocess": "civitai_examples"` (and `"vision_max"`) | The backend shows a `gallery` in the chat and attaches up to `vision_max` downscaled images to the tool message. Vision-capable Ollama models see them; other models are told they cannot. |
@@ -437,9 +456,10 @@ Bundled skills:
 | Skill | What it does |
 |---|---|
 | `generate-manga-page` | agent-mangaka-forge's consistency workflow adapted to A1111 LoRA / seed reuse. |
+| `story-illustrator` | Illustrated stories in chat: the model first writes an outline (a cast sheet with each character's fixed **Core** look and **Outfit** tags, then numbered scenes forming a full arc, each with a one-sentence *picture line* of what the image shows), then writes each `## Scene N` and generates its image before the next one, so pictures sit under their scenes — or, when you only want keywords, gives one ready-to-paste prompt per scene. Scene prompts put the count of everyone visible, the character's core look and the scene's action / key objects / other people first (the defining action weighted), then expression, setting, a shot that can show the action, the outfit and the quality tags; `solo` only when the character is alone. |
 | `sdcpp-image-edit` | Instruction-based editing of an attached image through a local **stable-diffusion.cpp** server (`SDCPP_URL`, default port 7861) running an editing model such as Qwen-Image 2.1: the app sends the most recent image in the conversation (your attachment, or the last image generated with A1111 or edited here, so "edit the picture you just made" works without re-attaching) as `ref_images`, polls the job and shows the result inline like a generated image. Also has an img2img tool and a status tool that reports whether the loaded model can edit. |
 | `a1111-memory-manager` | Memory tools for the A1111 / Forge image generator: show RAM / VRAM (`/sdapi/v1/memory`, summarized in GB), unload the checkpoint from VRAM only or fully (`/sdapi/v1/unload-checkpoint[?full=true]`), and load it back (`/sdapi/v1/reload-checkpoint`). Handy when Ollama, A1111 and sd.cpp share one GPU. |
-| `sd-prompt-guide` | Prompt-writing rules for the local SD backend: danbooru tag order, weights, negative prompt, sizes, and how to apply a LoRA (`<lora:filename:0.6–1>` plus its trigger words in the prompt); points to Civitai Helper for the installed-LoRA inventory. |
+| `sd-prompt-guide` | Prompt-writing rules for the local SD backend, tuned for **WAI-illustrious-SDXL**: danbooru tag order, weights, negative prompt, sizes, no tag-count limit, and the WAI author's quality tags `masterpiece, best quality, amazing quality` at the end with no extra quality / aesthetic tags (they blur the image). How to apply a LoRA (`<lora:filename:0.6–1>` plus its trigger words in the prompt); points to Civitai Helper for the installed-LoRA inventory, prefers Illustrious / NoobAI LoRAs by base model, and stops after two lookups instead of searching on and on. |
 | `civitai-helper` | HTTP tools against the A1111 **Civitai Helper** extension: local LoRA / checkpoint inventory with trigger words, model lookup by URL or id, download into the WebUI, scan, check for new versions, refresh lists. Example images of an installed model are shown as a **gallery** (local copies first, with prompts and a copy button), and the first 4 are also attached to the tool result so a vision-capable Ollama model can actually see and describe them. |
 | `civitai-api` | [stanestane/civitai-api](https://clawhub.ai/stanestane/skills/civitai-api) (MIT-0) plus an app-specific `civitai_search_models` tool: the model searches civitai.com (LoRA by default) and the chat shows the results as **cards** with server-cached example images, base model, trigger words and a **Download this** button that hands the model page to Civitai Helper. Other commands (by-hash, tags, creators…) run through `run_skill_script`. Needs scripts enabled; put `CIVITAI_API_KEY=…` in `backend/data/skill-work/civitai-api/.env` for authenticated calls. |
 
@@ -518,15 +538,25 @@ continues its text reply, all pushed to the frontend over SSE. With an attached 
 the last user message's image is used as the img2img init image; non-vision models have
 their `images` stripped automatically.
 
+There is no cap on tool rounds per reply. The only guard is stuck detection: a non-image
+tool called again with identical arguments is not re-run (the model is told to use the
+earlier result), and three rounds in a row of only such repeats end the tool loop with a
+text answer. Image tools are exempt, since "four images from the same prompt" is a valid
+request. When a multi-image reply opens the next numbered section (`## Scene N`) and ends
+without generating its image, the model is reminded to draw it and continue (again only
+after each new image, so a model that refuses cannot loop). Every `image` event is stored
+with the length of the text streamed so far (`at`), and the chat renders each image under
+that paragraph; older messages without `at` show their images at the end as before.
+
 ### Key files
 
 | Path | Description |
 |------|-------------|
 | `backend/main.py` | FastAPI routes, SSE, static images, engine selection |
 | `backend/errors.py` | turns httpx/engine exceptions into readable error messages (which host timed out, HTTP status + body) |
-| `backend/chat.py` | agentic tool loop + Claude directive parser |
-| `backend/tools.py` | tool schemas: `generate_image` / `edit_image` / `read_png_info` / `web_search` / `fetch_url` |
-| `backend/ollama_client.py` | Ollama engine (chat stream, models, capabilities, context length, thinking switch with automatic no-thinking retry + user notices) |
+| `backend/chat.py` | agentic tool loop (no round cap; stuck detection; "draw the scene you just wrote" reminder) + Claude directive parser |
+| `backend/tools.py` | tool schemas: `generate_image` / `edit_image` / `read_png_info` / `web_search` / `fetch_url`; model-written tags are de-duplicated (no count or length cap) |
+| `backend/ollama_client.py` | Ollama engine (chat stream, models, capabilities, context length, thinking switch with automatic no-thinking retry + user notices, unload / reload a model with the chat's `num_ctx`) |
 | `backend/claude_client.py` | Claude CLI engine (subprocess `claude -p` stream-json; images via directives) |
 | `backend/codex_client.py` | OpenAI Codex CLI engine (subprocess `codex exec --json`; chat + vision via `-i`) |
 | `backend/comics_store.py` | Comic projects + storyboard versions persisted in SQLite (`DATA_DIR/comics.db`) for the Comic Studio library |
@@ -538,7 +568,7 @@ their `images` stripped automatically.
 | `frontend/src/story/` | Image Story page (upload, mode/options, result view, hand-off to Comic Studio); state in `frontend/src/store/story.js`, API in `frontend/src/lib/storyApi.js`, client-side downscaling in `frontend/src/lib/image.js` |
 | `backend/a1111_client.py` | A1111: txt2img / img2img / progress / models / samplers / png-info |
 | `backend/web_tools.py` | web search (DuckDuckGo/SearXNG) + page extraction (with SSRF guard) |
-| `backend/settings_store.py` | persisted settings: image dir (default stored as empty so the host and the container resolve their own path) + service sources + web provider + prompt-history dir |
+| `backend/settings_store.py` | persisted settings: image dir (default stored as empty so the host and the container resolve their own path) + service sources + web provider + prompt-history dir + skill prompt length limit |
 | `backend/prompt_history_store.py` | reads the `sd-webui-prompt-history` extension's `data.json` + thumbnails (cached, paginated, searchable) |
 | `backend/booru_characters.py` | character keyword search (Drawing Spells + danbooru + seed; fuzzy/alias matching) |
 | `backend/docker_probe.py` | best-effort container listing via the docker socket |

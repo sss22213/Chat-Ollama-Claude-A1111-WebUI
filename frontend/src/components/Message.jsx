@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import Markdown, { defaultUrlTransform } from "react-markdown";
 
 // A1111 的相對圖片網址（./sd_extra_networks/thumb?filename=…）在本 app 指不到東西；
@@ -76,6 +76,27 @@ export default function Message({ msg }) {
           <Thinking text={msg.thinking} streaming={msg.status === "streaming"} />
         ) : null}
 
+        {/* 文字與圖交錯：每張圖插在它生成當下那段文字的下面（故事逐場景出圖時就是「場景文字 → 圖」） */}
+        {interleave(stripEchoedNote(msg.content), msg.images).map((part, i) => (
+          <Fragment key={i}>
+            {part.text.trim() ? (
+              <div className="markdown text-[0.95rem]">
+                <Markdown
+                  remarkPlugins={[remarkGfm]}
+                  rehypePlugins={[rehypeHighlight]}
+                  urlTransform={chatUrlTransform}
+                >
+                  {part.text}
+                </Markdown>
+              </div>
+            ) : null}
+            {part.images.map((img, j) => (
+              <ImageBlock key={j} img={img} />
+            ))}
+          </Fragment>
+        ))}
+
+        {/* 工具進行中（含生圖進度）放在目前輸出的最後面，也就是下一張圖會出現的位置 */}
         {msg.toolRunning &&
           (msg.toolName === "web_search" || msg.toolName === "fetch_url" ? (
             <WebActivity toolName={msg.toolName} />
@@ -90,22 +111,6 @@ export default function Message({ msg }) {
               editing={msg.toolName === "edit_image"}
             />
           ))}
-
-        {msg.content ? (
-          <div className="markdown text-[0.95rem]">
-            <Markdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeHighlight]}
-              urlTransform={chatUrlTransform}
-            >
-              {stripEchoedNote(msg.content)}
-            </Markdown>
-          </div>
-        ) : null}
-
-        {(msg.images || []).map((img, i) => (
-          <ImageBlock key={i} img={img} />
-        ))}
 
         {(msg.candidates || []).map((group, i) => (
           <CandidateCards key={i} group={group} />
@@ -133,6 +138,42 @@ export default function Message({ msg }) {
       </div>
     </div>
   );
+}
+
+// 把訊息文字依圖片的 at（生成當下已輸出的文字長度）切段：[{text, images}]。
+// 切點落在 ``` 程式碼區塊內時往後挪到區塊結束，免得 markdown 被切壞。
+// 舊訊息的圖沒有 at → 全部接在最後（原本的顯示方式）。
+export function interleave(content, images) {
+  const text = content || "";
+  const anchored = [];
+  const tail = [];
+  for (const img of images || []) {
+    (Number.isFinite(img?.at) ? anchored : tail).push(img);
+  }
+  const groups = [];
+  for (const img of [...anchored].sort((a, b) => a.at - b.at)) {
+    const at = fenceSafe(text, Math.min(Math.max(img.at, 0), text.length));
+    const last = groups[groups.length - 1];
+    if (last && last.at === at) last.images.push(img);
+    else groups.push({ at, images: [img] });
+  }
+  const parts = [];
+  let pos = 0;
+  for (const g of groups) {
+    parts.push({ text: text.slice(pos, g.at), images: g.images });
+    pos = g.at;
+  }
+  parts.push({ text: text.slice(pos), images: tail });
+  return parts;
+}
+
+function fenceSafe(text, at) {
+  const fences = (text.slice(0, at).match(/```/g) || []).length;
+  if (fences % 2 === 0) return at;
+  const close = text.indexOf("```", at);
+  if (close < 0) return text.length;
+  const eol = text.indexOf("\n", close + 3);
+  return eol < 0 ? text.length : eol + 1;
 }
 
 function StreamingDots() {

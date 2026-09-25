@@ -19,11 +19,12 @@ Every image in this app is rendered by a LOCAL Stable Diffusion WebUI (A1111 / F
   5. pose, expression, action, gaze (`looking at viewer`, `sitting`, `smile`)
   6. scene / background / lighting / time (`night, city lights, rain`)
   7. composition / camera (`upper body`, `full body`, `from above`, `dutch angle`)
-  8. style and quality (`masterpiece, best quality, very aesthetic, absurdres`)
-- 10–25 tags is the sweet spot. Never repeat a tag. No names of real people.
+  8. quality tags, exactly `masterpiece, best quality, amazing quality` (the WAI-illustrious author's recommendation)
+- There is no limit on the number of tags: use as many as the image needs to describe the subject, clothing, pose and scene. Never repeat a tag. No names of real people.
+- Do not add more quality / aesthetic tags than the three above (`very aesthetic`, `absurdres`, `highres`, `ultra detailed`, `8k`, …): piling them on makes the image blurrier, not better.
 - Weight a tag with `(tag:1.2)` (1.1–1.4 to strengthen, 0.6–0.9 to weaken). Parentheses inside a tag must be escaped: `\(`, `\)` — e.g. `hatsune miku \(vocaloid\)`.
 - Pony-based checkpoints like the leading `score_9, score_8_up, score_7_up`; Illustrious / NoobAI do not need them. Only add them when the user says the checkpoint is Pony.
-- Negative prompt: the app already applies a curated one. Only pass `negative_prompt` when the user wants something specific excluded (e.g. `text, watermark, extra fingers`), at most 15 tags.
+- Negative prompt: the app already applies a curated one. Only pass `negative_prompt` when the user wants something specific excluded (e.g. `text, watermark, extra fingers`), at most 15 tags. A long negative prompt also makes the image blurrier.
 - Size: 1024×1024 square, 832×1216 portrait, 1216×832 landscape (multiples of 64). Pick by subject (portrait for one standing character, landscape for scenery / groups).
 
 ## Using a LoRA (IMPORTANT)
@@ -41,7 +42,7 @@ A LoRA is only applied when its tag is **inside the prompt**. The syntax is
 Example, user has `jp_school_uniform` with trigger words `school uniform, jp_school_uniform`:
 
 ```
-1girl, solo, <lora:jp_school_uniform:0.8>, school uniform, jp_school_uniform, brown hair, twintails, smile, classroom, window light, upper body, masterpiece, best quality
+1girl, solo, <lora:jp_school_uniform:0.8>, school uniform, jp_school_uniform, brown hair, twintails, smile, classroom, window light, upper body, masterpiece, best quality, amazing quality
 ```
 
 - Several LoRAs: one tag each, keep the sum of weights around `1.5` or lower (`<lora:styleA:0.6>, <lora:charB:0.8>`), and include each one's trigger words.
@@ -55,8 +56,10 @@ Example, user has `jp_school_uniform` with trigger words `school uniform, jp_sch
 
 - If the user pasted a `<lora:...>` tag or trigger words, use them as-is.
 - If the **Civitai Helper** skill is active, call `civitai_lora_inventory` (with `q` to search) — it returns the exact `prompt_tag`, trigger words and base model of every installed LoRA. Use `civitai_model_examples` for an example prompt from Civitai.
+- Pick by base model. The checkpoint is Illustrious-based (WAI-illustrious-SDXL), so prefer LoRAs whose `civitai.base_model` is **Illustrious** or **NoobAI**. A **Pony** LoRA works poorly on it, and an **SD 1.5** LoRA does nothing. If a LoRA has no civitai record, check `training.base_model_version`: SD 1.5 there means it will not work; plain SDXL usually does not tell Illustrious from Pony, so treat it as uncertain. If the only match is a Pony or uncertain LoRA, say so when you use it.
+- Do not keep re-searching: call `civitai_lora_inventory` **at most twice** per request (one specific `q`, then at most one broader `q`; never page through the whole list hoping to spot one). If those find no suitable LoRA, stop searching: ask the user which LoRA to use, or generate without a LoRA and say that none was found.
 - If the **civitai-api** skill is active, you can search civitai.com for candidates, but a LoRA must be installed in the WebUI before its tag works; offer to download it with Civitai Helper.
-- Otherwise ask the user for the file name and trigger words (they can copy both from the app's LoRA browser, the 🧩 button next to the composer). Do not invent a LoRA.
+- Otherwise ask the user for the file name and trigger words (they can copy both from the app's LoRA browser, the **LoRA** button with the layers icon next to the chat input). Do not invent a LoRA.
 
 ## Reply style
 

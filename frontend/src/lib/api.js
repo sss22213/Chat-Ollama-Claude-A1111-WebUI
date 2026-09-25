@@ -1,8 +1,22 @@
 // 後端 API：REST + SSE 串流
 
-export async function fetchModels(engine = "ollama") {
-  const r = await fetch(`/api/models?engine=${encodeURIComponent(engine)}`);
+// refresh：後端先清掉模型能力快取（ollama create 覆蓋同名模型後能力可能變了）
+export async function fetchModels(engine = "ollama", refresh = false) {
+  const r = await fetch(
+    `/api/models?engine=${encodeURIComponent(engine)}${refresh ? "&refresh=true" : ""}`
+  );
   if (!r.ok) throw new Error("無法取得模型清單");
+  return r.json();
+}
+
+// 把 Ollama 模型卸載後用聊天的 num_ctx 重新載入；回傳 {seconds, size, size_vram, ...}
+export async function reloadOllamaModel(model, numCtx) {
+  const r = await fetch("/api/ollama/reload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, num_ctx: numCtx }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "重新載入失敗");
   return r.json();
 }
 
@@ -380,6 +394,18 @@ export async function saveSkillsDir(dir) {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dir }),
+  });
+  if (!r.ok)
+    throw new Error((await r.json().catch(() => ({}))).detail || "設定失敗");
+  return r.json();
+}
+
+// 技能提示詞長度上限（字元，0＝無上限）；回傳與 fetchSkillsDir 相同的狀態物件
+export async function saveSkillMaxChars(value) {
+  const r = await fetch("/api/skills-max-chars", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value: Number(value) || 0 }),
   });
   if (!r.ok)
     throw new Error((await r.json().catch(() => ({}))).detail || "設定失敗");

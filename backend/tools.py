@@ -11,14 +11,13 @@ from typing import Any
 
 from config import DEFAULT_IMAGE_SETTINGS
 
-# 模型給的 prompt/negative 清洗上限：模型退化重複（同一串 tags 無限循環）時的自我保護。
-# CLIP 一段只有 77 token，超過幾十個 tag 本來就沒有意義。
-_MAX_TAGS = 60
-_MAX_TAG_CHARS = 1500
-
 
 def _clean_tags(text: str) -> str:
-    """去除重複 tag 並限制數量/長度（只清模型給的參數；UI 設定的 negative 不動）。"""
+    """去除重複 tag（只清模型給的參數；UI 設定的 negative 不動）。
+
+    不限數量/長度：A1111 會把長 prompt 切成多段 75 token 處理；模型退化成同一串 tags
+    無限循環時，重複的 tag 也會在這裡被去掉。
+    """
     seen: set[str] = set()
     out: list[str] = []
     for tag in (text or "").split(","):
@@ -28,9 +27,7 @@ def _clean_tags(text: str) -> str:
             continue
         seen.add(key)
         out.append(t)
-        if len(out) >= _MAX_TAGS:
-            break
-    return ", ".join(out)[:_MAX_TAG_CHARS]
+    return ", ".join(out)
 
 GENERATE_IMAGE_TOOL = {
     "type": "function",
@@ -190,7 +187,7 @@ def build_call(
     """把工具呼叫解析成 ('txt2img'|'img2img', kwargs)。"""
     settings = {**DEFAULT_IMAGE_SETTINGS, **(image_settings or {})}
 
-    # 模型給的參數先清洗（去重複 tag、限長）：擋退化式重複輸出
+    # 模型給的參數先清洗（去重複 tag）：擋退化式重複輸出
     prompt = _clean_tags(args.get("prompt") or "")
     if not prompt:
         raise ValueError(f"{name} 缺少 prompt")

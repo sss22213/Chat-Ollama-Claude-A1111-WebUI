@@ -1,9 +1,11 @@
 """Ollama 串接：列模型、查能力、串流聊天。"""
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import logging
+import time
 from typing import Any, AsyncIterator
 
 import httpx
@@ -55,8 +57,12 @@ def _raise_for_ollama(resp: httpx.Response) -> None:
         msg = resp.text[:300]
     raise RuntimeError(f"Ollama 回應 {resp.status_code}" + (f"：{msg}" if msg else ""))
 
-async def list_models() -> list[dict[str, Any]]:
-    """回傳模型清單，附帶 supports_tools/thinking/vision 與 context_length。"""
+async def list_models(refresh: bool = False) -> list[dict[str, Any]]:
+    """回傳模型清單，附帶 supports_tools/thinking/vision 與 context_length。
+
+    refresh：先清掉 /api/show 快取（ollama create 覆蓋同名模型後，能力可能變了）。"""
+    if refresh:
+        clear_caps_cache()
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(f"{settings_store.get_ollama_url()}/api/tags")
         resp.raise_for_status()
@@ -208,3 +214,53 @@ async def chat_once(
                 "請關閉思考、換個模型或縮短提示再試。" % data.get("done_reason")
             )
         return content
+
+
+async def _loaded(client: httpx.AsyncClient, model: str) -> dict[str, Any] | None:
+    """/api/ps 裡這個模型的項目（沒載入回傳 None）。"""
+    resp = await client.get(f"{settings_store.get_ollama_url()}/api/ps")
+    _raise_for_ollama(resp)
+    for m in resp.json().get("models", []) or []:
+        if model in (m.get("name"), m.get("model")):
+            return m
+    return None
+
+
+async def reload_model(model: str, num_ctx: int | None = None) -> dict[str, Any]:
+    """把模型從記憶體卸載再重新載入。
+
+    載入時帶跟聊天一樣的 num_ctx，不然第一次聊天 Ollama 會因 context 不同再重載一次。
+    卸載請求會馬上回應、實際卸載在背景進行，所以先等它從 /api/ps 消失再載入，
+    否則載入請求可能直接沿用還沒卸掉的舊 runner。"""
+    base = settings_store.get_ollama_url()
+    started = time.monotonic()
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        was_loaded = await _loaded(client, model) is not None
+        if was_loaded:
+            resp = await client.post(f"{base}/api/generate", json={"model": model, "keep_alive": 0})
+            _raise_for_ollama(resp)
+            for _ in range(120):  # 最多等 60 秒
+                if await _loaded(client, model) is None:
+                    break
+                await asyncio.sleep(0.5)
+            else:
+                raise RuntimeError("模型卸載逾時（60 秒內仍在記憶體中）")
+
+        payload: dict[str, Any] = {"model": model}
+        if num_ctx:
+            payload["options"] = {"num_ctx": int(num_ctx)}
+        # 不帶 prompt 的 /api/generate 只載入模型（回應沒有 load_duration，所以自己計時）
+        resp = await client.post(f"{base}/api/generate", json=payload)
+        _raise_for_ollama(resp)
+        ps = await _loaded(client, model) or {}
+    seconds = round(time.monotonic() - started, 1)
+    log.info("reload_model %s num_ctx=%s was_loaded=%s %.1fs vram=%s",
+             model, num_ctx, was_loaded, seconds, ps.get("size_vram"))
+    return {
+        "model": model,
+        "was_loaded": was_loaded,
+        "seconds": seconds,
+        "size": ps.get("size"),
+        "size_vram": ps.get("size_vram"),
+        "context_length": ps.get("context_length"),
+    }

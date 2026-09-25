@@ -22,6 +22,7 @@ from config import (
     A1111_URL,
     PROMPT_HISTORY_DIR as DEFAULT_PROMPT_HISTORY_DIR,
     SKILLS_DIR as DEFAULT_SKILLS_DIR,
+    SKILL_MAX_CHARS,
 )
 
 SETTINGS_FILE = DATA_DIR / "app_settings.json"
@@ -49,6 +50,8 @@ _settings: dict = {
     "skills_dir": "",
     # 允許模型執行技能資料夾內的 Python 腳本（run_skill_script）；預設關閉
     "skill_scripts": False,
+    # 技能提示詞注入長度上限（字元）；0＝無上限
+    "skill_max_chars": SKILL_MAX_CHARS,
     "sources": {
         "ollama": _default_source(OLLAMA_URL, 11434),
         "a1111": _default_source(A1111_URL, 7860),
@@ -105,6 +108,7 @@ def load() -> dict:
             pass
     _settings.setdefault("skills_dir", "")
     _settings.setdefault("skill_scripts", False)
+    _settings.setdefault("skill_max_chars", SKILL_MAX_CHARS)
     before = (_settings.get("image_dir"), list(_settings.get("known_dirs") or []))
     img = str(_settings.get("image_dir") or "").strip()
     if _looks_default(img):
@@ -267,7 +271,26 @@ def skills_dir_info() -> dict:
         "writable": os.access(d, os.W_OK) if d.exists() else False,
         "count": count,
         "scripts_enabled": get_skill_scripts(),
+        "max_chars": get_skill_max_chars(),
     }
+
+
+def get_skill_max_chars() -> int:
+    """技能提示詞注入長度上限（字元）；0＝無上限。"""
+    try:
+        return max(0, int(_settings.get("skill_max_chars") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_skill_max_chars(value: int) -> dict:
+    """設定技能提示詞長度上限；0＝無上限，其餘至少 1000 字元（太小會把技能切得不能用）。"""
+    v = max(0, int(value or 0))
+    if 0 < v < 1000:
+        raise ValueError("上限至少 1000 字元，或填 0 表示無上限")
+    _settings["skill_max_chars"] = v
+    _save()
+    return skills_dir_info()
 
 
 def get_skill_scripts() -> bool:

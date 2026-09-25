@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from typing import Any, AsyncIterator
 
@@ -17,7 +18,17 @@ import tools as tools_mod
 import web_tools
 from config import CLAUDE_CONTEXT_LENGTH
 
-MAX_TOOL_ROUNDS = 6  # 防止無限呼叫工具（足夠 搜尋→抓頁→回答 多步）
+log = logging.getLogger(__name__)
+
+# 工具呼叫不限次數（多張圖的故事、多步查詢都要能一次做完）。唯一的保護是「卡住偵測」：
+# 同一個非生圖工具＋同樣參數在這次回覆已經跑過就不重跑，連續 STUCK_ROUNDS 輪都只是
+# 這種重複呼叫 → 視為卡住，改成不帶工具讓模型用文字收尾。生圖可以合理地重複同一組參數
+#（例如「同一個 prompt 畫 4 張」），所以不算重複。
+STUCK_ROUNDS = 3
+_REPEAT_CALL_NOTE = (
+    "You already called this tool with exactly these arguments in this reply; its result "
+    "is above. Use that result, call it with different arguments, or answer the user now."
+)
 POLL_INTERVAL = 0.4  # 進度輪詢秒數
 IMAGE_TOOLS = ("generate_image", "edit_image")
 
@@ -74,6 +85,30 @@ _OLLAMA_RETRY_NUDGE = (
     "comma-separated English danbooru tags. If no image is actually needed, reply "
     "with an empty message."
 )
+
+# 防遺忘 4)：多張圖的故事，模型寫完下一段（「## Scene 10 …」）卻沒呼叫生圖就結束回覆
+_OLLAMA_CONTINUE_NUDGE = (
+    "(system reminder) You wrote the text of \"{heading}\" but ended your reply without "
+    "generating its image. Call the image tool for that section NOW — do not repeat its "
+    "text. After the image, continue with the remaining sections of your plan, one section "
+    "and its image at a time, until the whole story is finished."
+)
+# 帶編號的標題行：## Scene 3 — …、### 第 3 幕、## 3. …（取第一個數字當編號）
+_NUMBERED_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]*([^\n]*?(\d+)[^\n]*)$", re.MULTILINE)
+
+
+def _numbered_headings(text: str) -> list[tuple[int, str]]:
+    return [(int(m.group(2)), m.group(1).strip()) for m in _NUMBERED_HEADING_RE.finditer(text or "")]
+
+
+def _unillustrated_section(round_text: str, last_illustrated: int) -> str | None:
+    """這輪（最後一次生圖之後）的文字若開了「下一個」編號段落（上一張圖所在段落的編號 +1），
+    回傳該標題；代表模型寫了下一段卻沒生圖就停了。總結段落的編號對不上，不會誤判。"""
+    heads = _numbered_headings(round_text)
+    if last_illustrated and heads and heads[0][0] == last_illustrated + 1:
+        return heads[0][1]
+    return None
+
 
 # ---- 退化式重複偵測 ----
 # 模型（尤其本地模型）偶爾會陷入無限重複迴圈（例如自己編 negative prompt 時同一串
@@ -385,7 +420,13 @@ async def run_chat(
         image_generated = False  # 本回合是否已（嘗試）生圖
         nudged = False           # 防遺忘 2) 的補救重試只做一次
         suppress_text = False    # 補救輪的文字不重複輸出給使用者
-        for _round in range(MAX_TOOL_ROUNDS + 1):  # +1：保留給補救輪
+        seen_calls: set[str] = set()  # 這次回覆跑過的非生圖工具呼叫（名稱＋參數）
+        stuck = 0                     # 連續「只重複舊呼叫」的輪數
+        turn_text = ""                # 這次回覆到目前為止的全部文字（找段落編號用）
+        images_done = 0               # 這次回覆呼叫生圖的次數
+        last_illustrated = 0          # 最近一張圖所在段落的編號（## Scene N）
+        continue_mark = -1            # 上次「接著畫」提醒時的 images_done（沒新圖就不再提醒）
+        while True:
             assistant_content = ""
             tool_calls: list[dict[str, Any]] = []
             degen = _DegenWatch()
@@ -423,7 +464,19 @@ async def run_chat(
             if not tool_calls and can_tools and (tools_enabled or skill_tool_map) and assistant_content:
                 tool_calls = _salvage_tool_calls(assistant_content, tuple(skill_tool_map))
 
+            turn_text += assistant_content
+
             if not tool_calls:
+                # 防遺忘 4)：故事寫了下一段卻沒生圖就停 → 提醒它畫這段並接著做完。
+                # 每次提醒後要有新圖才會再提醒，模型不肯畫時不會一直繞。
+                heading = _unillustrated_section(assistant_content, last_illustrated)
+                if can_tools and tools_enabled and heading and images_done > continue_mark:
+                    log.info("chat %s: section %r has no image; nudging to continue", model, heading)
+                    continue_mark = images_done
+                    suppress_text = True
+                    convo.append({"role": "assistant", "content": assistant_content})
+                    convo.append({"role": "user", "content": _OLLAMA_CONTINUE_NUDGE.format(heading=heading)})
+                    continue
                 # 防遺忘 2)：使用者明顯要圖卻整輪沒生圖 → 補一輪糾正重試
                 if (
                     can_tools
@@ -449,6 +502,7 @@ async def run_chat(
                 }
             )
 
+            fresh = False  # 這輪有沒有新的（非重複的）呼叫
             for call in tool_calls:
                 fn = call.get("function", {})
                 name = fn.get("name")
@@ -460,6 +514,18 @@ async def run_chat(
                         args = {}
                 if name in IMAGE_TOOLS:
                     image_generated = True
+                    fresh = True
+                    images_done += 1
+                    heads = _numbered_headings(turn_text)
+                    if heads:
+                        last_illustrated = heads[-1][0]
+                else:
+                    key = f"{name}:{json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)}"
+                    if key in seen_calls:
+                        convo.append({"role": "tool", "content": _REPEAT_CALL_NOTE})
+                        continue
+                    seen_calls.add(key)
+                    fresh = True
 
                 async for content in _run_tool(
                     name, args, image_settings, init_image, png_source,
@@ -473,7 +539,12 @@ async def run_chat(
                     else:
                         yield _sse(content)
 
-        # 用完輪數仍想呼叫工具 → 最後再不帶工具讓模型用文字收尾（不報錯）
+            stuck = 0 if fresh else stuck + 1
+            if stuck >= STUCK_ROUNDS:
+                log.warning("chat %s: stuck repeating tool calls for %d rounds", model, stuck)
+                break
+
+        # 卡在重複呼叫工具 → 最後再不帶工具讓模型用文字收尾（不報錯）
         if not answered:
             async for chunk in ollama_client.chat_stream(
                 model, convo, tools=None, think=ollama_think, num_ctx=num_ctx
@@ -621,6 +692,14 @@ def _directive_system(
     return base + "\n".join(instr) + tool_instr
 
 
+def _call_key(payload: str) -> str:
+    """[[CALL]] 指令的比對鍵：能解析就用排序過鍵的 JSON，否則用壓掉空白的原文。"""
+    try:
+        return json.dumps(json.loads(payload.strip()), sort_keys=True, ensure_ascii=False)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return " ".join(str(payload).split())
+
+
 async def _run_call_directive(
     payload: str, skill_tool_map: dict[str, dict[str, Any]], init_image: str | None = None
 ) -> AsyncIterator[Any]:
@@ -731,11 +810,14 @@ async def _run_cli_engine(
 
     try:
         round_messages = send_messages
-        for _round in range(MAX_TOOL_ROUNDS + 1):
+        seen_calls: set[str] = set()  # 這次回覆跑過的技能工具呼叫（同 Ollama 路徑的卡住偵測）
+        stuck = 0
+        while True:
             parser = _DirectiveParser()
             degen = _DegenWatch()
             round_text = ""
             tool_results: list[str] = []
+            fresh = False
 
             stream = client.chat_stream(
                 model, round_messages, system, think=think, effort=effort
@@ -761,6 +843,12 @@ async def _run_cli_engine(
                                     round_text += item[1]
                                     yield _sse({"type": "token", "delta": item[1]})
                             elif item[1] == "call":
+                                key = _call_key(item[2])
+                                if key in seen_calls:
+                                    tool_results.append(_REPEAT_CALL_NOTE)
+                                    continue
+                                seen_calls.add(key)
+                                fresh = True
                                 async for out in _run_call_directive(item[2], skill_tool_map, edit_image or init_image):
                                     if isinstance(out, str):
                                         tool_results.append(out)
@@ -787,8 +875,10 @@ async def _run_cli_engine(
 
             if not tool_results:
                 break
-            if _round >= MAX_TOOL_ROUNDS:
-                yield _sse({"type": "token", "delta": "\n[技能工具呼叫次數已達上限]\n"})
+            stuck = 0 if fresh else stuck + 1
+            if stuck >= STUCK_ROUNDS:
+                log.warning("cli %s: stuck repeating tool calls for %d rounds", model, stuck)
+                yield _sse({"type": "token", "delta": "\n[模型一直重複同樣的工具呼叫，已停止]\n"})
                 break
             # 技能工具結果當下一輪輸入，讓模型接著回答
             round_messages = [

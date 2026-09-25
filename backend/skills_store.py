@@ -18,7 +18,6 @@ from typing import Any
 
 import settings_store
 import skill_tools
-from config import SKILL_MAX_CHARS
 
 # 單一 SKILL.md 內容上限（防止超大檔塞爆）
 _MAX_SKILL_BYTES = 200_000
@@ -291,8 +290,10 @@ def delete_skill(slug: str) -> bool:
     return True
 
 
-def build_auto_prompt(max_chars: int = SKILL_MAX_CHARS) -> str:
-    """Auto 模式：把所有技能的目錄＋（受限的）指示注入，讓模型自行判斷該不該用、用哪個。"""
+def build_auto_prompt(max_chars: int | None = None) -> str:
+    """Auto 模式：把所有技能的目錄＋（受限的）指示注入，讓模型自行判斷該不該用、用哪個。
+    max_chars 省略＝用設定頁的上限（0＝無上限）。"""
+    max_chars = _limit(max_chars)
     skills = [s for s in (get_skill(it["slug"]) for it in list_skills()) if s]
     if not skills:
         return ""
@@ -321,6 +322,12 @@ def build_auto_prompt(max_chars: int = SKILL_MAX_CHARS) -> str:
     return text + _tools_note(all_tools) + _adapter_note(all_tools)
 
 
+def _limit(max_chars: int | None) -> int:
+    """實際長度上限：沒指定就讀設定頁的值；0 或負數＝無上限（回傳一個極大值）。"""
+    v = settings_store.get_skill_max_chars() if max_chars is None else int(max_chars)
+    return v if v > 0 else 10**9
+
+
 def _skill_text(skill: dict[str, Any], head: str, budget: int) -> str:
     """一個技能的注入文字：標題＋本體＋（預算內的）references；超過預算截斷。"""
     text = f"{head}\n\n{skill['body']}".strip()
@@ -334,13 +341,14 @@ def _skill_text(skill: dict[str, Any], head: str, budget: int) -> str:
     return text
 
 
-def build_prompt(slug: str | list[str], max_chars: int = SKILL_MAX_CHARS) -> str:
+def build_prompt(slug: str | list[str], max_chars: int | None = None) -> str:
     """把技能組成要注入 system 的字串：標題＋描述＋本體＋（受限的）references＋轉接層。
 
-    可同時啟用多個技能（逗號分隔或陣列）：每個技能各分得 max_chars/n（至少 3000）的預算，
-    references 依長度預算逐份加入；工具目錄與轉接層永遠接在最後（不被截斷）。
-    找不到任何技能回空字串。
+    max_chars 省略＝用設定頁的上限（0＝無上限，每個技能完整注入）。有上限且同時啟用多個技能時，
+    每個技能各分得 max_chars/n（至少 3000）的預算；references 依長度預算逐份加入；
+    工具目錄與轉接層永遠接在最後（不被截斷）。找不到任何技能回空字串。
     """
+    max_chars = _limit(max_chars)
     slugs = parse_selection(slug)
     if slugs == [AUTO]:
         return build_auto_prompt(max_chars)

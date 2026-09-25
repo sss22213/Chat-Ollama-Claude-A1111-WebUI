@@ -96,8 +96,10 @@ SDCPP_URL = os.getenv("SDCPP_URL", "http://127.0.0.1:7861").rstrip("/")
 # 放 SKILL.md 外掛的目錄；每個子資料夾＝一個技能（SKILL.md + 選用 references/ scripts/）。
 # 相容 Anthropic / Codex 的 Agent Skill 格式，社群 skill 可直接放進來。
 SKILLS_DIR = Path(os.getenv("SKILLS_DIR", Path(__file__).parent / "skills"))
-# 注入給模型的技能提示詞長度上限（字元）；保護 context 較小的本地模型。
-SKILL_MAX_CHARS = int(os.getenv("SKILL_MAX_CHARS", "8000"))
+# 注入給模型的技能提示詞長度上限（字元）的「初始值」；0＝無上限（預設）。
+# 實際值可在 ⚙️ 設定 → 技能目錄 調整並持久化（settings_store.skill_max_chars）；
+# 設了上限時可保護 context 較小的本地模型。
+SKILL_MAX_CHARS = int(os.getenv("SKILL_MAX_CHARS", "0") or 0)
 # 技能腳本（設定頁「允許技能執行腳本」開啟後，模型可用 run_skill_script 跑技能內的 *.py）。
 # 腳本只拿到最小環境；此處列出的環境變數名稱（逗號分隔，例如 API token）若存在於
 # 後端環境才會一併透傳給腳本。另外 DATA_DIR/skill-work/<技能>/.env 的內容也會帶入。
