@@ -455,6 +455,58 @@ async def loras_search(q: str = "", limit: int = 0) -> list[dict[str, Any]]:
     return await loras.search(q, None if limit <= 0 else min(2000, limit))
 
 
+@app.get("/api/loras/meta-status")
+async def lora_meta_status() -> dict[str, Any]:
+    """LoRA 內容分類（Civitai 標籤）的背景抓取進度：{total, done, running}。"""
+    return loras.meta_status()
+
+
+@app.post("/api/loras/meta-refresh")
+async def lora_meta_refresh() -> dict[str, Any]:
+    """「更新分類」：背景重新向 Civitai 查詢全部 LoRA 的分類，回傳進度。"""
+    return loras.refresh_categories()
+
+
+@app.get("/api/loras/examples")
+async def lora_examples(name: str) -> dict[str, Any]:
+    """LoRA 的 Civitai 範例圖與提示詞（Civitai Helper 提供）。"""
+    try:
+        return await loras.examples(name)
+    except loras.LoraError as e:
+        raise HTTPException(e.status, str(e))
+
+
+class LoraNameRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/loras/refresh-one")
+async def lora_refresh_one(req: LoraNameRequest) -> dict[str, Any]:
+    """重新讀取一個 LoRA 的 Civitai 資料（來源、分類、作者），回傳更新後的項目。"""
+    try:
+        return await loras.refresh_one(req.name)
+    except loras.LoraError as e:
+        raise HTTPException(e.status, str(e))
+
+
+@app.post("/api/loras/download-examples")
+async def lora_download_examples(req: LoraNameRequest) -> dict[str, Any]:
+    """把 LoRA 的 Civitai 範例圖全部存到 A1111 的模型旁邊（Civitai Helper），回傳下載統計。"""
+    try:
+        return await loras.download_examples(req.name)
+    except loras.LoraError as e:
+        raise HTTPException(e.status, str(e))
+
+
+@app.post("/api/loras/delete")
+async def lora_delete(req: LoraNameRequest) -> dict[str, Any]:
+    """永久刪除一個 LoRA 及其相關檔案（透過 Civitai Helper），並重掃清單。"""
+    try:
+        return await loras.delete(req.name)
+    except loras.LoraError as e:
+        raise HTTPException(e.status, str(e))
+
+
 @app.post("/api/loras/refresh")
 async def loras_refresh() -> dict[str, Any]:
     try:

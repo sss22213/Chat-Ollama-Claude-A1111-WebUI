@@ -1,0 +1,77 @@
+{
+  "base_url": "http://host.docker.internal:5280",
+  "tools": [
+    {
+      "name": "mmd_animation_catalog",
+      "description": "List what the MMD animation renderer can use: character ids (3D MMD models) with the expressions each model supports, body motions, VMD dance/motion files, camera shots/angles/moves, background image files. Call this once before writing a storyboard if you are unsure of the character id or motion names.",
+      "method": "GET",
+      "path": "/api/v1/catalog",
+      "defaults": {"morphs": false},
+      "parameters": {"type": "object", "properties": {}},
+      "timeout": 120,
+      "max_chars": 5000
+    },
+    {
+      "name": "make_mmd_animation",
+      "description": "Render a short animated video (mp4) of a 3D MMD character acting out a story: you write a storyboard of shots; each shot has an optional narration and/or a spoken line (voiced with TTS, lip-synced, subtitled), a body motion, a facial expression and a camera setup. Rendering takes about 1-3 minutes per 30 seconds of video. Use when the user asks for an animation, a video, an MMD clip, or to 'act out' / 'animate' a story with the character.",
+      "method": "POST",
+      "path": "/api/v1/animations",
+      "query_params": ["wait"],
+      "defaults": {"wait": 540},
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string", "description": "Short title of the clip."},
+          "character": {"type": "string", "description": "Character id from mmd_animation_catalog (e.g. 'chino'). Omit to use the default character."},
+          "background": {"type": "string", "description": "Optional. A colour '#RRGGBB', a file name from the catalog's backgrounds, an http(s) image URL, or an image generated earlier in this chat given as its '/images/<name>.png' path. Omit for a plain soft gradient."},
+          "resolution": {"type": "string", "enum": ["720p", "1080p", "vertical", "square"], "description": "Default 720p (16:9). 'vertical' is 9:16 for phones."},
+          "shots": {
+            "type": "array",
+            "description": "The storyboard, in order. 3-10 shots is typical; keep the whole clip under ~90 seconds. Each shot lasts as long as its speech (plus a short pause), or 'duration' seconds when silent.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "narration": {"type": "string", "description": "Narrator voice-over for this shot (optional). Played before the line."},
+                "line": {"type": "string", "description": "What the character says in this shot (optional, one or two short sentences). Chinese, Japanese or English; the language is detected per line."},
+                "motion": {"type": "string", "description": "Body motion: idle, talk, wave, nod, shake_head, bow, think, surprised, happy, sad, angry, shy, look_around, point, cheer, shrug, or a VMD motion name from the catalog. Default: talk if there is a line, else idle."},
+                "motion_start": {"type": "number", "description": "VMD motions only: start this many seconds into the motion (skip an intro)."},
+                "expression": {"type": "string", "enum": ["neutral", "smile", "happy", "gentle", "sad", "cry", "angry", "surprised", "troubled", "shy", "wink", "smug", "serious", "sleepy"]},
+                "camera": {
+                  "type": "object",
+                  "properties": {
+                    "shot": {"type": "string", "enum": ["extreme_closeup", "closeup", "medium", "cowboy", "full"], "description": "closeup = face, medium = waist up, cowboy = knees up, full = whole body."},
+                    "angle": {"type": "string", "enum": ["front", "left", "right", "profile_left", "profile_right", "low", "high"]},
+                    "move": {"type": "string", "enum": ["static", "push_in", "pull_out", "orbit_left", "orbit_right", "tilt_up", "tilt_down"]}
+                  }
+                },
+                "duration": {"type": "number", "description": "Seconds; only needed for silent shots or to hold a shot longer than its speech."}
+              }
+            }
+          },
+          "subtitles": {"type": "boolean", "description": "Burn in subtitles (default true)."},
+          "speed": {"type": "number", "description": "Speech speed, 0.5-2.0 (default 1.0)."},
+          "physics": {"type": "boolean", "description": "Simulate hair/skirt physics (slower; default false). Use for dance clips."}
+        },
+        "required": ["shots"]
+      },
+      "timeout": 600,
+      "max_chars": 4000,
+      "result_note": "If status is 'completed': tell the user the video is ready and give result.video_url as a Markdown link, e.g. [▶ 觀看動畫](video_url), plus the thumbnail as ![](thumbnail_url); mention any warnings briefly. If status is 'queued' or 'running': call mmd_animation_status with this id to keep waiting. If 'failed': tell the user the exact error. Never invent a URL."
+    },
+    {
+      "name": "mmd_animation_status",
+      "description": "Wait for / check an MMD animation job started with make_mmd_animation (use the id it returned). Returns when the job finishes or after about 9 minutes.",
+      "method": "GET",
+      "path": "/api/v1/animations/{id}",
+      "defaults": {"wait": 540},
+      "parameters": {
+        "type": "object",
+        "properties": {"id": {"type": "string", "description": "Job id from make_mmd_animation."}},
+        "required": ["id"]
+      },
+      "timeout": 600,
+      "max_chars": 4000,
+      "result_note": "If completed, give the user result.video_url as a Markdown link and the thumbnail. If still running, you may call this tool again. Never invent a URL."
+    }
+  ]
+}

@@ -205,6 +205,60 @@ export async function refreshLoras() {
   return r.json();
 }
 
+// LoRA 內容分類（Civitai 標籤）的背景抓取進度：{total, done, running}
+export async function fetchLoraMetaStatus() {
+  const r = await fetch("/api/loras/meta-status");
+  if (!r.ok) throw new Error("無法取得分類進度");
+  return r.json();
+}
+
+// 「更新分類」：後端背景重新向 Civitai 查詢全部 LoRA 的分類，回傳進度
+export async function refreshLoraCategories() {
+  const r = await fetch("/api/loras/meta-refresh", { method: "POST" });
+  if (!r.ok) throw new Error("無法開始更新分類");
+  return r.json();
+}
+
+// 重新讀取一個 LoRA 的 Civitai 資料（來源、分類、作者），回傳更新後的項目
+export async function refreshOneLora(name) {
+  const r = await fetch("/api/loras/refresh-one", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "更新失敗");
+  return r.json();
+}
+
+// LoRA 的 Civitai 範例圖與提示詞（經 A1111 的 Civitai Helper）
+export async function fetchLoraExamples(name) {
+  const r = await fetch(`/api/loras/examples?${new URLSearchParams({ name })}`);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "無法取得範例圖");
+  return r.json();
+}
+
+// 把 LoRA 的 Civitai 範例圖全部存到 A1111 的模型旁邊；回傳 {downloaded, existed, skipped_nsfw, failed}
+export async function downloadLoraExamples(name) {
+  const r = await fetch("/api/loras/download-examples", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "下載範例圖失敗");
+  return r.json();
+}
+
+// 永久刪除 LoRA（模型檔、預覽圖、範例圖一起刪），後端會重掃清單
+export async function deleteLora(name) {
+  const r = await fetch("/api/loras/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "刪除失敗");
+  return r.json();
+}
+
 // 縮圖 URL（後端代理 A1111 預覽圖 + 即時縮放快取；無預覽回 404）
 export const loraThumb = (name, size = 96) =>
   `/api/lora-thumb?name=${encodeURIComponent(name)}&size=${size}`;

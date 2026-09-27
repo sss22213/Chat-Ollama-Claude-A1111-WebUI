@@ -11,6 +11,7 @@ import {
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
 import { readPngInfo } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 
 const blobToDataUrl = (blob) =>
   new Promise((resolve, reject) => {
@@ -210,13 +211,9 @@ export default function PngInfoModal({ image, onClose }) {
 function FieldCopy({ label, value, t }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* 忽略 */
-    }
+    if (!(await copyText(value))) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
   return (
     <div className="rounded-lg bg-ink-850 p-2.5">

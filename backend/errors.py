@@ -41,7 +41,9 @@ def describe(e: BaseException) -> str:
         body = ""
         try:
             data = r.json()
-            body = data.get("error") or data.get("detail") or "" if isinstance(data, dict) else ""
+            if isinstance(data, dict):  # Forge 的原因在 message（error 只是例外類別名）
+                parts = [str(data.get(k) or "").strip() for k in ("error", "message", "detail")]
+                body = "：".join(dict.fromkeys(p for p in parts if p))
         except ValueError:
             body = r.text[:200]
         return f"{_req_origin(e)} 回應 HTTP {r.status_code}".strip() + (f"：{body}" if body else "")

@@ -1181,7 +1181,13 @@ async def _run_tool(
             )
         except Exception as e:
             yield {"type": "error", "message": f"圖片生成失敗：{e}"}
-            yield f"圖片生成失敗：{e}"
+            note = (
+                " (This is an error of the image server or its model setup, not of the prompt: "
+                "do not retry with a changed prompt; tell the user what failed.)"
+                if isinstance(e, a1111_client.A1111Error)
+                else ""
+            )
+            yield f"圖片生成失敗：{e}{note}"
         return
 
     # --- web 搜尋 ---

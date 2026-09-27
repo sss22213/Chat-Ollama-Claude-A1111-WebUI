@@ -19,19 +19,16 @@ import { hasName } from "./names";
 import { useChat } from "../store/chat";
 import { useCT } from "./comicI18n";
 import { BUBBLE_STYLES, TAIL_DIRS, hasTail, styleKey, tailKey } from "./bubbleShape";
+import { copyText } from "../lib/clipboard";
 
 
 // 小複製按鈕：複製文字並短暫顯示「已複製」
 function CopyBtn({ text, ct }) {
   const [done, setDone] = useState(false);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setDone(true);
-      setTimeout(() => setDone(false), 1500);
-    } catch {
-      /* 忽略 */
-    }
+    if (!(await copyText(text))) return;
+    setDone(true);
+    setTimeout(() => setDone(false), 1500);
   };
   return (
     <button

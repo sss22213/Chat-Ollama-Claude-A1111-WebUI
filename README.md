@@ -85,7 +85,8 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   when it won't fit.
 - 📱 **Mobile / tablet friendly** — the chat, Comic Studio and Image Story pages adapt to
   iPhone / iPad sizes (two-row toolbars, drawer sidebar, single-column layouts, iOS
-  safe-area and input-zoom handling).
+  safe-area and input-zoom handling). Copy buttons also work when the page is opened over
+  plain HTTP on the LAN (e.g. `http://192.168.x.x:5273`), where browsers hide the clipboard API.
 - 🖌️ **img2img redraw** — attach an image and ask the model to restyle/modify it
   (`edit_image`); any generated image also has a "redraw from this" button.
 - 🌐 **Web search** — when enabled, the model can call `web_search` / `fetch_url` to
@@ -139,15 +140,52 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   the background") and shows the result inline.
 - 🔎 **Civitai search & model examples** — search civitai.com from the chat and get result
   **cards** (example images, base model, trigger words, a **Download this** button that hands
-  the model to A1111's Civitai Helper), or browse an installed model's example images as a
-  **gallery** that vision models can also look at.
+  the model to A1111's Civitai Helper; a base-model filter shows the matching version), or
+  browse an installed model's example images as a **gallery** that vision models can also
+  look at. Images that people posted on civitai (by user, by LoRA / model, or both) show up
+  as a gallery with their prompts, and the ones you pick can be saved as extra example images
+  of an installed LoRA.
+- 🗂️ **LoRA browser** — the layers button next to the chat input lists every installed LoRA
+  with its preview and trigger words. Filter by **base model** (Illustrious, NoobAI, Pony,
+  SDXL, SD 1.5, Anima …, from Civitai or inferred from the file's training info) and by
+  **content category** (character, clothing, poses, style, concept, background …, from the
+  model's Civitai tags). Categories are fetched only when you ask: **Update categories**
+  (all LoRAs, in the background) or **Update** in a LoRA's details (just that one). The
+  details show the Civitai source (model / version / creator, link to the page), the example
+  images with their prompts (copy button), **Download all example images**, and **Delete**
+  (removes the LoRA and every file that belongs to it). The chat model searches the same way:
+  its LoRA inventory tool filters by category and base model and reports how many LoRAs each
+  category holds.
+- 🎛️ **Anima checkpoints** — when the selected checkpoint is an Anima model (WAI-ANIMA,
+  One Obsession Anima 2.9B, Anima base), the app loads the Qwen3 text encoder and Qwen-Image
+  VAE that Forge Neo needs for it by itself, also when the app follows the checkpoint
+  selected in Forge. The **SD Prompt Guide (Anima)** skill teaches the model Anima's prompt
+  style. Errors from A1111 now show Forge's own reason (for example a missing file) instead
+  of a bare "HTTP 500".
+- 🎬 **MMD animation** *(optional)* — with the separate **anime-render** service (Blender +
+  mmd_tools + TTS, port 5280), the `mmd-animation` skill turns a story into a storyboard and
+  renders it as a short mp4 acted out by a 3D MMD character.
 - ⌨️ `/image <prompt>` generates directly, skipping the LLM (a manual fallback).
 
 ## Requirements
 
 - **Ollama** at `localhost:11434` with at least one **tool-capable** model
   (e.g. `qwen3.5:35b`, the `qwen3` family).
-- **A1111** at `localhost:7860`, started with `--api`.
+- **A1111** at `localhost:7860`, started with `--api`. **Recommended:
+  [sd-webui-forge-neo-chino](https://github.com/sss22213/sd-webui-forge-neo-chino)** with the
+  [Civitai Helper (sss22213 fork)](https://github.com/sss22213/Stable-Diffusion-Webui-Civitai-Helper)
+  extension — only this combination supports every API skill of this app:
+  - `a1111-memory-manager` needs its extended unload API: `unload-checkpoint?full=false|true`
+    (VRAM only, or RAM too) and the new `reload-checkpoint`. Upstream Forge Neo has no reload
+    endpoint and always unloads fully.
+  - The LoRA browser (examples, download, delete) and the `civitai-helper` skill use the
+    Civitai Helper fork's HTTP API (`/civitai-helper/v1`); deleting a LoRA needs version 1.14.0
+    or later.
+  - It is based on a Forge Neo that supports Anima 2.9B (One Obsession) and ships a Docker image
+    with every package pre-installed and fixes for mobile browsers.
+
+  Other A1111 / Forge builds work for chat and image generation, but those skills and buttons
+  then fail or are missing.
 - For the **Claude CLI engine** (optional): the `claude` CLI installed and logged in.
   The Docker image installs it for you; you only mount your credentials (see below).
 - For the **Codex CLI engine** (optional): the `codex` CLI logged in on the host. Its whole
@@ -260,7 +298,7 @@ npm run dev
     and press **Generate**. A story can be sent to Comic Studio as the premise; a comic
     script can be opened there directly — **Open & render all** imports the cast and
     panels and starts rendering. Needs a vision-capable model (👁 in the dropdown).
-15. **Illustrated story in chat:** enable **Story Illustrator** (and **SD Prompt Guide**)
+15. **Illustrated story in chat:** enable **Story Illustrator** (and **SD Prompt Guide (Illustrious)**)
     with the ✨ button, then ask e.g. *"tell a story in 8 pictures: a little fox lost in a
     snowstorm finds its way home by the stars"*. The model writes the outline, then each
     scene's text followed by its image; say *"keywords only"* to get the prompts without
@@ -459,9 +497,11 @@ Bundled skills:
 | `story-illustrator` | Illustrated stories in chat: the model first writes an outline (a cast sheet with each character's fixed **Core** look and **Outfit** tags, then numbered scenes forming a full arc, each with a one-sentence *picture line* of what the image shows), then writes each `## Scene N` and generates its image before the next one, so pictures sit under their scenes — or, when you only want keywords, gives one ready-to-paste prompt per scene. Scene prompts put the count of everyone visible, the character's core look and the scene's action / key objects / other people first (the defining action weighted), then expression, setting, a shot that can show the action, the outfit and the quality tags; `solo` only when the character is alone. |
 | `sdcpp-image-edit` | Instruction-based editing of an attached image through a local **stable-diffusion.cpp** server (`SDCPP_URL`, default port 7861) running an editing model such as Qwen-Image 2.1: the app sends the most recent image in the conversation (your attachment, or the last image generated with A1111 or edited here, so "edit the picture you just made" works without re-attaching) as `ref_images`, polls the job and shows the result inline like a generated image. Also has an img2img tool and a status tool that reports whether the loaded model can edit. |
 | `a1111-memory-manager` | Memory tools for the A1111 / Forge image generator: show RAM / VRAM (`/sdapi/v1/memory`, summarized in GB), unload the checkpoint from VRAM only or fully (`/sdapi/v1/unload-checkpoint[?full=true]`), and load it back (`/sdapi/v1/reload-checkpoint`). Handy when Ollama, A1111 and sd.cpp share one GPU. |
-| `sd-prompt-guide` | Prompt-writing rules for the local SD backend, tuned for **WAI-illustrious-SDXL**: danbooru tag order, weights, negative prompt, sizes, no tag-count limit, and the WAI author's quality tags `masterpiece, best quality, amazing quality` at the end with no extra quality / aesthetic tags (they blur the image). How to apply a LoRA (`<lora:filename:0.6–1>` plus its trigger words in the prompt); points to Civitai Helper for the installed-LoRA inventory, prefers Illustrious / NoobAI LoRAs by base model, and stops after two lookups instead of searching on and on. |
-| `civitai-helper` | HTTP tools against the A1111 **Civitai Helper** extension: local LoRA / checkpoint inventory with trigger words, model lookup by URL or id, download into the WebUI, scan, check for new versions, refresh lists. Example images of an installed model are shown as a **gallery** (local copies first, with prompts and a copy button), and the first 4 are also attached to the tool result so a vision-capable Ollama model can actually see and describe them. |
-| `civitai-api` | [stanestane/civitai-api](https://clawhub.ai/stanestane/skills/civitai-api) (MIT-0) plus an app-specific `civitai_search_models` tool: the model searches civitai.com (LoRA by default) and the chat shows the results as **cards** with server-cached example images, base model, trigger words and a **Download this** button that hands the model page to Civitai Helper. Other commands (by-hash, tags, creators…) run through `run_skill_script`. Needs scripts enabled; put `CIVITAI_API_KEY=…` in `backend/data/skill-work/civitai-api/.env` for authenticated calls. |
+| `sd-prompt-guide` | **SD Prompt Guide (Illustrious)** — prompt-writing rules for the local SD backend, tuned for **WAI-illustrious-SDXL**: danbooru tag order, weights, negative prompt, sizes, no tag-count limit, and the WAI author's quality tags `masterpiece, best quality, amazing quality` at the end with no extra quality / aesthetic tags (they blur the image). How to apply a LoRA (`<lora:filename:0.6–1>` plus its trigger words in the prompt); points to Civitai Helper for the installed-LoRA inventory, prefers Illustrious / NoobAI LoRAs by base model, and stops after two lookups instead of searching on and on. |
+| `sd-prompt-guide-anima` | **SD Prompt Guide (Anima)** — prompt-writing rules for **Anima** checkpoints (default WAI-ANIMA; also One Obsession Anima 2.9B and Anima base): quality and safety tags first, danbooru tags plus a sentence of natural language, `@artist` tags, heavier weights, each checkpoint's own quality prefix and negative prompt, Anima-only LoRAs (`civitai_lora_inventory` with `base: "Anima"`). Enable only the guide that matches the selected checkpoint. When the selected checkpoint — or, with no checkpoint set in the app, the one currently selected in Forge — is Anima (Civitai Helper base model, or `anima` in the file name), the app loads Forge Neo's `qwen_3_06b_base` text encoder and `qwen_image_vae` by itself; Anima 2.9B needs Forge Neo from August 2026 or later. |
+| `civitai-helper` | HTTP tools against the A1111 **Civitai Helper** extension ([sss22213 fork](https://github.com/sss22213/Stable-Diffusion-Webui-Civitai-Helper)): local LoRA / checkpoint inventory with trigger words (the LoRA inventory is filtered by the app by `category` and `base` model, with per-category counts, the same data as the LoRA browser), model lookup by URL or id, download into the WebUI, scan, check for new versions, refresh lists, save civitai users' images as extra examples of an installed model. Example images of an installed model are shown as a **gallery** (local copies first, with prompts and a copy button), and the first 4 are also attached to the tool result so a vision-capable Ollama model can actually see and describe them. |
+| `civitai-api` | [stanestane/civitai-api](https://clawhub.ai/stanestane/skills/civitai-api) (MIT-0) plus an app-specific `civitai_search_models` tool: the model searches civitai.com (LoRA by default) and the chat shows the results as **cards** with server-cached example images, base model, trigger words and a **Download this** button that hands the model page to Civitai Helper (`base_model` shows the version made for that base model). `civitai_search_images` shows images people posted (by user, by model, or both) as a gallery with their prompts, and the picked ones can be saved as examples with Civitai Helper. Other commands (by-hash, tags, creators…) run through `run_skill_script`. Needs scripts enabled; put `CIVITAI_API_KEY=…` in `backend/data/skill-work/civitai-api/.env` for authenticated calls. |
+| `mmd-animation` | Turns a story into a short mp4 acted out by a 3D MMD character: the model writes a storyboard (narration, voiced and lip-synced lines, motions, expressions, camera) and the separate **anime-render** service (Blender + mmd_tools + TTS, `http://host.docker.internal:5280`) renders it. Optional; needs that service running. |
 
 ## Prompt history (sd-webui-prompt-history)
 
@@ -566,7 +606,7 @@ that paragraph; older messages without `at` show their images at the end as befo
 | `frontend/src/comic/` | Comic Studio page (script panel, character cards, panel cards, page layout, PNG export, library modal, storyboard versions); `bubbleShape.js` = bubble geometry shared by the page preview and the PNG export, `names.js` = lenient character-name matching, `notices.js` = backend notice texts |
 | `frontend/src/store/comic.js` | Comic Studio state: storyboard, cards, panels, bubbles, autosave to the server, versions cache, per-panel tag regeneration |
 | `frontend/src/story/` | Image Story page (upload, mode/options, result view, hand-off to Comic Studio); state in `frontend/src/store/story.js`, API in `frontend/src/lib/storyApi.js`, client-side downscaling in `frontend/src/lib/image.js` |
-| `backend/a1111_client.py` | A1111: txt2img / img2img / progress / models / samplers / png-info |
+| `backend/a1111_client.py` | A1111: txt2img / img2img / progress / models / samplers / png-info; adds the Forge extra modules (text encoder / VAE) an Anima checkpoint needs, and puts Forge's error reason into the exception |
 | `backend/web_tools.py` | web search (DuckDuckGo/SearXNG) + page extraction (with SSRF guard) |
 | `backend/settings_store.py` | persisted settings: image dir (default stored as empty so the host and the container resolve their own path) + service sources + web provider + prompt-history dir + skill prompt length limit |
 | `backend/prompt_history_store.py` | reads the `sd-webui-prompt-history` extension's `data.json` + thumbnails (cached, paginated, searchable) |
@@ -577,9 +617,13 @@ that paragraph; older messages without `at` show their images at the end as befo
 | `backend/sdcpp_jobs.py` | `sdcpp_job` postprocess: polls a stable-diffusion.cpp job, saves the output image and shows it in the chat |
 | `backend/civitai_cards.py` | `civitai_models` postprocess: Civitai search results → model summary + result cards (thumbnails cached in `DATA_DIR/civitai-cache/`) |
 | `backend/civitai_examples.py` | `civitai_examples` postprocess: Civitai Helper example images → chat gallery + downscaled vision images for the model |
+| `backend/civitai_images.py` | `civitai_images` postprocess: civitai image search → chat gallery (prompts, parameters, author, LoRAs used) + numbered summary with image ids |
+| `backend/loras.py` | LoRA list for the browser (A1111 + Civitai Helper source), thumbnails, examples, download / delete, and the `lora_inventory` postprocess that filters the model's LoRA inventory by category / base |
+| `backend/lora_meta.py` | LoRA base-model grouping / inference, Civitai source, content categories (Civitai model tags, fetched only on request, cached in `DATA_DIR/civitai-cache/model_tags.json`) |
 | `backend/a1111_memory.py` | `a1111_memory` postprocess: A1111 RAM / VRAM figures → readable GB summary |
 | `frontend/src/store/chat.js` | zustand state + streaming coordination + persistence |
 | `frontend/src/lib/api.js` | SSE parsing, storage/browse/sources/engine calls |
+| `frontend/src/lib/clipboard.js` | copy to clipboard with a fallback for plain-HTTP LAN pages |
 | `frontend/src/i18n.js` | 5-language dictionary + `useT()` hook |
 | `frontend/src/components/` | UI components (TopBar, Composer, Message, ImageBlock, PngInfoModal, HistoryModal, CandidateCards, ExampleGallery, pickers, panels) |
 

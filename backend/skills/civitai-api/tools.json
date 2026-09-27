@@ -7,11 +7,12 @@
       "script": "civitai.py",
       "argv": ["models"],
       "defaults": { "types": "LORA", "limit": 6 },
-      "flags": { "query": "--query", "types": "--types", "limit": "--limit", "sort": "--sort", "period": "--period", "username": "--username", "tag": "--tag", "nsfw": "--nsfw", "cursor": "--cursor" },
+      "flags": { "query": "--query", "types": "--types", "base_model": "--base-model", "limit": "--limit", "sort": "--sort", "period": "--period", "username": "--username", "tag": "--tag", "nsfw": "--nsfw", "cursor": "--cursor" },
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string", "description": "Search text, e.g. 'school uniform illustrious'. Put the base model name (Illustrious, Pony, SDXL, Flux) in the query to narrow results." },
+          "query": { "type": "string", "description": "Search text, e.g. 'school uniform' or a character name. Do not put the base model in the text; use base_model for that." },
+          "base_model": { "type": "array", "items": { "type": "string" }, "description": "Only models that have a version for these base models (the card then shows that version). Civitai names: 'SD 1.5', 'SDXL 1.0', 'Pony', 'Illustrious', 'NoobAI', 'Flux.1 D', 'Flux.1 S', 'Flux.2 D', 'Flux.2 Klein 9B', 'Anima', 'Krea 2', 'ZImageTurbo', 'ZImageBase', 'Qwen', 'Chroma', 'Wan Video 2.2 T2V-A14B' ...; common short forms (sd1.5, sdxl, pony, illu, noob, flux, qwen, z image, wan) are understood. Use it whenever the user names a base model / architecture." },
           "types": { "type": "string", "description": "Model type: LORA (default), Checkpoint, TextualInversion, LoCon, DoRA, Hypernetwork, Controlnet." },
           "limit": { "type": "integer", "description": "How many results (1-12, default 6)." },
           "sort": { "type": "string", "enum": ["Highest Rated", "Most Downloaded", "Newest"], "description": "Default is relevance; 'Most Downloaded' is a good choice for popular picks." },
@@ -21,11 +22,36 @@
           "nsfw": { "type": "string", "enum": ["true", "false"], "description": "Include NSFW models; omit to use civitai's default." },
           "cursor": { "type": "string", "description": "Continue from a previous result's next_cursor." }
         },
-        "required": ["query"]
+        "required": []
       },
       "postprocess": "civitai_models",
       "timeout": 120,
       "max_chars": 6000
+    },
+    {
+      "name": "civitai_search_images",
+      "kind": "script",
+      "description": "Search images that people posted on civitai.com, with their generation data (prompt, negative prompt, sampler, steps, CFG, seed, checkpoint, LoRAs used), and SHOW THEM TO THE USER AS A GALLERY. Use it for: (1) images a given user made with a given LoRA / model ('what did user X make with this LoRA'): username + model; (2) every image a user posted ('show me user X's images'): username only; (3) community images of a model: model only. Each result carries a civitai image_id; to keep some as example images of an installed model, pass those ids to the Civitai Helper tool civitai_add_user_examples.",
+      "script": "civitai.py",
+      "argv": ["images"],
+      "defaults": { "limit": 12, "nsfw": "X" },
+      "flags": { "username": "--username", "model": "--model", "model_version_id": "--model-version-id", "sort": "--sort", "period": "--period", "nsfw": "--nsfw", "limit": "--limit", "cursor": "--cursor" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "username": { "type": "string", "description": "civitai username of the person who posted the images (as shown on civitai, without @)." },
+          "model": { "type": "string", "description": "The LoRA / model the images must use: a civitai model id or model page URL (a URL with ?modelVersionId= narrows to that version). For a LoRA installed locally, get its civitai model id / version id from Civitai Helper (civitai_local_model_info) or pass model_version_id." },
+          "model_version_id": { "type": "integer", "description": "Alternative to model: one civitai model version id." },
+          "sort": { "type": "string", "enum": ["Most Reactions", "Most Comments", "Most Collected", "Newest", "Oldest"], "description": "Default: civitai's default order." },
+          "period": { "type": "string", "enum": ["AllTime", "Year", "Month", "Week", "Day"] },
+          "nsfw": { "type": "string", "enum": ["None", "Soft", "Mature", "X"], "description": "Highest NSFW level to include. Default X = everything including NSFW; pass None only when the user asks for SFW / safe images." },
+          "limit": { "type": "integer", "description": "How many images (1-30, default 12)." },
+          "cursor": { "type": "string", "description": "Continue from a previous result ('More images available: cursor=...')." }
+        }
+      },
+      "postprocess": "civitai_images",
+      "timeout": 120,
+      "max_chars": 9000
     }
   ]
 }

@@ -89,7 +89,7 @@
         "properties": {
           "prompt": {
             "type": "string",
-            "description": "Comma-separated English danbooru tags describing the desired result (see SD Prompt Guide rules; LoRA tags <lora:name:0.8> allowed)."
+            "description": "Comma-separated English danbooru tags describing the desired result (see SD Prompt Guide (Illustrious) rules; LoRA tags <lora:name:0.8> allowed)."
           },
           "negative_prompt": {
             "type": "string",

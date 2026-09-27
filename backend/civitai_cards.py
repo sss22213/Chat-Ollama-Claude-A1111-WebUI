@@ -85,10 +85,12 @@ def _items(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 def summarize(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """把 civitai JSON 整理成卡片清單（尚未下載縮圖）。"""
     items, meta = _items(data)
+    wanted = set(((data.get("_query") or {}) if isinstance(data, dict) else {}).get("base_models") or [])
     cards: list[dict[str, Any]] = []
     for it in items[:_MAX_ITEMS]:
         versions = it.get("modelVersions") or []
-        v = versions[0] if versions else {}
+        # 有指定基底模型時，卡片用符合的那個版本（civitai 把最新版排第一，可能是別的基底）
+        v = next((x for x in versions if x.get("baseModel") in wanted), versions[0] if versions else {})
         files = v.get("files") or []
         primary = next((f for f in files if f.get("primary")), files[0] if files else {})
         images = []
@@ -118,6 +120,7 @@ def summarize(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 "version_id": v.get("id"),
                 "version": v.get("name"),
                 "base_model": v.get("baseModel"),
+                "other_bases": sorted({x.get("baseModel") for x in versions if x.get("baseModel")} - {v.get("baseModel")}),
                 "trained_words": [w for w in (v.get("trainedWords") or []) if isinstance(w, str)][:8],
                 "size_kb": primary.get("sizeKB"),
                 "file": primary.get("name"),
@@ -125,7 +128,9 @@ def summarize(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 "images": images,
             }
         )
-    return cards, {"next_cursor": meta.get("nextCursor"), "total_items": len(items)}
+    q = (data.get("_query") or {}) if isinstance(data, dict) else {}
+    return cards, {"next_cursor": meta.get("nextCursor"), "total_items": len(items),
+                   "base_models": q.get("base_models") or [], "fallback": bool(q.get("text_search_fallback"))}
 
 
 async def cache_thumbs(cards: list[dict[str, Any]]) -> None:
@@ -146,12 +151,16 @@ def model_text(cards: list[dict[str, Any]], meta: dict[str, Any]) -> str:
     if not cards:
         return "No models found."
     lines = [f"{len(cards)} model(s) found. The user now sees them as cards with example images; refer to them by number or name and ask which one to download:"]
+    if meta.get("base_models"):
+        lines.insert(0, f"Filtered to base model: {', '.join(meta['base_models'])}. Each card shows the version for that base model."
+                     + (" Some results came from a broader text search, kept only if they have such a version." if meta.get("fallback") else ""))
     for i, c in enumerate(cards, 1):
         words = ", ".join(c["trained_words"]) or "(none)"
         size = f", {c['size_kb'] / 1024:.0f} MB" if c.get("size_kb") else ""
         lines.append(
             f"{i}. {c['name']} — {c['type']}, base {c['base_model']}, version '{c['version']}' "
-            f"(model id {c['id']}, version id {c['version_id']}{size}), {c['downloads'] or 0} downloads, "
+            + (f"(also has versions for {', '.join(c['other_bases'][:4])}) " if c.get("other_bases") else "")
+            + f"(model id {c['id']}, version id {c['version_id']}{size}), {c['downloads'] or 0} downloads, "
             f"by {c['creator'] or '?'}{', NSFW' if c['nsfw'] else ''}. Trigger words: {words}. "
             f"Page: {c['url']}. Example images shown: {sum(1 for im in c['images'] if im.get('thumb'))}/{len(c['images'])}."
         )

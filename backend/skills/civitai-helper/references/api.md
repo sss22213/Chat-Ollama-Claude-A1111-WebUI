@@ -4,7 +4,7 @@ Base: `<WebUI>/civitai-helper/v1` (provided by the Civitai Helper extension; the
 
 | Tool | HTTP | Notes |
 |---|---|---|
-| civitai_lora_inventory | GET /loras?q=&limit=&offset=&metadata=true&format=json\|csv\|md | every LoRA: `prompt_tag`, `civitai` (null if unknown), `training` (from the safetensors header: `base_model_version`, `top_tags`) |
+| civitai_lora_inventory | GET /loras?q=&metadata=true&compact=true (the app fetches every match and pages itself) | `items[]`: `name`, `prompt_tag`, `base`, `category`, `model_name`, `version`, `trained_words`, `nsfw`, `model_url`, `training_tags`, `examples`; plus `total`, `categories`, `bases`, `note` |
 | civitai_list_local_models | GET /models?type=&q=&no_info_only=&metadata=&limit=&format= | `items[].civitai` is null when the model has no civitai record; `trained_words` = trigger words |
 | civitai_local_model_info | GET /models/{type}/info?name= | `name` = file name or relative path |
 | civitai_model_examples | GET /models/{type}/examples?name= | `images[]`: `index`, `url`, `nsfw`, `has_prompt`, `prompt`, `negative_prompt`, `steps`, `sampler`, `cfg_scale`, `seed`, `size`, `model`, `local_file`, `local_url`; plus `trained_words`, `base_model`, `downloaded`/`total`, `has_preview`, `has_card_info` |
@@ -18,6 +18,8 @@ Base: `<WebUI>/civitai-helper/v1` (provided by the Civitai Helper extension; the
 | civitai_task_status | GET /tasks/{id}?wait=&timeout= | task: `{id, kind, status: queued/running/done/error, result, error}` |
 | refresh_loras | POST /sdapi/v1/refresh-loras | WebUI core API |
 | refresh_checkpoints | POST /sdapi/v1/refresh-checkpoints | WebUI core API |
+
+`civitai_lora_inventory` is post-processed by the app: `base` is the base-model family (civitai base model, or inferred from the file's training info) and `category` the civitai content category, the same values as the filters of the app's LoRA browser. `category` / `base` filter the list before paging; `categories` / `bases` count the matches per category (ignoring the category filter) and per base (ignoring the base filter). Categories are fetched from civitai only when the user presses 「更新分類」 in the LoRA browser; until then every LoRA is `uncategorized`.
 
 Task record: `status` is `queued`, `running`, `done` or `error`. For `download`, `result` holds `file`, `model_name`, `version_name`, `trained_words`, `already_exists`.
 

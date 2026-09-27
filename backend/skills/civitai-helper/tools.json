@@ -3,12 +3,38 @@
   "tools": [
     {
       "name": "civitai_lora_inventory",
-      "description": "Inventory of the LoRAs installed in the local Stable Diffusion WebUI. Each item has: name (file), prompt_tag (ready-to-use <lora:name:1>), subfolder, size, civitai info when known (model_name, version_name, base_model, trained_words = trigger words, nsfw, model_url) and training metadata read from the file itself (training.base_model_version, training.top_tags) so LoRAs that are not on civitai still show what they were trained on. Optional q filters by file name, model name, trigger word or training tag. Use it for 'what LoRAs do I have', 'which LoRA fits X', or to pick a LoRA and its trigger words for a prompt. Results are paged: use q to narrow, or offset to see more.",
+      "description": "Inventory of the LoRAs installed in the local Stable Diffusion WebUI. Each item has: name (file), prompt_tag (ready-to-use <lora:name:1>), base (base-model family: Illustrious, NoobAI, Pony, SDXL, SD 1.5, Flux, ... or unknown), category (civitai content category: character, celebrity, clothing, poses, action, style, concept, background, buildings, vehicle, objects, animal, tool, assets, other, or uncategorized), civitai info when known (model_name, version, trained_words = trigger words, nsfw, model_url) and training_tags read from the file itself. Filter with category and base to look in the right group first, and with q for file name, model name, trigger word or training tag. Every answer also counts the matching LoRAs per category and per base, so a call without category shows where to look. Use it for 'what LoRAs do I have', 'which LoRA fits X', or to pick a LoRA and its trigger words for a prompt. Results are paged: narrow with category / base / q, or use offset to see more.",
       "method": "GET",
       "path": "/loras",
       "parameters": {
         "type": "object",
         "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "character",
+              "celebrity",
+              "clothing",
+              "poses",
+              "action",
+              "style",
+              "concept",
+              "background",
+              "buildings",
+              "vehicle",
+              "objects",
+              "animal",
+              "tool",
+              "assets",
+              "other",
+              "uncategorized"
+            ],
+            "description": "Optional content category: character (a specific character), celebrity (a real person), clothing (outfits, accessories), poses, action, style (art style / look), concept (situations, effects, body features), background (scenery), buildings, vehicle, objects, animal, tool (sliders, detail / quality helpers), assets; other = on civitai but none of these; uncategorized = not on civitai or category not fetched yet"
+          },
+          "base": {
+            "type": "string",
+            "description": "Optional base-model family the LoRA must be made for, e.g. Illustrious, NoobAI, Pony, SDXL, SD 1.5, Flux. Match the checkpoint in use (an Illustrious checkpoint -> Illustrious)."
+          },
           "q": {
             "type": "string",
             "description": "Optional case-insensitive substring filter (file name, model name, trigger word or training tag)"
@@ -30,7 +56,8 @@
       },
       "timeout": 180,
       "max_chars": 12000,
-      "result_note": "In an image prompt use prompt_tag (adjust the weight, e.g. :0.8) plus the civitai.trained_words; when there are none, use a few training.top_tags instead. Mention base_model / training.base_model_version so the user picks a LoRA that matches the checkpoint. 'total' is the number of LoRAs matching; if it exceeds 'count', say so and offer to narrow with q. 'examples' is the number of example images saved locally; civitai_model_examples gives the example prompts of one LoRA."
+      "result_note": "In an image prompt use prompt_tag (adjust the weight, e.g. :0.8) plus the trained_words; when there are none, use a few training_tags instead. Prefer LoRAs whose base matches the checkpoint and say so when you use one that does not. 'total' is the number of LoRAs matching all filters; if it exceeds 'count', say so and narrow with q. 'categories' counts the matches of q (and base) in every category, 'bases' the matches of q (and category) in every base: when 'total' is 0, read them before searching again — an empty 'categories' means no installed LoRA matches q at all, so do not repeat the same q with another category or without base; otherwise switch to a category that has matches. 'examples' is the number of example images saved locally; civitai_model_examples gives the example prompts of one LoRA.",
+      "postprocess": "lora_inventory"
     },
     {
       "name": "civitai_list_local_models",
@@ -362,6 +389,142 @@
       "timeout": 580,
       "max_chars": 4000,
       "result_note": "Report result.downloaded / existed / skipped_nsfw / failed (and models_with_failures = images civitai has deleted). If status is 'running' the download continues in the background; check later with civitai_task_status. The saved files are listed by civitai_model_examples as local_file."
+    },
+    {
+      "name": "civitai_add_user_examples",
+      "description": "Save images that civitai USERS posted as extra example images of ONE installed model, next to the model file as <model>.example_101.<ext>, <model>.example_102.<ext>, ... (numbers from 101 so they never clash with the civitai example list); their prompt, parameters, author and LoRAs are kept and shown by civitai_model_examples and written to the card by civitai_write_card_info. Two ways: image_ids = civitai image ids (e.g. picked from the civitai-api tool civitai_search_images), or username = take the images that user posted with THIS model (its own civitai version by default; all_versions for any version of the same model), up to max_images. Videos are skipped. NSFW images are included by default (username mode searches up to nsfw X); pass nsfw 'None' or skip_nsfw true only when the user wants SFW only.",
+      "method": "POST",
+      "path": "/add-user-examples",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)"
+          },
+          "name": {
+            "type": "string",
+            "description": "File name (e.g. foo.safetensors) or path relative to the model folder"
+          },
+          "image_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "civitai image ids to save (the image_id values from civitai_search_images)"
+          },
+          "username": {
+            "type": "string",
+            "description": "Instead of image_ids: civitai username whose images made with this model should be saved"
+          },
+          "model_version_id": {
+            "type": "integer",
+            "description": "Username mode: civitai version the images must use (default: the installed model's own version)"
+          },
+          "all_versions": {
+            "type": "boolean",
+            "description": "Username mode: accept any version of the same civitai model (default false; slower)"
+          },
+          "max_images": {
+            "type": "integer",
+            "description": "Username mode: how many images to save at most (default 10)"
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "Most Reactions",
+              "Most Comments",
+              "Most Collected",
+              "Newest",
+              "Oldest"
+            ],
+            "description": "Username mode: which images come first"
+          },
+          "nsfw": {
+            "type": "string",
+            "enum": [
+              "None",
+              "Soft",
+              "Mature",
+              "X"
+            ],
+            "description": "Username mode: highest NSFW level to include (default X = everything; None = SFW only)"
+          },
+          "skip_nsfw": {
+            "type": "boolean",
+            "description": "Skip NSFW images (default false)"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Re-download images that were already saved (default false)"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ]
+      },
+      "defaults": {
+        "wait": true,
+        "timeout": 540
+      },
+      "timeout": 580,
+      "max_chars": 4000,
+      "result_note": "Report result.added / existed / in_civitai_list / skipped_nsfw / skipped_video / failed / not_found and the example numbers (result.images[].index). Saved images appear in civitai_model_examples as #101 and up (source 'user'); offer to show them or to write the prompts to the card (civitai_write_card_info with overwrite true to refresh the notes). If status is 'running', check later with civitai_task_status."
+    },
+    {
+      "name": "civitai_remove_user_examples",
+      "description": "Delete example images that were added from civitai users (numbers 101 and up) from ONE installed model: by civitai image id, by example number, or all of them. Does not touch the civitai example list (#1-#100).",
+      "method": "POST",
+      "path": "/remove-user-examples",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)"
+          },
+          "name": {
+            "type": "string",
+            "description": "File name (e.g. foo.safetensors) or path relative to the model folder"
+          },
+          "image_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "civitai image ids to remove"
+          },
+          "indexes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Example numbers to remove (101 and up)"
+          },
+          "all": {
+            "type": "boolean",
+            "description": "Remove every user-added example of this model"
+          }
+        },
+        "required": [
+          "type",
+          "name"
+        ]
+      },
+      "max_chars": 2000
     },
     {
       "name": "civitai_write_card_info",

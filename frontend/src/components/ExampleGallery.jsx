@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { Copy, Check, EyeOff, HardDrive, Globe, ChevronDown, ChevronUp } from "lucide-react";
 import { useT } from "../i18n";
+import { copyText } from "../lib/clipboard";
 
 /**
  * 技能工具回傳的範例圖庫（Civitai Helper：本地存好的範例圖優先、其次 civitai 縮圖）。
  * 每張：縮圖（點開原圖）、提示詞（可展開 / 複製）、負面提示詞與生成參數。NSFW 預設直接顯示（可切換隱藏）。
  */
-export default function ExampleGallery({ gallery }) {
+// actions：額外放在標題列的按鈕（例如 LoRA 詳情的「下載所有範例圖」）
+export default function ExampleGallery({ gallery, actions = null }) {
   const t = useT();
   const [showNsfw, setShowNsfw] = useState(true); // 預設直接顯示 NSFW（不模糊），按鈕可切換隱藏
   const [open, setOpen] = useState(null); // 展開提示詞的 index
@@ -15,13 +17,9 @@ export default function ExampleGallery({ gallery }) {
   if (!items.length) return null;
 
   const copy = async (key, text) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(key);
-      setTimeout(() => setCopied(null), 1500);
-    } catch {
-      /* 剪貼簿不可用 */
-    }
+    if (!(await copyText(text))) return;
+    setCopied(key);
+    setTimeout(() => setCopied(null), 1500);
   };
   const params = (p) =>
     Object.entries(p || {})
@@ -34,6 +32,7 @@ export default function ExampleGallery({ gallery }) {
         <span className="font-medium text-gray-200">{gallery.title}</span>
         <span>{t("galleryCount", { count: items.length })}</span>
         <div className="flex-1" />
+        {actions}
         {items.some((it) => it.nsfw) && (
           <button
             onClick={() => setShowNsfw((v) => !v)}

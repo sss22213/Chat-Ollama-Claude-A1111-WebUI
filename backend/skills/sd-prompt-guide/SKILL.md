@@ -1,9 +1,9 @@
 ---
-name: SD Prompt Guide
-description: "How to write prompts for this app's local Stable Diffusion (A1111 / Forge, SDXL / Pony / Illustrious anime checkpoints): danbooru tag format and ordering, tag weights, negative prompt, and how to use LoRA — put <lora:filename:weight> (weight 0.6–1) together with the LoRA's trigger words in the prompt. Use whenever the user wants an image generated, asks to use / apply / add a LoRA, mentions trigger words, asks why a LoRA did not take effect, or asks how to write or improve a prompt."
+name: SD Prompt Guide (Illustrious)
+description: "How to write prompts for this app's local Stable Diffusion (A1111 / Forge) with an Illustrious-based anime checkpoint (WAI-illustrious, Illustrious / NoobAI): danbooru tag format and ordering, tag weights, negative prompt, and how to use LoRA — put <lora:filename:weight> (weight 0.6–1) together with the LoRA's trigger words in the prompt. Use whenever the user wants an image generated, asks to use / apply / add a LoRA, mentions trigger words, asks why a LoRA did not take effect, or asks how to write or improve a prompt."
 ---
 
-# SD Prompt Guide
+# SD Prompt Guide (Illustrious)
 
 Every image in this app is rendered by a LOCAL Stable Diffusion WebUI (A1111 / Forge) with SDXL-family anime checkpoints (Illustrious / NoobAI / Pony / WAI). The image tool takes a `prompt` (and optional `negative_prompt`, `width`, `height`); the app controls steps, sampler, CFG and seed. This skill tells you what to put in `prompt`.
 
@@ -55,9 +55,10 @@ Example, user has `jp_school_uniform` with trigger words `school uniform, jp_sch
 ## Finding LoRAs
 
 - If the user pasted a `<lora:...>` tag or trigger words, use them as-is.
-- If the **Civitai Helper** skill is active, call `civitai_lora_inventory` (with `q` to search) — it returns the exact `prompt_tag`, trigger words and base model of every installed LoRA. Use `civitai_model_examples` for an example prompt from Civitai.
-- Pick by base model. The checkpoint is Illustrious-based (WAI-illustrious-SDXL), so prefer LoRAs whose `civitai.base_model` is **Illustrious** or **NoobAI**. A **Pony** LoRA works poorly on it, and an **SD 1.5** LoRA does nothing. If a LoRA has no civitai record, check `training.base_model_version`: SD 1.5 there means it will not work; plain SDXL usually does not tell Illustrious from Pony, so treat it as uncertain. If the only match is a Pony or uncertain LoRA, say so when you use it.
-- Do not keep re-searching: call `civitai_lora_inventory` **at most twice** per request (one specific `q`, then at most one broader `q`; never page through the whole list hoping to spot one). If those find no suitable LoRA, stop searching: ask the user which LoRA to use, or generate without a LoRA and say that none was found.
+- If the **Civitai Helper** skill is active, call `civitai_lora_inventory` — it returns the exact `prompt_tag`, trigger words, `base` (base-model family) and `category` of every installed LoRA. Search by category first: pass the `category` of what the LoRA must add (`character`, `clothing`, `poses`, `action`, `style`, `concept`, `background`, …; see the Civitai Helper skill), `base` for the checkpoint, and a short `q` for the subject. Use `civitai_model_examples` for an example prompt from Civitai.
+- Pick by base model. The checkpoint is Illustrious-based (WAI-illustrious-SDXL), so pass `base: "Illustrious"` and prefer LoRAs whose `base` is **Illustrious** or **NoobAI** (NoobAI is Illustrious-based; search it with `base: "NoobAI"` when Illustrious has nothing). A **Pony** LoRA works poorly on it, and an **SD 1.5** LoRA does nothing. Plain **SDXL** or `unknown` does not tell Illustrious from Pony, so treat it as uncertain. If the only match is a Pony or uncertain LoRA, say so when you use it.
+- A `character` LoRA draws that one character: use it only when the user asks for that character, never as a stand-in for a generic subject ("a knight", "a maid"). If no LoRA really fits, generate without one.
+- Do not keep re-searching: call `civitai_lora_inventory` **at most twice for each thing a LoRA should add** (e.g. the art style and the outfit → at most two calls each): one call with `category` + `base` + a specific `q`, then at most one broader call. Before the second call read the counts in the answer: an empty `categories` means no installed LoRA matches that `q` in any category, so do not retry it with another category or without `base`; try a different word, or give up on that one. Never page through the whole list hoping to spot one. If those find no suitable LoRA, stop searching: ask the user which LoRA to use, or generate without a LoRA and say that none was found.
 - If the **civitai-api** skill is active, you can search civitai.com for candidates, but a LoRA must be installed in the WebUI before its tag works; offer to download it with Civitai Helper.
 - Otherwise ask the user for the file name and trigger words (they can copy both from the app's LoRA browser, the **LoRA** button with the layers icon next to the chat input). Do not invent a LoRA.
 

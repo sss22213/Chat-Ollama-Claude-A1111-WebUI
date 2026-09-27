@@ -612,6 +612,10 @@ async def _postprocess(name: str, stdout: str) -> tuple[str, list[dict[str, Any]
         import civitai_cards
 
         return await civitai_cards.process(stdout)
+    if name == "civitai_images":
+        import civitai_images
+
+        return await civitai_images.process(stdout)
     return stdout, []
 
 
@@ -629,6 +633,10 @@ async def _postprocess_http(name: str, tool: dict[str, Any], base: str, data: An
         import civitai_examples
 
         return await civitai_examples.process(tool, base, data)
+    if name == "lora_inventory":
+        import loras
+
+        return await loras.llm_inventory(data if isinstance(data, dict) else {}, tool.get("_page") or {}), []
     if name == "a1111_memory":
         import a1111_memory
 
@@ -730,6 +738,11 @@ async def call_full(
     args = _coerce(raw_in, tool["parameters"])
     # defaults（如 wait/timeout）先鋪底，模型明確給的值優先
     args = {**(tool.get("defaults") or {}), **args}
+    if tool.get("postprocess") == "lora_inventory":
+        # 分類 / 底模篩選在後端做（loras.llm_inventory）：向 Civitai Helper 取符合 q 的全部，分頁留到後處理
+        page = {k: args.pop(k, None) for k in ("category", "base", "limit", "offset")}
+        tool = {**tool, "_page": {**page, "q": args.get("q")}}
+        args.update(limit=5000, offset=0)
     path = tool["path"]
     for m in re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", path):
         if m in args:

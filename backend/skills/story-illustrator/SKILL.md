@@ -22,7 +22,7 @@ The picture line must be something a single still image can show. Turn non-visua
 
 - Number of scenes: what the user asks for; otherwise 4–6.
 - The scenes must form a complete arc — setup, development, turning point, ending — so the last image closes the story.
-- Pick LoRAs once, here (e.g. with Civitai Helper's `civitai_lora_inventory` when it is available and fits) — not again for every scene. For a character LoRA use weight 0.7–0.8 unless the user gave one: at 1 it tends to force its own training poses and override the scene's action.
+- Pick LoRAs once, here (e.g. with Civitai Helper's `civitai_lora_inventory` when it is available and fits: `category: "character"` for a named character of the cast, `clothing` for a signature outfit, `style` for the style line, with `base` for the checkpoint) — not again for every scene. For a character LoRA use weight 0.7–0.8 unless the user gave one: at 1 it tends to force its own training poses and override the scene's action.
 
 Then continue straight to step 2 in the same reply. Only stop after the outline if the user asked to review it first.
 
@@ -49,7 +49,7 @@ The prompt turns the scene's picture line into comma-separated English danbooru 
 5. **Setting**, with its state: place, time of day, weather, lighting, and condition words the story relies on (`abandoned`, `broken`, `snow`, `messy room`).
 6. **Shot / camera** that can show the action: `close-up` only when the picture is purely a face reaction; when hands, props, furniture or other people matter use `upper body`, `cowboy shot` or `full body`; `wide shot` to establish a place (it makes characters small). Add an angle when it helps (`from side`, `from above`).
 7. **Outfit** line of each visible main character.
-8. **Quality tags** at the end (follow SD Prompt Guide when it is active).
+8. **Quality tags** at the end (follow the active SD Prompt Guide: with SD Prompt Guide (Anima) the quality and safety tags go first instead, and a short English sentence may follow the tags).
 
 Before each image call, check the prompt against the narration you just wrote: every visible element of that moment — each person, the action, the key object, the place, the time of day — must be in the tags, and nothing may contradict it (no `solo` when a teacher is in the scene, no `close-up` when the desk matters).
 

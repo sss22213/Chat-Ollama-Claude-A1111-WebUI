@@ -1,6 +1,6 @@
 ---
 name: civitai-api
-description: Query the Civitai public REST API to search models, inspect creators, fetch model or version details, reverse-lookup models by hash, list images or tags, and build authenticated download URLs. Use when working with Civitai programmatically, browsing Civitai assets from the terminal, checking model metadata, finding download links, or building automations against https://civitai.com and the developer portal.
+description: Query the Civitai public REST API to search models, inspect creators, fetch model or version details, reverse-lookup models by hash, search the images people posted (by user, by LoRA / model, or both) with their prompts, list tags, and build authenticated download URLs. Use when working with Civitai programmatically, browsing Civitai assets from the terminal, checking model metadata, finding download links, or building automations against https://civitai.com and the developer portal.
 ---
 
 # Civitai API
@@ -28,6 +28,17 @@ python .\skills\civitai-api\scripts\civitai.py images --model-id 12345 --limit 1
 python .\skills\civitai-api\scripts\civitai.py download-url 67890
 ```
 
+## Image search (in this app: the `civitai_search_images` tool)
+
+Use `civitai_search_images` whenever the user wants to *see images* rather than models. The results are shown to the user as a gallery with prompts; you get a numbered summary where every image has an `image_id`.
+
+- **"What did user X make with LoRA Y?"** → `username` + `model`. `model` is a civitai model id or page URL; a URL with `?modelVersionId=` narrows to that version, or pass `model_version_id`. If Y is a LoRA installed locally, first get its civitai ids from the Civitai Helper skill (`civitai_local_model_info` → `civitai.model_id` / `version_id`), or find the model with `civitai_search_models`.
+- **"Show me user X's images" / "everything X posted"** → `username` only.
+- **Community images of a model** → `model` only.
+- Order with `sort` (`Most Reactions`, `Newest`, ...), narrow with `period`, page with the returned `cursor`. NSFW images are included by default (`nsfw: "X"`); pass `nsfw: "None"` only when the user asks for SFW / safe images. Videos are left out of the gallery.
+- **"Save these as example images of my LoRA"** → the Civitai Helper tool `civitai_add_user_examples` with `type`, the local file `name` and `image_ids` (the ids from this search). To take everything user X made with an installed LoRA without picking, call `civitai_add_user_examples` with `username` instead (it uses that LoRA's own civitai version). Both need the Civitai Helper skill to be active.
+- Refer to images by their #number; never paste image URLs or markdown.
+
 ## Workflow
 
 ### 1. Find the thing
@@ -38,7 +49,7 @@ When the user has a vague name or concept, start with:
 python .\skills\civitai-api\scripts\civitai.py models --query "search text" --limit 10
 ```
 
-Useful optional filters include `--types`, `--tag`, `--username`, `--sort`, `--period`, `--cursor`, and `--nsfw true|false`.
+Useful optional filters include `--types`, `--base-model` (e.g. `Illustrious`, `Pony`, `"SD 1.5"`; repeatable), `--tag`, `--username`, `--sort`, `--period`, `--cursor`, and `--nsfw true|false`.
 
 ### 2. Expand the record
 

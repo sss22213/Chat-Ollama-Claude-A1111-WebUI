@@ -29,6 +29,7 @@ import { useT } from "../i18n";
 import { navigate } from "../Root";
 import { readAsDataUrl, imageFilesFrom } from "../lib/image";
 import SettingsModal from "../components/SettingsModal";
+import { copyText } from "../lib/clipboard";
 
 const inputCls =
   "w-full rounded-md border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500";
@@ -36,13 +37,9 @@ const inputCls =
 function CopyBtn({ text, st }) {
   const [done, setDone] = useState(false);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setDone(true);
-      setTimeout(() => setDone(false), 1500);
-    } catch {
-      /* 忽略 */
-    }
+    if (!(await copyText(text))) return;
+    setDone(true);
+    setTimeout(() => setDone(false), 1500);
   };
   return (
     <button

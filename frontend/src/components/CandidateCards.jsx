@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Download, ExternalLink, Copy, Check, EyeOff } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
+import { copyText } from "../lib/clipboard";
 
 /**
  * 技能工具回傳的候選清單卡片（目前：civitai 搜尋結果 kind="civitai_models"）。
@@ -25,13 +26,9 @@ export default function CandidateCards({ group }) {
     const text = [c.file ? `<lora:${c.file.replace(/\.[^.]+$/, "")}:0.8>` : "", ...(c.trained_words || [])]
       .filter(Boolean)
       .join(", ");
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(c.id);
-      setTimeout(() => setCopied(null), 1500);
-    } catch {
-      /* 剪貼簿不可用 */
-    }
+    if (!(await copyText(text))) return;
+    setCopied(c.id);
+    setTimeout(() => setCopied(null), 1500);
   };
   const fmt = (n) => (n == null ? "" : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
