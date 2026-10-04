@@ -580,6 +580,42 @@
       "result_note": "Report result.written / unchanged / no_info / bad_json. Tell the user to click Refresh in the WebUI's Extra Networks (LoRA) tab to see the new descriptions; cards show 3 lines and expand on hover, the full example prompts are in the card's edit (pencil) dialog under Notes."
     },
     {
+      "name": "civitai_rename_model",
+      "description": "Rename ONE installed model (LoRA, checkpoint, embedding or hypernetwork) together with every file that belongs to it — civitai info, previews, card metadata (.json), example images — inside its own folder; it can also change the model file's extension (.safetensors / .ckpt / .pt / .bin). Changing the extension only renames the file, it does NOT convert it. Nothing is renamed when a target file already exists or another model of the same type already has the new name, and a failure half way is rolled back. Only call it when the user explicitly asks to rename a model or change its extension. The WebUI sees the new name only after its list is refreshed (refresh_loras / refresh_checkpoints / refresh_embeddings), and prompts that used the old <lora:old_name:...> tag must then use the new one.",
+      "method": "POST",
+      "path": "/rename-model",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type: lora | ckp (checkpoint) | ti (embedding) | hyper (hypernetwork)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Current file name (e.g. foo.safetensors) or, better, the path relative to the model folder (e.g. characters/foo.safetensors): a bare file name may match a model in another subfolder"
+          },
+          "new_name": {
+            "type": "string",
+            "description": "New file name. Without an extension (e.g. 'my_style_v2') the current extension is kept — use this form for every normal rename. Add .safetensors / .ckpt / .pt / .bin (e.g. 'my_style_v2.ckpt', or the same name with only another extension) only when the user explicitly asks to change the extension. The model stays in its folder. Not allowed: / \\ : * ? \" < > |, a leading or trailing space or dot, or a name ending in '.vae'"
+          }
+        },
+        "required": [
+          "type",
+          "name",
+          "new_name"
+        ]
+      },
+      "max_chars": 3000,
+      "result_note": "On success: tell the user old_name -> new_name and the new prompt_tag, then call the refresh tool named in 'refresh' (refresh_loras for a LoRA, refresh_checkpoints for a checkpoint, refresh_embeddings for an embedding; a hypernetwork has none — tell the user to refresh the Extra Networks tab). Relay every entry of 'warnings' in one sentence each. A warning that the file content does not match the new extension (it was not converted, so the WebUI cannot load it) or that the WebUI does not list that extension is serious: say so clearly and offer to rename it back to the old extension — do not do it without asking. Other warnings: old <lora:...> tags in saved prompts must be changed; a LoRA alias stored in the file may still be what its card inserts. HTTP 409 means a file or another model already has that name and HTTP 400 means the name is not allowed: report it and ask the user for another name — never pick a different name yourself. HTTP 404: the model was not found; look it up with civitai_lora_inventory or civitai_list_local_models and use its exact file name / relative path."
+    },
+    {
       "name": "civitai_task_status",
       "description": "Poll a background Civitai Helper task (download / scan / check-new-version / fetch-previews / download-examples / write-card-info) by its id. Waits up to 60 s for it to finish before returning.",
       "method": "GET",
@@ -620,6 +656,18 @@
       "method": "POST",
       "base_url": "{a1111_url}",
       "path": "/sdapi/v1/refresh-checkpoints",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      },
+      "max_chars": 300
+    },
+    {
+      "name": "refresh_embeddings",
+      "description": "Make the WebUI re-scan its embeddings (textual inversion) folder. Call it after renaming an embedding.",
+      "method": "POST",
+      "base_url": "{a1111_url}",
+      "path": "/sdapi/v1/refresh-embeddings",
       "parameters": {
         "type": "object",
         "properties": {}

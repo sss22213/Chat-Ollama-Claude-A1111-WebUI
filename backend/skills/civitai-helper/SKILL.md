@@ -1,6 +1,6 @@
 ---
 name: Civitai Helper
-description: "Manage the local Stable Diffusion model library through the Civitai Helper extension API: list installed LoRAs / checkpoints / embeddings with their trigger words, look up a civitai model by URL or id, download a model version into the WebUI, scan for missing civitai info and preview images, check which installed models have newer versions, show a model's civitai example images and example prompts, save those examples locally, save images that civitai users posted (by image id, or everything a user made with the model) as extra examples, restore missing card previews, and write trigger words + example prompts onto the WebUI cards. Use when the user mentions civitai, pastes a civitai link, asks to download or install a LoRA / model, asks for trigger words, example prompts or sample images, wants a user's civitai images saved as examples, asks how to use a LoRA, or asks what models are installed."
+description: "Manage the local Stable Diffusion model library through the Civitai Helper extension API: list installed LoRAs / checkpoints / embeddings with their trigger words, look up a civitai model by URL or id, download a model version into the WebUI, scan for missing civitai info and preview images, check which installed models have newer versions, show a model's civitai example images and example prompts, save those examples locally, save images that civitai users posted (by image id, or everything a user made with the model) as extra examples, restore missing card previews, write trigger words + example prompts onto the WebUI cards, and rename an installed model together with all its files. Use when the user mentions civitai, pastes a civitai link, asks to download or install a LoRA / model, asks for trigger words, example prompts or sample images, wants a user's civitai images saved as examples, asks how to use a LoRA, asks to rename a LoRA / model, or asks what models are installed."
 ---
 
 # Civitai Helper
@@ -24,8 +24,9 @@ Model types used by every tool: `lora` (LoRA), `ckp` (checkpoint), `ti` (textual
 - `civitai_add_user_examples` — save images that civitai users posted as extra examples of ONE model (`<model>.example_101.<ext>` and up), with their prompt, parameters, author and LoRAs: by `image_ids` (from the civitai-api tool `civitai_search_images`) or by `username` (that user's images made with this model).
 - `civitai_remove_user_examples` — delete such user-added examples again (by image id, number, or all).
 - `civitai_write_card_info` — put trigger words + example prompts on the WebUI cards (`<model>.json`: description / notes / sd version).
+- `civitai_rename_model` — rename ONE installed model together with its info, previews, card metadata and example images, inside its own folder; can also change the model file's extension (renaming only, no conversion).
 - `civitai_task_status` — poll a long-running download / scan / check / previews / examples / card-info task by task id.
-- `refresh_loras` / `refresh_checkpoints` — make the WebUI see newly downloaded files.
+- `refresh_loras` / `refresh_checkpoints` / `refresh_embeddings` — make the WebUI see newly downloaded or renamed files.
 
 ## Workflows
 
@@ -63,6 +64,12 @@ Model types used by every tool: `lora` (LoRA), `ckp` (checkpoint), `ti` (textual
 
 **"Put the example prompts on the cards" / "add descriptions to my LoRAs"** → `civitai_write_card_info` (`model_types`, or `type` + `name`). Default keeps hand-written descriptions and only fills empty fields; use `overwrite: true` only when the user says to replace them. Then tell the user to click Refresh in the Extra Networks tab (card shows 3 lines, hover to expand; the full example prompts are under Notes in the card's edit dialog).
 
+**"Rename this LoRA / model" / "change the file name of X" / "change the extension to .ckpt"** →
+1. Find the model's exact current file: for a LoRA `civitai_lora_inventory` with a `q` from the name the user gave (other types: `civitai_list_local_models`). Use its path relative to the model folder as `name` — `subfolder/file.safetensors` when the item has a `subfolder`, otherwise the file name. If several models match, ask which one.
+2. The new name is the user's: take it as given. If the user did not give one, ask — never invent it. Names cannot contain `/ \ : * ? " < > |` (`:` would break `<lora:name:weight>`). Pass it **without an extension** so the current one is kept — that is the normal rename. Only when the user explicitly asks to change the extension, pass the name with the new one (`.safetensors`, `.ckpt`, `.pt` or `.bin`; for an extension change alone, the current name plus the new extension). Changing the extension does **not convert** the file: a safetensors file renamed to `.ckpt` (or a pickle `.ckpt` renamed to `.safetensors`) can no longer be loaded. When the user asks for this, say so in one sentence and go ahead — they already asked, so do not ask for confirmation.
+3. `civitai_rename_model` with `type`, `name`, `new_name`.
+4. On success call the refresh tool from the result's `refresh` (`refresh_loras` for a LoRA), then tell the user old → new name, the new `prompt_tag`, and each warning in one sentence (saved prompts / styles with the old `<lora:old_name:...>` tag must be changed; a LoRA whose file stores an alias may still be inserted by its alias). If a warning says the content does not match the new extension or the WebUI does not list that extension, tell the user plainly that the model will not load like this and offer to rename it back (only on their go-ahead). On HTTP 409 / 400, say why and ask for another name.
+
 **"Cards have no picture" / "previews missing"** → `civitai_fetch_previews` (`model_types`, or `type` + `name`), then `refresh_loras` / `refresh_checkpoints`. Models in `failed_models` have example images that civitai deleted; they cannot be fixed automatically. If a model has no civitai info at all (`no_info`), run `civitai_scan_models` first.
 
 **"Fill in missing info / previews" or "I copied some models manually"** → `civitai_scan_models` with the types (needs civitai lookups by hash). Report the counts. If previews are still missing afterwards, `civitai_fetch_previews`.
@@ -78,5 +85,6 @@ Model types used by every tool: `lora` (LoRA), `ckp` (checkpoint), `ti` (textual
 - `civitai_download_examples` on many models is slow and fills the disk: confirm and use `max_images` for batch runs. Single-model calls need no confirmation once the user asked for the samples.
 - `civitai_add_user_examples` downloads files: only call it when the user asked to save / keep / download the images. With `username`, keep `max_images` modest (default 10) unless the user wants more.
 - `civitai_write_card_info` writes files the WebUI reads; never pass `overwrite: true` unless the user explicitly wants existing descriptions replaced.
+- `civitai_rename_model` renames files on disk: only call it when the user asked to rename that model, with the new name the user chose, and one model per call. Never rename to "fix" a name on your own, and never change the extension unless the user asked for it.
 - If a tool reports it cannot reach the API, tell the user the WebUI must be running with the Civitai Helper extension (its API lives at `/civitai-helper/v1` on the WebUI) and stop.
 - When the user then wants an image with the new LoRA, generate it with the app's image capability using the LoRA tag + trigger words in the prompt.

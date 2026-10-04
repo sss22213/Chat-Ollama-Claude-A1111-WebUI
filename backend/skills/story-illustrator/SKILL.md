@@ -49,7 +49,9 @@ The prompt turns the scene's picture line into comma-separated English danbooru 
 5. **Setting**, with its state: place, time of day, weather, lighting, and condition words the story relies on (`abandoned`, `broken`, `snow`, `messy room`).
 6. **Shot / camera** that can show the action: `close-up` only when the picture is purely a face reaction; when hands, props, furniture or other people matter use `upper body`, `cowboy shot` or `full body`; `wide shot` to establish a place (it makes characters small). Add an angle when it helps (`from side`, `from above`).
 7. **Outfit** line of each visible main character.
-8. **Quality tags** at the end (follow the active SD Prompt Guide: with SD Prompt Guide (Anima) the quality and safety tags go first instead, and a short English sentence may follow the tags).
+8. **Quality tags** at the end (follow the active SD Prompt Guide).
+
+With **SD Prompt Guide (Anima)** active, write each scene's prompt in that guide's structure instead: the head (quality prefix, LoRA trigger word, safety tag), then 2–5 English sentences that describe the picture line — every visible character by name with their Core look and Outfit, what they do, the place, the light and the framing — then the tag list built from steps 1–7 above, and the LoRA tag at the end.
 
 Before each image call, check the prompt against the narration you just wrote: every visible element of that moment — each person, the action, the key object, the place, the time of day — must be in the tags, and nothing may contradict it (no `solo` when a teacher is in the scene, no `close-up` when the desk matters).
 
