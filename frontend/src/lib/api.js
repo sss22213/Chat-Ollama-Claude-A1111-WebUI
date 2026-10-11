@@ -25,7 +25,7 @@ export async function fetchEngines() {
     const r = await fetch("/api/engines");
     return await r.json();
   } catch {
-    return { ollama: true, claude_cli: false, codex: false };
+    return { ollama: true, claude_cli: false, codex: false, strata: false };
   }
 }
 
@@ -82,7 +82,7 @@ export async function makeDir(path, name) {
   return r.json();
 }
 
-// ---- 服務來源（Ollama / A1111）----
+// ---- 服務來源（Ollama / A1111 / Strata）----
 export async function fetchSources() {
   const r = await fetch("/api/sources");
   if (!r.ok) throw new Error("無法取得來源設定");

@@ -14,6 +14,9 @@ except ImportError:  # 未安裝 python-dotenv 時照常運作（docker 由 comp
 # 服務位址（docker 已對外發佈到主機）
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 A1111_URL = os.getenv("A1111_URL", "http://localhost:7860").rstrip("/")
+# Strata（本機 LLM 伺服器，OpenAI 相容 API）；API key 在設定頁填，STRATA_API_KEY 只當初始值
+STRATA_URL = os.getenv("STRATA_URL", "http://localhost:8081").rstrip("/")
+STRATA_API_KEY = os.getenv("STRATA_API_KEY", "").strip()
 
 # 圖片落地目錄
 DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).parent / "data"))

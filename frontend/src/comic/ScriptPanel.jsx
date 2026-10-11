@@ -189,7 +189,7 @@ export default function ScriptPanel() {
         </div>
       </div>
 
-      {engine === "ollama" && (
+      {(engine === "ollama" || engine === "strata") && (
               <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-ink-700 bg-ink-850 px-2 py-1.5">
                 <input
                   type="checkbox"

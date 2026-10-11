@@ -82,13 +82,13 @@ const uid = () =>
   Math.random().toString(36).slice(2);
 
 // 推理強度（effort）各引擎獨立記憶；相容舊版（字串）→ 自動轉成各引擎共用該值
-const EFFORT_DEFAULT = { claude_cli: "medium", codex: "medium", ollama: "medium" };
+const EFFORT_DEFAULT = { claude_cli: "medium", codex: "medium", ollama: "medium", strata: "medium" };
 export function normEffort(e) {
   if (e && typeof e === "object") return { ...EFFORT_DEFAULT, ...e };
   const v = typeof e === "string" && e ? e : "medium";
-  return { claude_cli: v, codex: v, ollama: v };
+  return { ...EFFORT_DEFAULT, claude_cli: v, codex: v, ollama: v };
 }
-// 引擎 → effort 的鍵（codex/claude_cli 用引擎名；ollama 共用一個，僅 gpt-oss 會用到）
+// 引擎 → effort 的鍵（codex/claude_cli/strata 用引擎名；ollama 共用一個，僅 gpt-oss 會用到）
 export const effortKeyFor = (engine) => (engine === "ollama" ? "ollama" : engine);
 
 // 把一張圖的參數整理成 A1111 風格 geninfo 文字（info 缺時的後備）
@@ -223,7 +223,7 @@ export const useChat = create(
       models: [],
       sdModels: [],
       samplers: [],
-      engines: { ollama: true, claude_cli: false, codex: false },
+      engines: { ollama: true, claude_cli: false, codex: false, strata: false },
       features: { promptHistory: false }, // 後端可用的選用功能（依掛載/設定而定）
       skills: [], // 後端掃到的技能清單 [{slug,name,description,...}]
       health: { ollama: true, a1111: true },
@@ -288,8 +288,9 @@ export const useChat = create(
           ollama: true,
           claude_cli: false,
           codex: false,
+          strata: false,
         }));
-        // 持久化的引擎若已不可用（例如 claude/codex 未掛載）→ 退回 ollama
+        // 持久化的引擎若已不可用（例如 claude/codex 未掛載、Strata 沒開）→ 退回 ollama
         let engine = get().settings.engine || "ollama";
         if (engine !== "ollama" && !engines[engine]) engine = "ollama";
         if (engine !== get().settings.engine) {
@@ -509,7 +510,7 @@ export const useChat = create(
         }
       },
 
-      // 切換 AI 引擎（ollama / claude_cli）：重抓該引擎的模型清單並選預設
+      // 切換 AI 引擎（ollama / claude_cli / codex / strata）：重抓該引擎的模型清單並選預設
       async setEngine(engine) {
         if (engine === get().settings.engine) return;
         set((st) => ({
@@ -716,7 +717,7 @@ export const useChat = create(
         // （例如設定殘留 5.6 才有的 ultra、卻換回 5.5 → 退回 medium，避免 CLI 報錯；
         // Haiku 4.5 宣告空清單＝不支援，後端不會送 --effort）
         let effort = normEffort(settings.effort)[effortKeyFor(settings.engine)];
-        if (settings.engine === "codex" || settings.engine === "claude_cli") {
+        if (["codex", "claude_cli", "strata"].includes(settings.engine)) {
           const supported = get().models.find((m) => m.name === model)?.efforts;
           if (supported?.length && !supported.includes(effort)) {
             effort = supported.includes("medium") ? "medium" : supported[0];
@@ -1006,7 +1007,7 @@ export const useChat = create(
             payload,
             get().settings.numCtx,
             get().settings.engine,
-            get().settings.engine === "ollama" ? !!get().settings.think : undefined
+            ["ollama", "strata"].includes(get().settings.engine) ? !!get().settings.think : undefined
           );
           if (!summary) return;
           const keep = convo.messages.slice(-2); // 保留最後一組往返

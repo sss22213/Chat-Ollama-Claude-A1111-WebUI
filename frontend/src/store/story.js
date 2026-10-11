@@ -88,7 +88,7 @@ export const useStory = create(
             length,
             panel_count: panelCount,
             num_ctx: numCtx,
-            think: engine === "ollama" ? think : undefined,
+            think: engine === "ollama" || engine === "strata" ? think : undefined,
           });
           set({ result: data, notices: Array.isArray(data.notices) ? data.notices : [] });
         } catch (e) {

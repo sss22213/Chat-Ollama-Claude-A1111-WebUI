@@ -17,6 +17,7 @@ from typing import Any
 import claude_client
 import codex_client
 import ollama_client
+import strata_client
 from expression_tags import EXPRESSION_TAGS, clean_expression, split_scene
 
 log = logging.getLogger(__name__)
@@ -235,6 +236,8 @@ async def ask(
         return await claude_client.chat_once(model, [msg], system)
     if engine == "codex":
         return await codex_client.chat_once(model, [msg], system)
+    if engine == "strata":
+        return await strata_client.chat_once(model, [msg], system, think=think)
     messages = [{"role": "system", "content": system}, msg]
     return await ollama_client.chat_once(model, messages, num_ctx, think=think)
 

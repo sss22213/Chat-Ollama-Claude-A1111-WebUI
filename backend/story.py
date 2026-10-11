@@ -162,7 +162,7 @@ async def _describe_panels(
     engine: str, model: str, imgs: list[str], num_ctx: int | None, think: bool | None
 ) -> list[str]:
     """逐張描述。ollama 一次一張（伺服器本來就排隊）；CLI 引擎最多 3 張並行。"""
-    sem = asyncio.Semaphore(1 if engine == "ollama" else 3)
+    sem = asyncio.Semaphore(1 if engine in ("ollama", "strata") else 3)  # 本機伺服器一次跑一個
 
     async def one(i: int, b64: str) -> str:
         async with sem:

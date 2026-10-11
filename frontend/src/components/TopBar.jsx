@@ -102,6 +102,9 @@ export default function TopBar({
         <option value="codex" disabled={!engines.codex}>
           {engines.codex ? "Codex CLI" : `Codex CLI · ${t("engineUnavailable")}`}
         </option>
+        <option value="strata" disabled={!engines.strata}>
+          {engines.strata ? "Strata" : `Strata · ${t("engineUnavailable")}`}
+        </option>
       </select>
 
       {/* 模型選擇 */}

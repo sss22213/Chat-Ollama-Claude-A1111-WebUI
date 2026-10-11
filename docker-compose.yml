@@ -15,6 +15,8 @@ services:
       A1111_URL: ${A1111_URL:-http://host.docker.internal:7860}
       # stable-diffusion.cpp 伺服器（圖片編輯技能 sdcpp-image-edit 用；沒有就不影響其他功能）
       SDCPP_URL: ${SDCPP_URL:-http://host.docker.internal:7861}
+      # Strata（本機 LLM 伺服器，OpenAI 相容 API）；API key 在網頁的 設定 → 服務來源 填
+      STRATA_URL: ${STRATA_URL:-http://host.docker.internal:8081}
       DATA_DIR: /data
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-600}
       # Claude CLI 引擎（與 ollama 二選一）。binary 已裝在映像內；

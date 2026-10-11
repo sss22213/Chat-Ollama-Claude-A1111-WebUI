@@ -23,6 +23,8 @@ import WebPanel from "./WebPanel";
 const EFFORT_ENGINES = [
   { key: "claude_cli", label: "Claude", options: ["low", "medium", "high", "xhigh", "max"] },
   { key: "codex", label: "Codex", options: ["low", "medium", "high", "xhigh"] },
+  // Strata：reasoning_effort；none＝不思考直接回答（「顯示思考」關掉時也會送 none）
+  { key: "strata", label: "Strata", options: ["none", "low", "medium", "high"] },
   { key: "ollama", label: "Ollama · gpt-oss", options: ["low", "medium", "high"] },
 ];
 
@@ -42,10 +44,9 @@ export default function SettingsModal({ onClose }) {
   const setEffortFor = (key, v) =>
     setSettings({ effort: { ...normEffort(settings.effort), [key]: v } });
   // codex / claude：所選模型宣告的推理強度（models 只載目前引擎的清單，故只有目前引擎可得）
-  const modelEfforts =
-    settings.engine === "codex" || settings.engine === "claude_cli"
-      ? models.find((m) => m.name === settings.chatModel)?.efforts
-      : null;
+  const modelEfforts = ["codex", "claude_cli", "strata"].includes(settings.engine)
+    ? models.find((m) => m.name === settings.chatModel)?.efforts
+    : null;
   const effortOptionsFor = (key, fallback) =>
     key === settings.engine && modelEfforts ? modelEfforts : fallback;
 

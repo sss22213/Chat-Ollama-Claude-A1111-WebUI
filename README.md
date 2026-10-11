@@ -5,12 +5,13 @@ An Open WebUI–style chat interface that wires together a local **Ollama** LLM 
 image (via native function-calling, a directive protocol on the Claude engine, or
 structured output on the Codex engine), and the result is rendered inline in the
 conversation. You can also switch the AI engine between **Ollama**, your logged-in
-**Claude CLI**, and your logged-in **OpenAI Codex CLI**.
+**Claude CLI**, your logged-in **OpenAI Codex CLI**, and a local **Strata** server.
 
 ![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
 ![chat: ollama](https://img.shields.io/badge/chat-ollama-blue)
 ![chat: claude--cli](https://img.shields.io/badge/chat-claude--cli-orange)
 ![chat: codex--cli](https://img.shields.io/badge/chat-codex--cli-black)
+![chat: strata](https://img.shields.io/badge/chat-strata-purple)
 ![image: A1111](https://img.shields.io/badge/image-A1111-green)
 
 > **Built by a human and AI, together.** This project was designed and implemented
@@ -22,9 +23,15 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
 ## Features
 
 - 🔀 **Switchable AI engine** — toggle in the top bar between **Ollama** (local models),
-  **Claude CLI** (your logged-in Claude Code), and **OpenAI Codex CLI** (your logged-in
-  `codex`). All three can generate images on their own (Ollama via native tools, Claude via
-  a directive protocol, Codex via structured output) and see images (vision).
+  **Claude CLI** (your logged-in Claude Code), **OpenAI Codex CLI** (your logged-in
+  `codex`) and **Strata** (a local LLM server with an OpenAI-compatible API, see
+  [Strata](https://github.com/sss22213/Strata)). All of them can generate images on their own
+  (Ollama and Strata via native tools, Claude via a directive protocol, Codex via structured
+  output); Ollama, Claude and Codex also see images (vision). Strata uses the same tool loop as
+  Ollama (image tools, web search, skill tools), streams its thinking, maps the thinking
+  switch and effort to `reasoning_effort` (none / low / medium / high) and shows its server's
+  context in the usage meter. Its API key is entered in **Settings → Service sources**; it is
+  stored only in the backend's settings file and never sent back to the browser.
 - 💬 **Multi-conversation chat** — streaming replies, Markdown / code highlighting,
   collapsible reasoning (thinking) blocks.
 - 🎨 **Autonomous image generation** — the model calls `generate_image` (txt2img) →
@@ -118,9 +125,11 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
 - 📂 **Selectable image storage location** — pick the output folder with a server-side
   directory picker (browse / type a path / create a folder); old images still resolve
   after you switch.
-- 🔌 **Configurable service sources** — point Ollama / A1111 at an "API URL" or a
-  "Docker container", with a "Test connection" button (auto-lists containers when the
-  docker socket is reachable).
+- 🔌 **Configurable service sources** — point Ollama / A1111 / Strata at an "API URL" or a
+  "Docker container", with a "Test connection" button that shows why a test failed
+  (auto-lists containers when the docker socket is reachable). Strata also has an API key
+  field: it shows only whether a key is set, keeps the saved key when left empty, and
+  "Test connection" can try a newly typed key before you save it.
 - 🌐 **Multilingual UI** — Traditional Chinese / Simplified Chinese / English / 日本語 /
   한국어, switchable live.
 - ⚙️ **Settings panel** — SD checkpoint, sampler, width/height, steps, CFG, seed,
@@ -195,6 +204,11 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   `data` folder into the container (read-only) so the WebUI can read your past generations.
 - For **image editing** (optional): a stable-diffusion.cpp server (`sd-server`) at
   `localhost:7861` (`SDCPP_URL`) with an editing model loaded. Everything else works without it.
+- For the **Strata engine** (optional): a running Strata server at `localhost:8081` (`STRATA_URL`;
+  Docker: `host.docker.internal:8081`). Put its API key in **Settings → Service sources → Strata**.
+  The engine is enabled in the top bar once the server answers with that key and its model is
+  loaded. Strata and A1111 share the GPU: a large Strata model can leave too little VRAM for
+  image generation.
 - Python 3.10+ and Node 18+ for local development.
 
 > Ollama and A1111 can run anywhere as long as their ports are reachable; this WebUI
@@ -323,7 +337,7 @@ npm run dev
 > **Tip:** these are SDXL / Pony / Illustrious anime checkpoints — comma-separated English
 > danbooru-style tags work best. The system prompt already nudges the model to write them.
 
-## AI engines: Ollama / Claude CLI / Codex CLI
+## AI engines: Ollama / Claude CLI / Codex CLI / Strata
 
 The top-bar selector switches the **AI engine**:
 
@@ -335,6 +349,9 @@ The top-bar selector switches the **AI engine**:
   parses it out of the stream, runs A1111, and replaces it with the rendered image (the
   marker is never shown to you). Vision (base64 image input) and img2img redraw are
   supported too.
+- **Codex CLI** — your logged-in `codex`, driven with structured output (see below).
+- **Strata** — a local [Strata](https://github.com/sss22213/Strata) server through its
+  OpenAI-compatible API, with the same native tool calling as Ollama (see below).
 
 ### Enabling Claude CLI (Docker)
 
@@ -383,6 +400,35 @@ Then `docker compose up -d --build` and pick **Codex CLI** in the top bar. If Co
 about sandbox/landlock inside the container, set `CODEX_SANDBOX_MODE=bypass` in `.env`
 (the container is already the isolation boundary). **Local dev:** if `codex` is on `PATH`
 and logged in, it's auto-detected — no config needed.
+
+### Strata
+
+Talks to a [Strata](https://github.com/sss22213/Strata) server (a local llama.cpp-based LLM
+server) over its OpenAI-compatible API: `/v1/chat/completions` with streaming, tool calls and
+`reasoning_content`, and `/v1/models` for the model list and context size. The app's
+Ollama-format messages are converted on the way out, so Strata runs the **same agentic loop
+as Ollama**: `generate_image` / `edit_image`, web search, skill tools and the no-retry guard.
+
+1. Start Strata (default `localhost:8081`). In Docker the backend reaches it at
+   `host.docker.internal:8081`; change it with `STRATA_URL` or in Settings.
+2. Open **⚙️ Settings → Service sources → Strata**, paste the server's API key, press
+   **Test connection** (shows the loaded model and its context), then **Save**.
+3. Pick **Strata** in the top bar. It stays greyed out until the server answers with that key
+   and its model is loaded.
+
+- **API key.** Sent as `Authorization: Bearer …` from the backend only. It is kept in the
+  backend's settings file, never returned by `/api/sources`, `/api/engines` or
+  `/api/models`; the field shows "set" / "not set". Saving with the field empty keeps the
+  key, **Clear key** + Save removes it. `STRATA_API_KEY` in `.env` is only the initial value.
+- **Thinking.** The thinking switch and the effort in ⚙️ Settings map to `reasoning_effort`
+  (`none` / `low` / `medium` / `high`, default `medium`); thinking streams into the
+  collapsible reasoning block.
+- **Context.** The usage meter uses the server's context (`meta.n_ctx` from `/v1/models`).
+- **Vision.** Images are sent only when the model lists `image` in its input modalities;
+  a text-only model has attachments stripped like a non-vision Ollama model.
+- **Comic Studio / Image Story / Compact** work on Strata too, one request at a time.
+- **VRAM.** Strata and A1111 usually share one GPU. A model that fills the card leaves no
+  room for SDXL, so image generation can fail until you free memory.
 
 ### Supported models
 
@@ -446,7 +492,7 @@ instructions), optional `references/*.md`, optional `scripts/*.py`, and an optio
 community skills can be dropped in as-is. Enable skills from the ✨ button in the chat top
 bar, or choose **Auto** to let the model decide per request. Skills dropped into the folder
 while the app is running appear after **Rescan** in that dialog (no restart or reload needed). Skills work on every engine
-(Ollama / Claude CLI / Codex CLI) because they are injected into the system prompt, and a
+(Ollama / Claude CLI / Codex CLI / Strata) because they are injected into the system prompt, and a
 runtime-adapter note maps a skill's assumed `image_gen` to the app's A1111 generation.
 Several skills can be enabled at once: their instructions are injected together (each gets a
 share of the skill length limit when one is set) and their tools are all available. The selection is
@@ -566,6 +612,7 @@ Frontend (React/Vite)  ──/api proxy──▶  Backend (FastAPI)
                                          ├─▶ Ollama      /api/chat (stream + tools + vision)
                                          ├─▶ Claude CLI  claude -p (stream-json subprocess)
                                          ├─▶ Codex CLI   codex exec --json (subprocess)
+                                         ├─▶ Strata      /v1/chat/completions (stream + tools, Bearer key)
                                          ├─▶ A1111       /sdapi/v1/{txt2img,img2img,progress,png-info}
                                          └─▶ skill tools A1111 extensions, sd.cpp /sdcpp/v1, civitai.com
 Images are saved to backend/data/images/ and served by the backend at /images/
@@ -607,6 +654,7 @@ that paragraph; older messages without `at` show their images at the end as befo
 | `frontend/src/store/comic.js` | Comic Studio state: storyboard, cards, panels, bubbles, autosave to the server, versions cache, per-panel tag regeneration |
 | `frontend/src/story/` | Image Story page (upload, mode/options, result view, hand-off to Comic Studio); state in `frontend/src/store/story.js`, API in `frontend/src/lib/storyApi.js`, client-side downscaling in `frontend/src/lib/image.js` |
 | `backend/a1111_client.py` | A1111: txt2img / img2img / progress / models / samplers / png-info; adds the Forge extra modules (text encoder / VAE) an Anima checkpoint needs, and puts Forge's error reason into the exception |
+| `backend/strata_client.py` | Strata engine: OpenAI-compatible `/v1/chat/completions` (streaming, tool calls, `reasoning_content`), messages converted from the app's Ollama format, Bearer API key from the settings, model list / context from `/v1/models` |
 | `backend/web_tools.py` | web search (DuckDuckGo/SearXNG) + page extraction (with SSRF guard) |
 | `backend/settings_store.py` | persisted settings: image dir (default stored as empty so the host and the container resolve their own path) + service sources + web provider + prompt-history dir + skill prompt length limit |
 | `backend/prompt_history_store.py` | reads the `sd-webui-prompt-history` extension's `data.json` + thumbnails (cached, paginated, searchable) |
@@ -630,7 +678,7 @@ that paragraph; older messages without `at` show their images at the end as befo
 ## Configuration
 
 Copy `.env.example` and override via environment variables (addresses incl. the optional
-`SDCPP_URL`, default model,
+`SDCPP_URL` and `STRATA_URL`, default model,
 timeouts, Claude / Codex credentials and model lists (`CLAUDE_MODELS`, `CODEX_MODELS`),
 prompt-history folder, skills folder and script settings `SKILLS_DIR` / `SKILL_MAX_CHARS` /
 `SKILL_SCRIPT_ENV` / `SKILL_SCRIPT_TIMEOUT`). In dev mode the frontend proxy target is in

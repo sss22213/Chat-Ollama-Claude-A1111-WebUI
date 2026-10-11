@@ -187,6 +187,9 @@ export default function StoryStudio() {
           <option value="codex" disabled={!engines.codex}>
             Codex CLI
           </option>
+          <option value="strata" disabled={!engines.strata}>
+            Strata
+          </option>
         </select>
         <select
           value={chatModel}
@@ -439,7 +442,7 @@ export default function StoryStudio() {
             </div>
           )}
 
-          {engine === "ollama" && (
+          {(engine === "ollama" || engine === "strata") && (
                   <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-ink-700 bg-ink-850 px-2 py-1.5">
                     <input
                       type="checkbox"

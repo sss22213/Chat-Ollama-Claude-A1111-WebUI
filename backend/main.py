@@ -36,6 +36,7 @@ import prompt_history_store
 import settings_store
 import skills_store
 import story as story_mod
+import strata_client
 import web_tools
 from config import BROWSE_ROOTS, CORS_ORIGINS, DEFAULT_IMAGE_SETTINGS
 
@@ -121,6 +122,11 @@ async def models(engine: str = "ollama", refresh: bool = False) -> list[dict[str
         return claude_client.list_models()
     if engine == "codex":
         return codex_client.list_models()
+    if engine == "strata":
+        try:
+            return await strata_client.list_models()
+        except Exception as e:
+            raise HTTPException(502, f"無法連線 Strata：{describe(e)}")
     try:
         return await ollama_client.list_models(refresh=refresh)
     except Exception as e:
@@ -150,6 +156,8 @@ async def engines() -> dict[str, Any]:
         "ollama": True,
         "claude_cli": claude_client.available(),
         "codex": codex_client.available(),
+        # 連得上、API key 對、模型已載入（結果快取幾秒）
+        "strata": await strata_client.available(),
     }
 
 
@@ -284,11 +292,14 @@ class SourceCfg(BaseModel):
     url: str | None = None
     container: str | None = None
     port: int | None = None
+    # 只有 Strata 用：不送＝保持原值，空字串＝清除（存在後端，GET /api/sources 不會回傳）
+    api_key: str | None = None
 
 
 class SourcesRequest(BaseModel):
     ollama: SourceCfg | None = None
     a1111: SourceCfg | None = None
+    strata: SourceCfg | None = None
 
 
 @app.put("/api/sources")
@@ -301,19 +312,26 @@ def set_sources(req: SourcesRequest) -> dict[str, Any]:
         if req.a1111 is not None:
             settings_store.set_source("a1111", req.a1111.model_dump(exclude_none=True))
             changed.append("a1111")
+        if req.strata is not None:
+            settings_store.set_source("strata", req.strata.model_dump(exclude_none=True))
+            changed.append("strata")
     except (ValueError, PermissionError) as e:
         raise HTTPException(400, str(e))
     if "ollama" in changed:
         ollama_client.clear_caps_cache()  # 來源變了，能力快取作廢
+    if "strata" in changed:
+        strata_client.clear_cache()
     return settings_store.get_sources()
 
 
 class TestRequest(BaseModel):
-    service: str  # "ollama" | "a1111"
+    service: str  # "ollama" | "a1111" | "strata"
     mode: str = "api"
     url: str | None = None
     container: str | None = None
     port: int | None = None
+    # Strata：測試尚未儲存的新 key；不送就用已儲存的
+    api_key: str | None = None
 
 
 @app.post("/api/sources/test")
@@ -322,6 +340,8 @@ async def test_source(req: TestRequest) -> dict[str, Any]:
     url = settings_store.effective_url(req.model_dump())
     if not url:
         return {"ok": False, "url": url, "detail": "URL 為空"}
+    if req.service == "strata":
+        return await _test_strata(url, req.api_key)
     path = "/api/version" if req.service == "ollama" else "/sdapi/v1/options"
     t0 = time.monotonic()
     try:
@@ -332,6 +352,28 @@ async def test_source(req: TestRequest) -> dict[str, Any]:
         return {"ok": True, "url": url, "latency_ms": latency}
     except Exception as e:
         return {"ok": False, "url": url, "detail": str(e)}
+
+
+async def _test_strata(url: str, api_key: str | None) -> dict[str, Any]:
+    """Strata：/v1/models 要帶 API key；順便確認模型已載入。"""
+    key = settings_store.get_strata_key() if api_key is None else api_key.strip()
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.get(f"{url}/v1/models", headers=headers)
+        latency = int((time.monotonic() - t0) * 1000)
+        if resp.status_code == 401:
+            return {"ok": False, "url": url, "detail": "API key 錯誤或沒有填（HTTP 401）"}
+        resp.raise_for_status()
+        data = (resp.json() or {}).get("data") or []
+        if not data:
+            return {"ok": False, "url": url, "detail": "連得上，但 Strata 的模型還沒載入"}
+        m = data[0]
+        return {"ok": True, "url": url, "latency_ms": latency, "model": m.get("id"),
+                "context": (m.get("meta") or {}).get("n_ctx")}
+    except Exception as e:
+        return {"ok": False, "url": url, "detail": describe(e)}
 
 
 @app.get("/api/docker/containers")
@@ -712,6 +754,13 @@ async def compact(req: CompactRequest) -> dict[str, Any]:
                 req.model,
                 [{"role": "user", "content": "\n\n".join(lines)}],
                 system,
+            )
+        elif req.engine == "strata":
+            summary = await strata_client.chat_once(
+                req.model,
+                [{"role": "user", "content": "\n\n".join(lines)}],
+                system,
+                think=req.think,
             )
         else:
             messages = [

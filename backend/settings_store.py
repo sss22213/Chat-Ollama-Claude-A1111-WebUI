@@ -20,6 +20,8 @@ from config import (
     IMAGE_DIR as DEFAULT_IMAGE_DIR,
     OLLAMA_URL,
     A1111_URL,
+    STRATA_URL,
+    STRATA_API_KEY,
     PROMPT_HISTORY_DIR as DEFAULT_PROMPT_HISTORY_DIR,
     SKILLS_DIR as DEFAULT_SKILLS_DIR,
     SKILL_MAX_CHARS,
@@ -30,6 +32,11 @@ SETTINGS_FILE = DATA_DIR / "app_settings.json"
 # 每個服務來源：mode="api"(直接網址) 或 "docker"(容器名+容器內 port)
 def _default_source(url: str, port: int) -> dict:
     return {"mode": "api", "url": url, "container": "", "port": port}
+
+
+def _default_strata() -> dict:
+    # api_key 只存在這個設定檔（後端），get_sources() 不會把它傳給前端
+    return {**_default_source(STRATA_URL, 8081), "api_key": STRATA_API_KEY}
 
 
 def _default_web() -> dict:
@@ -55,6 +62,7 @@ _settings: dict = {
     "sources": {
         "ollama": _default_source(OLLAMA_URL, 11434),
         "a1111": _default_source(A1111_URL, 7860),
+        "strata": _default_strata(),
     },
     "web": _default_web(),
 }
@@ -65,6 +73,7 @@ def _normalize_sources() -> None:
     defaults = {
         "ollama": _default_source(OLLAMA_URL, 11434),
         "a1111": _default_source(A1111_URL, 7860),
+        "strata": _default_strata(),
     }
     src = _settings.setdefault("sources", {})
     for svc, dflt in defaults.items():
@@ -304,7 +313,7 @@ def set_skill_scripts(enabled: bool) -> dict:
     return skills_dir_info()
 
 
-# ---- 服務來源（Ollama / A1111）----
+# ---- 服務來源（Ollama / A1111 / Strata）----
 def effective_url(source: dict) -> str:
     """由來源設定算出實際要連的 URL。"""
     if source.get("mode") == "docker" and source.get("container"):
@@ -320,12 +329,25 @@ def get_a1111_url() -> str:
     return effective_url(_settings["sources"]["a1111"])
 
 
+def get_strata_url() -> str:
+    return effective_url(_settings["sources"]["strata"])
+
+
+def get_strata_key() -> str:
+    return (_settings["sources"]["strata"].get("api_key") or "").strip()
+
+
+def _public(s: dict) -> dict:
+    """給前端的來源設定：API key 不外流，只說有沒有設。"""
+    out = {k: v for k, v in s.items() if k != "api_key"}
+    if "api_key" in s:
+        out["api_key_set"] = bool((s.get("api_key") or "").strip())
+    return {**out, "effective_url": effective_url(s)}
+
+
 def get_sources() -> dict:
     """回傳來源設定 + 算出的有效 URL（給前端顯示）。"""
-    out = {}
-    for svc, s in _settings["sources"].items():
-        out[svc] = {**s, "effective_url": effective_url(s)}
-    return out
+    return {svc: _public(s) for svc, s in _settings["sources"].items()}
 
 
 def set_source(service: str, cfg: dict) -> dict:
@@ -346,9 +368,13 @@ def set_source(service: str, cfg: dict) -> dict:
         raise ValueError("API 模式需要網址")
     if mode == "docker" and (not updated["container"] or not updated["port"]):
         raise ValueError("Docker 模式需要容器名稱與 port")
+    if "api_key" in cur:
+        # 沒送 api_key＝保持原值；送空字串＝清除
+        key = cfg.get("api_key")
+        updated["api_key"] = cur.get("api_key", "") if key is None else str(key).strip()
     _settings["sources"][service] = updated
     _save()
-    return {**updated, "effective_url": effective_url(updated)}
+    return _public(updated)
 
 
 # ---- 前端 UI 設定（語言、引擎、SD 參數、system prompt 等）----

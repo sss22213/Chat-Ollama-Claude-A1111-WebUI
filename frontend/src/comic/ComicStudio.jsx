@@ -135,6 +135,9 @@ export default function ComicStudio() {
           <option value="codex" disabled={!engines.codex}>
             Codex CLI
           </option>
+          <option value="strata" disabled={!engines.strata}>
+            Strata
+          </option>
         </select>
         <select
           value={chatModel}

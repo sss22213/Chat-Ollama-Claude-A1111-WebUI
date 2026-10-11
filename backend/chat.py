@@ -7,6 +7,8 @@ import logging
 import re
 from typing import Any, AsyncIterator
 
+import httpx
+
 import a1111_client
 import claude_client
 import codex_client
@@ -14,6 +16,7 @@ import ollama_client
 import settings_store
 import skill_tools
 import skills_store
+import strata_client
 import tools as tools_mod
 import web_tools
 from config import CLAUDE_CONTEXT_LENGTH
@@ -385,11 +388,17 @@ async def run_chat(
             yield s
         return
 
-    can_tools = await ollama_client.model_supports_tools(model)
+    # Ollama 與 Strata（OpenAI 相容）共用下面的主迴圈：strata_client 的介面跟 ollama_client 一樣
+    llm = strata_client if engine == "strata" else ollama_client
+    can_tools = await llm.model_supports_tools(model)
     # gpt-oss 支援思考等級：think 開啟時把 effort 映射成 low/medium/high；其他模型維持布林開關
     ollama_think = think
     if think and effort and "gpt-oss" in model.lower():
         ollama_think = _oss_level(effort)
+    if engine == "strata":
+        # 思考開關＋強度 → reasoning_effort（none/low/medium/high）；context 由伺服器決定
+        ollama_think = strata_client.reasoning_effort(think, effort)
+        num_ctx = await strata_client.context_length(model) or num_ctx
     init_image = _last_init_image(messages)
     # read_png_info 要讀「原圖」metadata；image_sources 是本回合未經縮圖的原始位元組，
     # 沒有時退回 init_image（縮圖後的 JPEG 通常已無 metadata）。
@@ -409,7 +418,7 @@ async def run_chat(
     if can_tools and tools_enabled:
         convo = _append_to_last_user(convo, _OLLAMA_TAIL_REMINDER)
     # 非 vision 模型若收到 images 會 500，先剝除（img2img 仍可用 init_image）
-    can_see = await ollama_client.model_supports_vision(model)
+    can_see = await llm.model_supports_vision(model)
     if not can_see:
         for m in convo:
             m.pop("images", None)
@@ -432,7 +441,7 @@ async def run_chat(
             degen = _DegenWatch()
             degenerated = False
 
-            stream = ollama_client.chat_stream(
+            stream = llm.chat_stream(
                 model, convo, tools=tool_schema, think=ollama_think, num_ctx=num_ctx
             )
             async for chunk in stream:
@@ -546,7 +555,7 @@ async def run_chat(
 
         # 卡在重複呼叫工具 → 最後再不帶工具讓模型用文字收尾（不報錯）
         if not answered:
-            async for chunk in ollama_client.chat_stream(
+            async for chunk in llm.chat_stream(
                 model, convo, tools=None, think=ollama_think, num_ctx=num_ctx
             ):
                 if chunk.get("error"):
@@ -1184,7 +1193,7 @@ async def _run_tool(
             note = (
                 " (This is an error of the image server or its model setup, not of the prompt: "
                 "do not retry with a changed prompt; tell the user what failed.)"
-                if isinstance(e, a1111_client.A1111Error)
+                if isinstance(e, (a1111_client.A1111Error, httpx.HTTPError))  # 伺服器錯誤或連不上
                 else ""
             )
             yield f"圖片生成失敗：{e}{note}"

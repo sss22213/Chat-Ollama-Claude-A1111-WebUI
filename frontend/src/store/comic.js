@@ -397,7 +397,7 @@ export const useComic = create(
             style,
             lang,
             num_ctx: numCtx,
-            think: engine === "ollama" ? think : undefined,
+            think: engine === "ollama" || engine === "strata" ? think : undefined,
             system: systemPrompt,
             system_base: systemBase,
           });
@@ -449,7 +449,7 @@ export const useComic = create(
             style: st.style,
             lang,
             num_ctx: numCtx,
-            think: engine === "ollama" ? st.think : undefined,
+            think: engine === "ollama" || engine === "strata" ? st.think : undefined,
             system: st.systemPrompt,
           });
           const cur = get().panels.find((p) => p.id === id);
