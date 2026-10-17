@@ -14,6 +14,15 @@ except ImportError:  # 未安裝 python-dotenv 時照常運作（docker 由 comp
 # 服務位址（docker 已對外發佈到主機）
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 A1111_URL = os.getenv("A1111_URL", "http://localhost:7860").rstrip("/")
+# A1111（Forge Neo）與 Civitai Helper 的 MCP token（工具一律走 MCP；設定頁可覆寫）
+A1111_MCP_TOKEN = os.getenv("A1111_MCP_TOKEN", "").strip()
+CIVITAI_HELPER_MCP_TOKEN = os.getenv("CIVITAI_HELPER_MCP_TOKEN", "").strip()
+# stable-diffusion.cpp 的 A1111 橋接層（圖片編輯技能 sdcpp-image-edit，經它的 /mcp 呼叫）；設定頁可覆寫
+SDCPP_URL = os.getenv("SDCPP_URL", "http://127.0.0.1:7861").rstrip("/")
+SDCPP_MCP_TOKEN = os.getenv("SDCPP_MCP_TOKEN", "").strip()
+# MMD 動畫算圖服務 anime-render（mmd-animation 技能，經它的 /mcp 呼叫）；設定頁可覆寫
+MMD_URL = os.getenv("MMD_URL", "http://127.0.0.1:5280").rstrip("/")
+MMD_MCP_TOKEN = os.getenv("MMD_MCP_TOKEN", "").strip()
 # Strata（本機 LLM 伺服器，OpenAI 相容 API）；API key 在設定頁填，STRATA_API_KEY 只當初始值
 STRATA_URL = os.getenv("STRATA_URL", "http://localhost:8081").rstrip("/")
 STRATA_API_KEY = os.getenv("STRATA_API_KEY", "").strip()
@@ -91,10 +100,6 @@ CODEX_SANDBOX_MODE = os.getenv("CODEX_SANDBOX_MODE", "read-only")
 # docker 模式由 compose 固定掛到 /data/prompt-history；本機開發可直接指主機路徑。
 PROMPT_HISTORY_DIR = os.getenv("PROMPT_HISTORY_DIR", "").strip()
 
-# stable-diffusion.cpp 伺服器（/sdcpp/v1/img_gen；圖片編輯技能用，可跑 Qwen-Image-Edit 等）。
-# tools.json 以 {sdcpp_url} 佔位符引用；docker 模式由 compose 指到主機的 port。
-SDCPP_URL = os.getenv("SDCPP_URL", "http://127.0.0.1:7861").rstrip("/")
-
 # ---- 技能（Agent Skills）外掛 ----
 # 放 SKILL.md 外掛的目錄；每個子資料夾＝一個技能（SKILL.md + 選用 references/ scripts/）。
 # 相容 Anthropic / Codex 的 Agent Skill 格式，社群 skill 可直接放進來。
@@ -111,6 +116,19 @@ SKILL_SCRIPT_ENV = [
 ]
 # 單次腳本執行的秒數上限（tools.json 可縮短、不可超過）；逾時直接 kill。
 SKILL_SCRIPT_TIMEOUT = float(os.getenv("SKILL_SCRIPT_TIMEOUT", "300"))
+
+# ---- LangGraph 工作流（官方 langgraph.json + Python 專案）----
+# 專案放在 LANGGRAPH_DIR/<專案>/；每個專案的 venv 在 LANGGRAPH_ENV_DIR/<專案>/（依 dependencies 安裝），
+# 執行紀錄在 LANGGRAPH_RUNS_DIR，執行時的工作目錄（HOME）在 LANGGRAPH_WORK_DIR。
+# docker-compose.yml 把這四個資料夾各自掛進容器；新增資料夾時也要一併加進去。
+# 執行要先在工作流頁面開啟「允許執行」（settings_store.langgraph_enabled，預設關）。
+LANGGRAPH_DIR = Path(os.getenv("LANGGRAPH_DIR", DATA_DIR / "langgraph"))
+LANGGRAPH_ENV_DIR = Path(os.getenv("LANGGRAPH_ENV_DIR", DATA_DIR / "langgraph-envs"))
+LANGGRAPH_RUNS_DIR = Path(os.getenv("LANGGRAPH_RUNS_DIR", DATA_DIR / "langgraph-runs"))
+LANGGRAPH_WORK_DIR = Path(os.getenv("LANGGRAPH_WORK_DIR", DATA_DIR / "langgraph-work"))
+# 單次執行 / 安裝依賴的秒數上限；逾時直接 kill
+LANGGRAPH_RUN_TIMEOUT = float(os.getenv("LANGGRAPH_RUN_TIMEOUT", "1800"))
+LANGGRAPH_INSTALL_TIMEOUT = float(os.getenv("LANGGRAPH_INSTALL_TIMEOUT", "1200"))
 
 # ---- 伺服器端目錄瀏覽 / 圖片目錄 白名單 ----
 # /api/browse、/api/browse/mkdir 與圖片儲存位置只能落在這些根目錄之內

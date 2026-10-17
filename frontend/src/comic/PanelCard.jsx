@@ -49,6 +49,7 @@ export default function PanelCard({ panel, index }) {
   const characters = useComic((s) => s.characters);
   const style = useComic((s) => s.style); // 訂閱以便完整提示詞即時更新
   const negative = useComic((s) => s.negative);
+  const promptMode = useComic((s) => s.promptMode);
   const composePrompt = useComic((s) => s.composePrompt);
   const setPanel = useComic((s) => s.setPanel);
   const removePanel = useComic((s) => s.removePanel);
@@ -83,6 +84,9 @@ export default function PanelCard({ panel, index }) {
   // 實際會送給 A1111 的完整正向提示詞（畫風＋角色外觀/LoRA＋場景）
   // 依賴 style/characters/negative 訂閱，編輯時即時更新
   const fullPrompt = composePrompt(panel);
+  // 英文句子欄：「只有標籤」不顯示（出圖也不帶）；「自動」只在這格有句子時顯示
+  const showDescription =
+    promptMode === "sentences" || (promptMode !== "tags" && !!(panel.description || "").trim());
 
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-ink-700 bg-ink-850">
@@ -185,6 +189,18 @@ export default function PanelCard({ panel, index }) {
           </div>
         )}
 
+        {/* 英文句子（Anima）：出圖時整段放在標籤前 */}
+        {showDescription && (
+          <textarea
+            value={panel.description || ""}
+            onChange={(e) => setPanel(panel.id, { description: e.target.value })}
+            placeholder={ct("descriptionPh")}
+            title={ct("descriptionHint")}
+            data-testid="panel-description"
+            rows={3}
+            className={`${inputCls} resize-y`}
+          />
+        )}
         {/* 場景提示詞 */}
         <textarea
           value={panel.prompt}

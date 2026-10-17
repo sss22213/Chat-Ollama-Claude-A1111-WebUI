@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 import httpx
 
@@ -17,6 +17,7 @@ import settings_store
 import skill_tools
 import skills_store
 import strata_client
+import tool_gateway
 import tools as tools_mod
 import web_tools
 from config import CLAUDE_CONTEXT_LENGTH
@@ -228,13 +229,69 @@ def _inject_skill(
 
 
 def _last_init_image(messages: list[dict[str, Any]]) -> str | None:
-    """取最後一則含 images 的 user 訊息的第一張圖，作為 img2img 初始圖。"""
+    """取最後一則含 images 的 user 訊息的第一張圖，作為 img2img 初始圖。
+    _attach_context_images 附上的「上一則回覆生成的圖」不算（context_images 記張數）。"""
     for m in reversed(messages):
         if m.get("role") == "user":
-            imgs = m.get("images")
-            if imgs:
-                return imgs[0]
+            imgs = list(m.get("images") or [])
+            own = imgs[: len(imgs) - int(m.get("context_images") or 0)]
+            if own:
+                return own[0]
     return None
+
+
+def vision_copy(b64: str, max_side: int = 768) -> str:
+    """給模型看的圖：長邊超過 max_side 就縮小並轉 JPEG（省 context 與傳輸）；讀不了就原樣。"""
+    import base64
+    import io
+
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(base64.b64decode(b64)))
+        if max(img.size) <= max_side and img.format in ("JPEG", "PNG", "WEBP"):
+            return b64
+        img.thumbnail((max_side, max_side))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, "JPEG", quality=88)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return b64
+
+
+# 上一則回覆生成 / 編輯的圖：下一輪附給看得見圖的模型（只附緊接在前的那則，免得每輪都塞舊圖）
+_RECENT_IMAGES_MAX = 4
+_RECENT_IMAGES_NOTE = (
+    "(The image(s) you generated in your previous reply are attached to this message, after any "
+    "images the user attached, so you can look at them when the user refers to them.)"
+)
+
+
+def _recent_generated(messages: list[dict[str, Any]]) -> list[str]:
+    """緊接在最後一則 user 之前的助理回覆所生成 / 編輯的圖（前端以 generated_images 帶網址）→ base64。"""
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
+    if last_user <= 0 or messages[last_user - 1].get("role") != "assistant":
+        return []
+    out = []
+    for url in (messages[last_user - 1].get("generated_images") or [])[-_RECENT_IMAGES_MAX:]:
+        b64 = _load_generated(url)
+        if b64:
+            out.append(vision_copy(b64))
+    return out
+
+
+def _attach_context_images(messages: list[dict[str, Any]], images: list[str]) -> list[dict[str, Any]]:
+    """把圖接在最後一則 user 訊息的 images 後面並加一句說明；不影響 img2img 的來源圖。"""
+    if not images:
+        return messages
+    msgs = [dict(m) for m in messages]
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            m["images"] = [*(m.get("images") or []), *images]
+            m["context_images"] = len(images)
+            m["content"] = (m.get("content") or "") + "\n\n" + _RECENT_IMAGES_NOTE
+            break
+    return msgs
 
 
 def _load_generated(url: str) -> str | None:
@@ -269,7 +326,19 @@ def _last_edit_image(messages: list[dict[str, Any]]) -> str | None:
 
 def _tool_message_with_images(result: dict[str, Any], can_see: bool) -> dict[str, Any]:
     """技能工具附帶的圖（如 Civitai 範例圖）：視覺模型就附在工具訊息的 images 上讓它真的看到；
-    否則只給文字並說明看不到。"""
+    否則只給文字並說明看不到。kind=generated：剛用 A1111 生成的圖。"""
+    if result.get("kind") == "generated":
+        if not (can_see and result.get("images")):
+            return {"role": "tool", "content": result["content"]}
+        return {
+            "role": "tool",
+            "content": result["content"]
+            + "\n\n(The generated image is attached to this message. Look at it and describe what "
+            "it actually shows; if something clearly went wrong — extra limbs, broken hands, a "
+            "requested detail missing — say so briefly.)",
+            "images": result["images"],
+            "generated_image": True,
+        }
     labels = ", ".join(result.get("labels") or []) or f"{len(result.get('images') or [])} images"
     if can_see and result.get("images"):
         return {
@@ -366,24 +435,23 @@ async def run_chat(
     """
     # 技能編輯工具的來源圖（含 A1111 生成的圖）；取完就剝掉前端專用欄位
     edit_image = _last_edit_image(messages)
+    # 上一則回覆生成的圖：看得見圖的模型這一輪也看得到（問「剛剛那張」時）
+    recent_images = _recent_generated(messages)
     messages = _strip_client_fields(messages)
     # 啟用技能：把指示注入 system（全引擎通用）
     messages = _inject_skill(messages, skill)
-    # 技能宣告的 API 工具（tools.json）：ollama 走 function calling、Claude 走 [[CALL]]；codex 暫不支援
+    # 技能宣告的工具（tools.json）：各引擎都經 MCP 閘道（Ollama / Strata 由這裡呼叫，CLI 原生 MCP）
     skill_tool_defs = skills_store.tools_for(skill)
     skill_tool_map = {t["name"]: t for t in skill_tool_defs}
 
-    if engine == "claude_cli":
-        async for s in _run_cli_engine(
-            claude_client, _claude_ctx(model),
-            model, messages, tools_enabled, image_settings, bool(think), effort,
-            skill_tool_defs=skill_tool_defs, edit_image=edit_image,
-        ):
-            yield s
-        return
-    if engine == "codex":
-        async for s in _run_codex(
-            model, messages, tools_enabled, image_settings, bool(think), effort
+    if engine in ("claude_cli", "codex"):
+        # 原生 MCP：CLI 直接呼叫 webui 閘道的工具（生圖、搜尋、技能工具），畫面事件由閘道推回來
+        async for s in _run_cli_mcp(
+            engine, model, _attach_context_images(messages, recent_images),
+            tools_enabled=tools_enabled, web_enabled=web_enabled,
+            skill=skill if skill_tool_defs else None, image_settings=image_settings,
+            think=bool(think), effort=effort, edit_image=edit_image,
+            png_source=(image_sources or [None])[-1],
         ):
             yield s
         return
@@ -404,14 +472,12 @@ async def run_chat(
     # 沒有時退回 init_image（縮圖後的 JPEG 通常已無 metadata）。
     png_source = (image_sources or [None])[-1] or init_image
 
-    tool_schema: list[dict[str, Any]] = []
-    if can_tools and tools_enabled:
-        tool_schema += tools_mod.image_tools(bool(init_image))
-    if can_tools and web_enabled:
-        tool_schema += tools_mod.web_tools_schema()
-    if can_tools and skill_tool_defs:
-        tool_schema += skill_tools.ollama_schema(skill_tool_defs)
-    tool_schema = tool_schema or None
+    # 工具一律經由 webui 的 MCP 閘道（tool_gateway）：清單來自它的 tools/list，執行走 tools/call
+    tool_ctx = tool_gateway.ToolContext(
+        image_tools=tools_enabled, web=web_enabled, skill=skill if skill_tool_defs else None,
+        image_settings=image_settings, init_image=init_image, edit_image=edit_image, png_source=png_source,
+    )
+    tool_schema = (await tool_gateway.schemas(tool_ctx) if can_tools else []) or None
 
     convo = [dict(m) for m in messages]
     # 防遺忘 1)：把工具提醒接在最後一則 user 訊息尾端
@@ -422,6 +488,8 @@ async def run_chat(
     if not can_see:
         for m in convo:
             m.pop("images", None)
+    else:
+        convo = _attach_context_images(convo, recent_images)
 
     try:
         answered = False
@@ -536,15 +604,17 @@ async def run_chat(
                     seen_calls.add(key)
                     fresh = True
 
-                async for content in _run_tool(
-                    name, args, image_settings, init_image, png_source,
-                    skill_tool_map=skill_tool_map,
-                    edit_image=edit_image,
-                ):
+                async for content in tool_gateway.run(tool_ctx, name, args):
                     if isinstance(content, str):
                         convo.append({"role": "tool", "content": content})
                     elif content.get("type") == "_tool_result":
-                        convo.append(_tool_message_with_images(content, can_see))
+                        tool_msg = _tool_message_with_images(content, can_see)
+                        if tool_msg.get("generated_image"):
+                            # 只留最新一張生成圖給模型看（多圖故事不會把 context 塞滿）
+                            for old in convo:
+                                if old.pop("generated_image", None):
+                                    old.pop("images", None)
+                        convo.append(tool_msg)
                     else:
                         yield _sse(content)
 
@@ -579,66 +649,9 @@ async def run_chat(
 
 # ===================== CLI 引擎（Claude CLI / OpenAI Codex）=====================
 #
-# 這些 CLI agent 不開放外部工具給我們，所以「生圖」不走原生 function calling，
-# 而是請模型在文字裡輸出一段指令標記（directive），由後端邊串流邊解析出來、
-# 跑 A1111、把圖塞回對話。Claude 與 Codex 共用同一條解析路徑。
-
-_OPENERS = {"[[GENIMG]]": "genimg", "[[EDITIMG]]": "editimg", "[[CALL]]": "call"}
-_CLOSERS = {"genimg": "[[/GENIMG]]", "editimg": "[[/EDITIMG]]", "call": "[[/CALL]]"}
-
-
-def _safe_emit_len(buf: str, openers: list[str]) -> int:
-    """可安全輸出的長度：保留結尾可能是「半個開頭標記」的尾巴，避免漏字或誤判。"""
-    maxlen = max(len(o) for o in openers)
-    for k in range(min(maxlen - 1, len(buf)), 0, -1):
-        tail = buf[-k:]
-        if any(o.startswith(tail) for o in openers):
-            return len(buf) - k
-    return len(buf)
-
-
-class _DirectiveParser:
-    """串流文字解析器：吐出 ('text', str) 或 ('directive', name, json_str)。"""
-
-    def __init__(self) -> None:
-        self.buf = ""
-        self.capturing: str | None = None
-
-    def feed(self, text: str) -> list[tuple]:
-        self.buf += text
-        out: list[tuple] = []
-        while True:
-            if self.capturing is None:
-                idx, which, openlen = -1, None, 0
-                for opener, name in _OPENERS.items():
-                    p = self.buf.find(opener)
-                    if p != -1 and (idx == -1 or p < idx):
-                        idx, which, openlen = p, name, len(opener)
-                if idx == -1:
-                    cut = _safe_emit_len(self.buf, list(_OPENERS))
-                    if cut > 0:
-                        out.append(("text", self.buf[:cut]))
-                        self.buf = self.buf[cut:]
-                    break
-                if idx > 0:
-                    out.append(("text", self.buf[:idx]))
-                self.buf = self.buf[idx + openlen :]
-                self.capturing = which
-            else:
-                closer = _CLOSERS[self.capturing]
-                p = self.buf.find(closer)
-                if p == -1:
-                    break
-                out.append(("directive", self.capturing, self.buf[:p]))
-                self.buf = self.buf[p + len(closer) :]
-                self.capturing = None
-        return out
-
-    def flush(self) -> list[tuple]:
-        if self.capturing is None and self.buf:
-            text, self.buf = self.buf, ""
-            return [("text", text)]
-        return []
+# 原生 MCP：啟動 CLI 時掛上 webui 的 MCP 閘道（tool_gateway，這次對話專用的網址），
+# CLI 自己呼叫工具（生圖、搜尋、技能與 A1111 / Civitai Helper 的工具）；閘道把畫面事件推回來，
+# 跟 CLI 的文字串流合併輸出（_run_cli_mcp）。
 
 
 def _base_system(messages: list[dict[str, Any]]) -> str:
@@ -652,94 +665,6 @@ def _base_system(messages: list[dict[str, Any]]) -> str:
     )
 
 
-def _directive_system(
-    messages: list[dict[str, Any]],
-    tools_enabled: bool,
-    has_init_image: bool,
-    skill_tool_defs: list[dict[str, Any]] | None = None,
-) -> str:
-    base = _base_system(messages)
-    tool_instr = skill_tools.directive_instructions(skill_tool_defs or [])
-    if not tools_enabled:
-        return base + tool_instr
-
-    no_tools = (
-        "do NOT use any tools other than the [[CALL]] skill API tools described below."
-        if tool_instr
-        else "do NOT use any tools."
-    )
-    instr = [
-        "",
-        "# Image generation (IMPORTANT)",
-        "You are a chat assistant with NO file system and NO shell. Do NOT run "
-        f"commands, do NOT create or edit files, {no_tools} You cannot "
-        "save an image to disk.",
-        "The ONLY way to show the user an image is to print this marker inline in "
-        "your reply (the app intercepts it, runs Stable Diffusion / A1111, and "
-        "replaces it with the rendered image):",
-        '[[GENIMG]]{"prompt": "comma, separated, english, danbooru, tags", '
-        '"width": 1024, "height": 1024}[[/GENIMG]]',
-        "So whenever the user asks you to draw / paint / create / generate / show "
-        "an image, you MUST output that marker. Rules: the prompt MUST be "
-        "comma-separated English tags (these are SDXL / Pony / Illustrious anime "
-        "models, not full sentences). width/height optional (multiples of 64). Do "
-        "NOT include steps/sampler/seed/cfg — the app controls those. USUALLY OMIT "
-        "'negative_prompt' — the app already applies a curated negative prompt; "
-        "only set it for user-requested specifics, AT MOST 15 short tags, never "
-        "repeat a tag.",
-        "Write one short natural sentence first, THEN the marker on its own line. "
-        "Never explain the marker, never wrap it in code fences, and never claim "
-        "you cannot generate images — emitting the marker IS how you generate them.",
-    ]
-    if has_init_image:
-        instr += [
-            "To redraw / restyle / edit the image the user just attached, use this "
-            "marker instead of GENIMG:",
-            '[[EDITIMG]]{"prompt": "desired result as english tags", '
-            '"negative_prompt": "optional", "denoising_strength": 0.6}[[/EDITIMG]]',
-        ]
-    return base + "\n".join(instr) + tool_instr
-
-
-def _call_key(payload: str) -> str:
-    """[[CALL]] 指令的比對鍵：能解析就用排序過鍵的 JSON，否則用壓掉空白的原文。"""
-    try:
-        return json.dumps(json.loads(payload.strip()), sort_keys=True, ensure_ascii=False)
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return " ".join(str(payload).split())
-
-
-async def _run_call_directive(
-    payload: str, skill_tool_map: dict[str, dict[str, Any]], init_image: str | None = None
-) -> AsyncIterator[Any]:
-    """執行 [[CALL]] 技能工具指令。yield dict=SSE 事件、yield str=要回給模型的結果文字。"""
-    try:
-        req = json.loads(payload.strip())
-        if not isinstance(req, dict):
-            raise ValueError("not an object")
-    except (json.JSONDecodeError, ValueError):
-        yield {"type": "error", "message": "技能工具指令解析失敗"}
-        yield "Tool call failed: the [[CALL]] payload was not a JSON object with 'tool' and 'args'."
-        return
-    name = str(req.get("tool") or req.get("name") or "").strip()
-    args = req.get("args") or req.get("arguments") or {}
-    if not isinstance(args, dict):
-        args = {}
-    tool = skill_tool_map.get(name)
-    if not tool:
-        yield f"Tool call failed: unknown tool '{name}'. Available tools: {', '.join(skill_tool_map) or '(none)'}."
-        return
-    yield {"type": "tool_call", "name": name, "args": args}
-    try:
-        out = await skill_tools.call_full(tool, args, image=init_image)
-        for ev in out.events:  # 例如 civitai 候選卡片、sd.cpp 編輯後的圖
-            yield ev
-        yield out.text
-    except Exception as e:
-        yield {"type": "error", "message": f"技能工具失敗：{e}"}
-        yield f"Tool {name} failed: {e}"
-
-
 def _tool_results_message(results: list[str]) -> str:
     return (
         "(tool results — sent by the app, not by the user)\n\n"
@@ -749,241 +674,123 @@ def _tool_results_message(results: list[str]) -> str:
     )
 
 
-async def _run_directive(
-    name: str,
-    payload: str,
-    image_settings: dict[str, Any] | None,
-    init_image: str | None,
-) -> AsyncIterator[dict[str, Any]]:
-    try:
-        args = json.loads(payload.strip())
-        if not isinstance(args, dict):
-            raise ValueError("not an object")
-    except (json.JSONDecodeError, ValueError):
-        yield {"type": "error", "message": "圖片指令解析失敗"}
-        return
-
-    tool = "edit_image" if name == "editimg" else "generate_image"
-    yield {"type": "tool_call", "name": tool, "args": args}
-    try:
-        kind, kwargs = tools_mod.build_call(tool, args, image_settings, init_image)
-        async for ev in _generate_with_progress(kind, kwargs):
-            yield ev
-    except Exception as e:
-        yield {"type": "error", "message": f"圖片生成失敗：{e}"}
-
-
-_CLI_TAIL_REMINDER = (
-    "(system reminder: If this request needs an image to be created or modified, you "
-    "MUST emit the [[GENIMG]]{...}[[/GENIMG]] marker — or [[EDITIMG]] for the attached "
-    "image — exactly as instructed in the system prompt. Never print prompt tags "
-    "without the marker. If no image is needed, ignore this reminder and answer "
-    "normally.)"
-)
-
-_CLI_RETRY_PROMPT = (
-    "(system reminder) Your previous reply did not emit the [[GENIMG]] marker even "
-    "though the user asked for an image. If an image is indeed wanted, output ONLY "
-    'the marker now — e.g. [[GENIMG]]{"prompt": "comma, separated, english, tags"}'
-    "[[/GENIMG]] (or [[EDITIMG]] for the attached image) — with no other text. "
-    "If no image is actually needed, reply with the single word: SKIP."
+_MCP_TAIL_REMINDER = (
+    "(system reminder: if this request needs an image to be created or changed, call the "
+    "generate_image tool — or edit_image for the attached image — instead of describing it or "
+    "printing prompt tags. If no image is needed, ignore this reminder.)"
 )
 
 
-async def _run_cli_engine(
-    client,
-    ctx_len: int,
+def _mcp_instructions(names: list[str]) -> str:
+    """CLI 引擎的 system 補充：工具來自 webui 的 MCP 伺服器（名稱以 mcp__webui__ 開頭）。"""
+    lines = [
+        "",
+        "# Tools (IMPORTANT)",
+        "You have NO shell and NO file system. Your tools come from the app's MCP server \"webui\" "
+        f"(in your tool list they start with mcp__webui__): {', '.join(names)}. Tool names mentioned "
+        "by a skill are these same tools. Use them whenever they help; never invent tool results "
+        "and never claim you cannot use them.",
+    ]
+    if "generate_image" in names:
+        lines.append(
+            "To show the user an image, CALL generate_image (its description explains the prompt "
+            "format). The picture appears in the chat by itself — afterwards describe it briefly; do "
+            "not paste the prompt, a link or markdown for it."
+        )
+    if "edit_image" in names:
+        lines.append("To change the image the user attached, call edit_image.")
+    return "\n".join(lines)
+
+
+async def _run_cli_mcp(
+    engine: str,
     model: str,
     messages: list[dict[str, Any]],
+    *,
     tools_enabled: bool,
+    web_enabled: bool,
+    skill: str | None,
     image_settings: dict[str, Any] | None,
     think: bool,
-    effort: str | None = None,
-    skill_tool_defs: list[dict[str, Any]] | None = None,
-    edit_image: str | None = None,
+    effort: str | None,
+    edit_image: str | None,
+    png_source: str | None,
 ) -> AsyncIterator[str]:
-    """通用 CLI 引擎路徑：串流文字 + 解析生圖指令 + 技能工具（[[CALL]]，結果回填後再跑一輪）。
-
-    client 為 claude_client / codex_client。"""
+    """Claude CLI / Codex：掛上 webui 的 MCP 閘道（這次對話專用的網址），CLI 自己呼叫工具。
+    CLI 的文字串流與閘道推來的畫面事件（工具呼叫、生圖進度、圖片、搜尋來源、卡片）合併輸出。"""
     init_image = _last_init_image(messages)
-    skill_tool_map = {t["name"]: t for t in (skill_tool_defs or [])}
-    system = _directive_system(messages, tools_enabled, bool(init_image), skill_tool_defs)
-    prompt_tokens = 0
-    image_done = False  # 本回合是否出現過生圖指令
-    reply_text = ""     # 完整回覆文字（補救重試時當歷史）
-    send_messages = (
-        _append_to_last_user(messages, _CLI_TAIL_REMINDER)  # 防遺忘 1)
-        if tools_enabled
-        else messages
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(ev: dict[str, Any]) -> None:
+        await queue.put(("tool", ev))
+
+    ctx = tool_gateway.ToolContext(
+        image_tools=tools_enabled, web=web_enabled, skill=skill, image_settings=image_settings,
+        init_image=init_image, edit_image=edit_image, png_source=png_source or init_image, emit=emit,
     )
+    names = [t["function"]["name"] for t in await tool_gateway.schemas(ctx)]
+    system = _base_system(messages) + (_mcp_instructions(names) if names else "")
+    send = _append_to_last_user(messages, _MCP_TAIL_REMINDER) if "generate_image" in names else messages
+    token = tool_gateway.open_session(ctx) if names else None
+    url = tool_gateway.session_url(token) if token else None
+    if engine == "claude_cli":
+        stream = claude_client.chat_stream(model, send, system, think=think, effort=effort, mcp_url=url)
+        ctx_len = _claude_ctx(model)
+    else:
+        stream = codex_client.chat_stream(model, send, system, think=think, effort=effort, mcp_url=url)
+        ctx_len = _codex_ctx(model)
 
+    async def pump() -> None:
+        try:
+            async for ev in stream:
+                await queue.put(("cli", ev))
+        except Exception as e:  # noqa: BLE001
+            await queue.put(("cli", {"type": "error", "message": str(e)}))
+        finally:
+            await queue.put(("end", None))
+
+    task = asyncio.create_task(pump())
+    prompt_tokens = 0
+    degen = _DegenWatch()
     try:
-        round_messages = send_messages
-        seen_calls: set[str] = set()  # 這次回覆跑過的技能工具呼叫（同 Ollama 路徑的卡住偵測）
-        stuck = 0
         while True:
-            parser = _DirectiveParser()
-            degen = _DegenWatch()
-            round_text = ""
-            tool_results: list[str] = []
-            fresh = False
-
-            stream = client.chat_stream(
-                model, round_messages, system, think=think, effort=effort
-            )
-            try:
-                async for ev in stream:
-                    kind = ev.get("type")
-                    if kind == "error":
-                        yield _sse({"type": "error", "message": ev["message"]})
-                        yield _sse({"type": "done"})
-                        return
-                    degenerated = False
-                    if kind == "usage":
-                        prompt_tokens = ev["prompt_tokens"]
-                    elif kind == "thinking":
-                        yield _sse({"type": "thinking", "delta": ev["delta"]})
-                        degenerated = degen.feed(ev["delta"])
-                    elif kind == "text":
-                        degenerated = degen.feed(ev["delta"])
-                        for item in parser.feed(ev["delta"]):
-                            if item[0] == "text":
-                                if item[1]:
-                                    round_text += item[1]
-                                    yield _sse({"type": "token", "delta": item[1]})
-                            elif item[1] == "call":
-                                key = _call_key(item[2])
-                                if key in seen_calls:
-                                    tool_results.append(_REPEAT_CALL_NOTE)
-                                    continue
-                                seen_calls.add(key)
-                                fresh = True
-                                async for out in _run_call_directive(item[2], skill_tool_map, edit_image or init_image):
-                                    if isinstance(out, str):
-                                        tool_results.append(out)
-                                    else:
-                                        yield _sse(out)
-                            else:
-                                image_done = True
-                                async for out in _run_directive(
-                                    item[1], item[2], image_settings, init_image
-                                ):
-                                    yield _sse(out)
-                    if degenerated:
-                        # 模型陷入重複迴圈：中止串流（client 端會 kill 子行程），
-                        # 讓下面的補救重試接手
-                        yield _sse({"type": "thinking", "delta": _DEGEN_NOTE})
-                        break
-            finally:
-                await stream.aclose()
-            for item in parser.flush():
-                if item[1]:
-                    round_text += item[1]
-                    yield _sse({"type": "token", "delta": item[1]})
-            reply_text += round_text
-
-            if not tool_results:
+            kind, ev = await queue.get()
+            if kind == "end":
                 break
-            stuck = 0 if fresh else stuck + 1
-            if stuck >= STUCK_ROUNDS:
-                log.warning("cli %s: stuck repeating tool calls for %d rounds", model, stuck)
-                yield _sse({"type": "token", "delta": "\n[模型一直重複同樣的工具呼叫，已停止]\n"})
+            if kind == "tool":
+                yield _sse(ev)
+                continue
+            t = ev.get("type")
+            degenerated = False
+            if t == "error":
+                yield _sse({"type": "error", "message": ev["message"]})
                 break
-            # 技能工具結果當下一輪輸入，讓模型接著回答
-            round_messages = [
-                *round_messages,
-                {"role": "assistant", "content": round_text or "(called a tool)"},
-                {"role": "user", "content": _tool_results_message(tool_results)},
-            ]
-            if round_text and not round_text.endswith("\n"):
-                yield _sse({"type": "token", "delta": "\n\n"})
-                reply_text += "\n\n"
-
-        # 防遺忘 2)：使用者明顯要圖卻沒出現指令 → 補跑一次，只取指令、不重複輸出文字
-        if tools_enabled and not image_done and _wants_image(messages):
-            retry_messages = [
-                *messages,
-                {"role": "assistant", "content": reply_text},
-                {"role": "user", "content": _CLI_RETRY_PROMPT},
-            ]
-            retry_parser = _DirectiveParser()
-            retry_degen = _DegenWatch()
-            try:
-                retry_stream = client.chat_stream(
-                    model, retry_messages, system, think=False, effort=effort
-                )
-                try:
-                    async for ev in retry_stream:
-                        if ev.get("type") != "text":
-                            continue  # 補救輪只關心生圖指令；錯誤/思考/用量都忽略
-                        if retry_degen.feed(ev["delta"]):
-                            break  # 補救輪也退化：直接放棄，別等到逾時
-                        for item in retry_parser.feed(ev["delta"]):
-                            if item[0] == "directive" and item[1] != "call":
-                                async for out in _run_directive(
-                                    item[1], item[2], image_settings, init_image
-                                ):
-                                    yield _sse(out)
-                finally:
-                    await retry_stream.aclose()
-            except Exception:
-                pass  # 補救是盡力而為，失敗不影響已送出的回覆
-
+            if t == "usage":
+                prompt_tokens = ev["prompt_tokens"]
+            elif t == "thinking":
+                yield _sse({"type": "thinking", "delta": ev["delta"]})
+                degenerated = degen.feed(ev["delta"])
+            elif t == "text" and ev.get("delta"):
+                yield _sse({"type": "token", "delta": ev["delta"]})
+                degenerated = degen.feed(ev["delta"])
+            if degenerated:
+                yield _sse({"type": "thinking", "delta": _DEGEN_NOTE})
+                break
+        while not queue.empty():  # CLI 結束前閘道最後推來的事件
+            kind, ev = queue.get_nowait()
+            if kind == "tool":
+                yield _sse(ev)
         if prompt_tokens:
-            yield _sse(
-                {
-                    "type": "usage",
-                    "prompt_tokens": prompt_tokens,
-                    "num_ctx": ctx_len,
-                }
-            )
+            yield _sse({"type": "usage", "prompt_tokens": prompt_tokens, "num_ctx": ctx_len})
         yield _sse({"type": "done"})
     except Exception as e:
         yield _sse({"type": "error", "message": str(e)})
         yield _sse({"type": "done"})
-
-
-# --- Codex 專用：用結構化輸出（--output-schema）可靠取得生圖意圖 ---
-# Codex 是程式碼 agent，不肯穩定輸出文字標記，但會乖乖遵守 JSON schema。
-# codex_client 在 use_schema 模式回 {reply, image_prompt, edit} → 這裡轉成生圖。
-
-def _codex_image_instructions(has_init_image: bool) -> str:
-    s = (
-        "\n\nYou generate images by FILLING THE 'image_prompt' FIELD — that is the ONLY "
-        "mechanism. There is NO 'imagegen', NO image skill, NO tool, NO function, NO shell "
-        "and NO command available to you. NEVER say you will 'use a skill/tool', NEVER run "
-        "a command, NEVER do command_execution, NEVER take a second step. Respond with ONE "
-        "structured JSON object immediately and then STOP. Put your natural-language reply "
-        "in 'reply'. If the user asks you to draw / paint / create / generate / show an "
-        "image of ANYTHING (any character or subject, even one you don't recognize — just "
-        "describe it literally), you MUST put comma-separated English danbooru-style tags "
-        "in 'image_prompt' (these feed SDXL/Pony/Illustrious anime models). Leaving "
-        "'image_prompt' empty produces NO image, so never leave it empty when an image is "
-        "requested. Do not include steps/sampler/seed. "
-    )
-    if has_init_image:
-        s += (
-            "Set 'edit_attached_image' to true only when the user wants to modify / "
-            "redraw the image they attached."
-        )
-    else:
-        s += "Set 'edit_attached_image' to false."
-    return s
-
-
-_CODEX_TAIL_REMINDER = (
-    "(system reminder: if this request asks for an image to be created or modified, "
-    "fill 'image_prompt' with comma-separated English danbooru tags — do not leave it "
-    "empty and do not print the tags in 'reply'. If no image is needed, leave "
-    "'image_prompt' empty and ignore this reminder.)"
-)
-
-_CODEX_RETRY_PROMPT = (
-    "(system reminder) Your previous reply left 'image_prompt' empty even though the "
-    "user asked for an image. Respond again: if an image is indeed wanted, put the "
-    "comma-separated English danbooru tags in 'image_prompt' now and keep 'reply' to "
-    "one short sentence. If no image is actually needed, leave 'image_prompt' empty."
-)
+    finally:
+        if not task.done():
+            task.cancel()  # 中止（退化、連線斷了）：取消會一路殺掉 CLI 子行程
+        if token:
+            tool_gateway.close_session(token)
 
 
 def _claude_ctx(model: str) -> int:
@@ -1002,111 +809,6 @@ def _codex_ctx(model: str) -> int:
         from config import CODEX_CONTEXT_LENGTH
 
         return CODEX_CONTEXT_LENGTH
-
-
-async def _run_codex(
-    model: str,
-    messages: list[dict[str, Any]],
-    tools_enabled: bool,
-    image_settings: dict[str, Any] | None,
-    think: bool,
-    effort: str | None = None,
-) -> AsyncIterator[str]:
-    init_image = _last_init_image(messages)
-    use_schema = bool(tools_enabled)
-    system = _base_system(messages)
-    if use_schema:
-        system += _codex_image_instructions(bool(init_image))
-    send_messages = (
-        _append_to_last_user(messages, _CODEX_TAIL_REMINDER)  # 防遺忘 1)
-        if use_schema
-        else messages
-    )
-
-    prompt_tokens = 0
-    image_done = False  # 本回合是否有生圖請求
-    reply_text = ""     # 完整回覆文字（補救重試時當歷史）
-    degen = _DegenWatch()
-    try:
-        stream = codex_client.chat_stream(
-            model,
-            send_messages,
-            system,
-            think=think,
-            use_schema=use_schema,
-            has_init_image=bool(init_image),
-            effort=effort,
-        )
-        try:
-            async for ev in stream:
-                kind = ev.get("type")
-                if kind == "error":
-                    yield _sse({"type": "error", "message": ev["message"]})
-                    yield _sse({"type": "done"})
-                    return
-                degenerated = False
-                if kind == "usage":
-                    prompt_tokens = ev["prompt_tokens"]
-                elif kind == "thinking":
-                    yield _sse({"type": "thinking", "delta": ev["delta"]})
-                    degenerated = degen.feed(ev["delta"])
-                elif kind == "text":
-                    if ev.get("delta"):
-                        reply_text += ev["delta"]
-                        yield _sse({"type": "token", "delta": ev["delta"]})
-                        degenerated = degen.feed(ev["delta"])
-                elif kind == "image_request":
-                    image_done = True
-                    async for out in _run_directive(
-                        ev["name"], json.dumps(ev["args"]), image_settings, init_image
-                    ):
-                        yield _sse(out)
-                if degenerated:
-                    # 模型陷入重複迴圈：中止串流（client 端會 kill codex 子行程），
-                    # 讓下面的補救重試接手
-                    yield _sse({"type": "thinking", "delta": _DEGEN_NOTE})
-                    break
-        finally:
-            await stream.aclose()
-
-        # 防遺忘 2)：使用者明顯要圖但 image_prompt 空白 → 補跑一次，只取生圖請求
-        if use_schema and not image_done and _wants_image(messages):
-            retry_messages = [
-                *messages,
-                {"role": "assistant", "content": reply_text},
-                {"role": "user", "content": _CODEX_RETRY_PROMPT},
-            ]
-            try:
-                async for ev in codex_client.chat_stream(
-                    model,
-                    retry_messages,
-                    system,
-                    think=False,
-                    use_schema=True,
-                    has_init_image=bool(init_image),
-                    effort=effort,
-                ):
-                    if ev.get("type") != "image_request":
-                        continue  # 補救輪只關心生圖請求；文字/錯誤/用量都忽略
-                    async for out in _run_directive(
-                        ev["name"], json.dumps(ev["args"]), image_settings, init_image
-                    ):
-                        yield _sse(out)
-            except Exception:
-                pass  # 補救是盡力而為，失敗不影響已送出的回覆
-
-        if prompt_tokens:
-            yield _sse(
-                {
-                    "type": "usage",
-                    "prompt_tokens": prompt_tokens,
-                    "num_ctx": _codex_ctx(model),
-                }
-            )
-        yield _sse({"type": "done"})
-    except Exception as e:
-        yield _sse({"type": "error", "message": str(e)})
-        yield _sse({"type": "done"})
 
 
 def _fmt_png_info(d: dict[str, Any]) -> str:
@@ -1132,6 +834,28 @@ def _fmt_png_info(d: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+async def _with_progress(start: Callable[[Any], Awaitable[Any]]) -> AsyncIterator[Any]:
+    """執行 start(on_progress)；執行中 yield progress 事件，最後 yield 它的結果。"""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_progress(value: float | None, message: str | None) -> None:
+        await queue.put({"type": "progress", "value": value or 0, **({"text": message} if message else {})})
+
+    task = asyncio.ensure_future(start(on_progress))
+    try:
+        while not task.done():
+            getter = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield getter.result()
+            else:
+                getter.cancel()
+        yield task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+
+
 async def _run_tool(
     name: str,
     args: dict[str, Any],
@@ -1146,11 +870,21 @@ async def _run_tool(
     if skill_tool_map and name in skill_tool_map:
         yield {"type": "tool_call", "name": name, "args": args}
         try:
-            out = await skill_tools.call_full(skill_tool_map[name], args, image=edit_image or init_image)
+            out = None
+            # MCP 工具執行中的進度（例如 MMD 算圖、sd.cpp 改圖）邊跑邊送給前端
+            async for item in _with_progress(
+                lambda on_progress: skill_tools.call_full(skill_tool_map[name], args, image=edit_image or init_image,
+                                                          on_progress=on_progress)
+            ):
+                if isinstance(item, skill_tools.ToolOutput):
+                    out = item
+                else:
+                    yield item
             for ev in out.events:  # 例如 civitai 候選卡片、範例圖庫、sd.cpp 編輯後的圖
                 yield ev
             if out.vision:  # 要給視覺模型看的圖：由主迴圈附在工具訊息上
-                yield {"type": "_tool_result", "content": out.text, "images": out.vision, "labels": out.vision_labels}
+                yield {"type": "_tool_result", "content": out.text, "images": out.vision, "labels": out.vision_labels,
+                       **({"kind": out.vision_kind} if out.vision_kind else {})}
             else:
                 yield out.text
         except Exception as e:
@@ -1177,17 +911,22 @@ async def _run_tool(
         yield {"type": "tool_call", "name": name, "args": args}
         try:
             kind, kwargs = tools_mod.build_call(name, args, image_settings, init_image)
-            params = {}
+            params: dict[str, Any] = {}
+            url = ""
             async for ev in _generate_with_progress(kind, kwargs):
                 if ev["type"] == "image":
-                    params = ev["params"]
+                    params, url = ev["params"], ev["url"]
                 yield ev
-            yield (
+            text = (
                 "Image generated successfully and shown to the user. "
                 f"Prompt used: {params.get('prompt')}. "
                 "Briefly describe it to the user in their language; "
                 "do not call the tool again unless asked."
             )
+            b64 = _load_generated(url) if url else None
+            # 視覺模型看得到剛生成的圖（由 _tool_message_with_images 決定附不附）
+            yield {"type": "_tool_result", "kind": "generated", "content": text,
+                   "images": [vision_copy(b64)] if b64 else []}
         except Exception as e:
             yield {"type": "error", "message": f"圖片生成失敗：{e}"}
             note = (

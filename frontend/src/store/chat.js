@@ -20,6 +20,7 @@ import {
   savePromptHistoryDir,
   fetchSkills,
 } from "../lib/api";
+import { fetchWorkflows, imagesIn, outputText, runWorkflow } from "../lib/workflowApi";
 
 // engine / chatModel 是「裝置本機」設定，不跨裝置同步：
 // 各裝置可用的引擎與模型不同，同步會導致某裝置切了引擎、其他裝置的模型清單也被換掉。
@@ -637,6 +638,11 @@ export const useChat = create(
           await get()._handleSlashImage(trimmed.slice(7).trim());
           return;
         }
+        // /workflow 專案:圖 輸入 → 執行 LangGraph 工作流
+        if (trimmed === "/workflow" || /^\/workflow\s/.test(trimmed)) {
+          await get()._handleSlashWorkflow(trimmed.slice(9).trim());
+          return;
+        }
 
         const attachments = get().attachments;
         const userMsg = {
@@ -785,6 +791,7 @@ export const useChat = create(
               get()._patchMessage(assistantMsg.id, {
                 progress: {
                   value: e.value || 0,
+                  text: e.text || "",
                   step: e.step,
                   steps: e.steps,
                   preview: e.preview
@@ -839,6 +846,125 @@ export const useChat = create(
           }
         );
 
+        set({ _abort: abort });
+      },
+
+      // /workflow：執行 LangGraph 工作流。每一步寫進可收合的過程區塊，生成的圖照常顯示，
+      // 最終輸出寫成回覆（messages 取最後一則 AI 訊息，其他欄位逐一列出）。
+      // 只打 /workflow 列出可用的工作流。輸入像 JSON 物件就當 JSON，否則當一段文字。
+      async _handleSlashWorkflow(rest) {
+        const m = /^(\S+)\s*([\s\S]*)$/.exec(rest || "");
+        const target = m?.[1] || "";
+        const raw = (m?.[2] || "").trim();
+        const userMsg = { id: uid(), role: "user", content: `/workflow ${rest}`.trim() };
+        const assistantMsg = {
+          id: uid(),
+          role: "assistant",
+          content: "",
+          thinking: "",
+          images: [],
+          status: "streaming",
+          toolRunning: !!target,
+          toolName: target ? `workflow ${target}` : "",
+        };
+        const convId = get().currentConversation()?.id;
+        get()._updateCurrent((c) => ({
+          ...c,
+          title: c.messages.length === 0 ? `/workflow ${target}`.slice(0, 30) : c.title,
+          messages: [...c.messages, userMsg, assistantMsg],
+        }));
+        const patch = (p) => get()._patchMessage(assistantMsg.id, p);
+        const finish = (p = {}) => {
+          patch({ status: "done", toolRunning: false, progress: null, ...p });
+          set({ streaming: false, _abort: null });
+          if (convId) get()._syncConversation(convId);
+        };
+        set({ streaming: true });
+
+        if (!target) {
+          try {
+            const data = await fetchWorkflows();
+            const names = data.projects.flatMap((p) => (p.graphs || []).map((g) => `\`${p.slug}:${g}\``));
+            finish({
+              content:
+                "`/workflow 專案:圖 輸入`（輸入可以是 JSON 物件或一段文字）\n\n" +
+                (names.length ? names.join("、") : "（還沒有工作流，請到 LangGraph 工作流頁面建立）") +
+                (data.enabled ? "" : "\n\n⚠️ 工作流頁面還沒「允許執行」。"),
+            });
+          } catch (e) {
+            finish({ error: e.message });
+          }
+          return;
+        }
+
+        let input = raw;
+        if (raw.startsWith("{")) {
+          try {
+            input = JSON.parse(raw);
+          } catch (e) {
+            finish({ error: `JSON: ${e.message}` });
+            return;
+          }
+        }
+        const { settings, models } = get();
+        let effort = normEffort(settings.effort)[effortKeyFor(settings.engine)];
+        const supported = models.find((x) => x.name === settings.chatModel)?.efforts;
+        if (supported?.length && !supported.includes(effort)) {
+          effort = supported.includes("medium") ? "medium" : supported[0];
+        }
+        const step = (line) => patch((msg) => ({ thinking: (msg.thinking || "") + line + "\n" }));
+        const short = (v) => {
+          const t = JSON.stringify(v);
+          return !t || t === "null" ? "" : t.length > 160 ? `${t.slice(0, 160)}…` : t;
+        };
+        const abort = runWorkflow(
+          {
+            target,
+            input,
+            engine: settings.engine,
+            model: settings.chatModel,
+            think: settings.think,
+            effort,
+            num_ctx: settings.numCtx,
+            image_settings: settings.imageSettings,
+            source: "chat",
+          },
+          (e) => {
+            if (e.type === "run") step(`▶ ${e.project}:${e.graph}（${e.engine} / ${e.model}）`);
+            else if (e.type === "node") step(`✓ ${e.ns ? `${e.ns}/` : ""}${e.node} ${short(e.update)}`);
+            else if (e.type === "llm") step(`  · ${e.node}: LLM${e.images ? `（看 ${e.images} 張圖）` : ""}`);
+            else if (e.type === "note") step(`  · ${e.node ? `${e.node}: ` : ""}${e.text}`);
+            else if (e.type === "log" || e.type === "stderr") step(`  ${e.text}`);
+            else if (e.type === "call_error") step(`  ✗ ${e.fn}: ${e.message}`);
+            else if (e.type === "progress") {
+              patch({ toolRunning: true, toolName: "generate_image", progress: {
+                value: e.value || 0, step: e.step, steps: e.steps,
+                preview: e.preview ? `data:image/png;base64,${e.preview}` : null,
+              } });
+            } else if (e.type === "image") {
+              patch((msg) => ({
+                toolName: `workflow ${target}`,
+                progress: null,
+                images: [...(msg.images || []), { url: e.url, params: e.params, info: e.info || "", at: 0 }],
+              }));
+            } else if (e.type === "sources") {
+              patch((msg) => ({ sources: [...(msg.sources || []), ...(e.results || [])] }));
+            } else if (e.type === "done") {
+              patch((msg) => {
+                const shown = new Set((msg.images || []).map((im) => im.url));
+                const extra = imagesIn(e.output).filter((u) => !shown.has(u)).map((url) => ({ url, at: 0 }));
+                return {
+                  content: outputText(e.output) || "✓",
+                  images: [...(msg.images || []), ...extra],
+                  toolRunning: false,
+                  progress: null,
+                };
+              });
+            } else if (e.type === "error") patch({ error: e.message });
+          },
+          () => finish(),
+          (err) => finish({ error: err.message })
+        );
         set({ _abort: abort });
       },
 

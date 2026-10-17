@@ -86,5 +86,5 @@ Model types used by every tool: `lora` (LoRA), `ckp` (checkpoint), `ti` (textual
 - `civitai_add_user_examples` downloads files: only call it when the user asked to save / keep / download the images. With `username`, keep `max_images` modest (default 10) unless the user wants more.
 - `civitai_write_card_info` writes files the WebUI reads; never pass `overwrite: true` unless the user explicitly wants existing descriptions replaced.
 - `civitai_rename_model` renames files on disk: only call it when the user asked to rename that model, with the new name the user chose, and one model per call. Never rename to "fix" a name on your own, and never change the extension unless the user asked for it.
-- If a tool reports it cannot reach the API, tell the user the WebUI must be running with the Civitai Helper extension (its API lives at `/civitai-helper/v1` on the WebUI) and stop.
+- If a tool reports it cannot reach the MCP server or that the MCP token is wrong, tell the user the WebUI must be running with the Civitai Helper extension (its MCP server lives at `/civitai-helper/mcp` on the WebUI) and its token must be set in this app's Settings → Sources → A1111, then stop.
 - When the user then wants an image with the new LoRA, generate it with the app's image capability using the LoRA tag + trigger words in the prompt.

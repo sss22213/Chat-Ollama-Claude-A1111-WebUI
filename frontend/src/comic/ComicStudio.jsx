@@ -312,12 +312,17 @@ export default function ComicStudio() {
   );
 }
 
-// Context window：有聊天用量就顯示用量/上限的計量條；否則顯示設定的 context 視窗大小。
-// 點擊開啟設定（num_ctx 滑桿在裡面）。
+// Context window：有聊天用量就顯示用量/上限的計量條；否則顯示 context 視窗大小
+// （Ollama 用設定的 num_ctx，其他引擎用模型本身的 context 長度）。點擊開啟設定。
 function CtxChip({ onClick }) {
   const t = useT();
   const usage = useChat((s) => s.usage);
-  const numCtx = useChat((s) => s.settings.numCtx);
+  const engine = useChat((s) => s.settings.engine);
+  const chatModel = useChat((s) => s.settings.chatModel);
+  const models = useChat((s) => s.models);
+  const setCtx = useChat((s) => s.settings.numCtx);
+  const modelCtx = models.find((m) => m.name === chatModel)?.context_length;
+  const numCtx = engine === "ollama" ? setCtx : modelCtx || setCtx;
   const fmt = (n) =>
     n >= 1000 ? (n / 1000).toFixed(n % 1000 ? 1 : 0) + "k" : String(n);
 

@@ -5,7 +5,7 @@ description: "Edit a user-attached image from a text instruction through the loc
 
 # Image Edit (sd.cpp)
 
-The user points at an image and tells you what to change. You call `sdcpp_edit_image` with a written instruction; the app picks the source image, sends it to the stable-diffusion.cpp server as the reference image, waits for the job, and shows the result inline. You never see or handle image data yourself.
+The user points at an image and tells you what to change. You call `sdcpp_edit_image` with a written instruction; the app picks the source image, sends it to the stable-diffusion.cpp server as the reference image, waits for the job, and shows the result inline. You never handle image data yourself; if you can view images, the result is attached to the tool answer so you can check it.
 
 **Which image gets edited:** the most recent one in this conversation — the user's newest attachment, or otherwise the last image generated with A1111 or edited here. So "edit the picture you just drew" works without re-attaching, and consecutive edits build on each other. To edit an older image, ask the user to attach it (or click its Redraw button).
 
@@ -18,7 +18,7 @@ The user points at an image and tells you what to change. You call `sdcpp_edit_i
    - Chinese instructions are fine for Qwen-Image-Edit; keep them concrete (顏色、位置、物件、保留什麼).
    - Do not write danbooru tag lists for `sdcpp_edit_image`; tags are for `sdcpp_img2img` only.
 3. Call `sdcpp_edit_image` with `prompt` (and `seed` when the user wants a variation of a previous result). Leave width/height unset unless the user asks for a size.
-4. When the result comes back, reply with one short sentence about what changed and offer a follow-up (stronger/weaker change, different seed, another edit).
+4. When the result comes back, reply with one short sentence about what changed (only what you can actually see in the attached result; otherwise say the edited image is shown) and offer a follow-up (stronger/weaker change, different seed, another edit). If the answer carries a WARNING that the loaded model is not an editing model, tell the user plainly.
 
 ## When to use img2img instead
 

@@ -20,10 +20,17 @@ from config import (
     IMAGE_DIR as DEFAULT_IMAGE_DIR,
     OLLAMA_URL,
     A1111_URL,
+    A1111_MCP_TOKEN,
+    CIVITAI_HELPER_MCP_TOKEN,
+    SDCPP_URL,
+    SDCPP_MCP_TOKEN,
+    MMD_URL,
+    MMD_MCP_TOKEN,
     STRATA_URL,
     STRATA_API_KEY,
     PROMPT_HISTORY_DIR as DEFAULT_PROMPT_HISTORY_DIR,
     SKILLS_DIR as DEFAULT_SKILLS_DIR,
+    LANGGRAPH_DIR as DEFAULT_LANGGRAPH_DIR,
     SKILL_MAX_CHARS,
 )
 
@@ -37,6 +44,38 @@ def _default_source(url: str, port: int) -> dict:
 def _default_strata() -> dict:
     # api_key 只存在這個設定檔（後端），get_sources() 不會把它傳給前端
     return {**_default_source(STRATA_URL, 8081), "api_key": STRATA_API_KEY}
+
+
+def _default_a1111() -> dict:
+    # MCP token（A1111 的 /mcp 與 Civitai Helper 的 /civitai-helper/mcp）：跟 api_key 一樣不傳給前端；
+    # 空字串＝用環境變數 A1111_MCP_TOKEN / CIVITAI_HELPER_MCP_TOKEN
+    return {**_default_source(A1111_URL, 7860), "mcp_token": "", "ch_mcp_token": ""}
+
+
+def _default_mcp(url: str, port: int) -> dict:
+    # 只提供 MCP 伺服器的服務（sd.cpp、MMD 動畫）：網址 + token；空字串＝用環境變數 SDCPP_MCP_TOKEN / MMD_MCP_TOKEN
+    return {**_default_source(url, port), "mcp_token": ""}
+
+
+def _default_sources() -> dict:
+    return {
+        "ollama": _default_source(OLLAMA_URL, 11434),
+        "a1111": _default_a1111(),
+        "strata": _default_strata(),
+        "sdcpp": _default_mcp(SDCPP_URL, 7861),
+        "mmd": _default_mcp(MMD_URL, 5280),
+    }
+
+
+# 來源設定裡的秘密欄位：只存在後端，前端只看得到 <欄位>_set
+_SECRET_FIELDS = ("api_key", "mcp_token", "ch_mcp_token")
+# MCP 伺服器（mcp_client.SERVERS）→ (服務來源, token 欄位, 環境變數給的 token)
+_MCP_TOKENS = {
+    "a1111": ("a1111", "mcp_token", A1111_MCP_TOKEN),
+    "civitai-helper": ("a1111", "ch_mcp_token", CIVITAI_HELPER_MCP_TOKEN),
+    "sdcpp": ("sdcpp", "mcp_token", SDCPP_MCP_TOKEN),
+    "mmd": ("mmd", "mcp_token", MMD_MCP_TOKEN),
+}
 
 
 def _default_web() -> dict:
@@ -57,26 +96,19 @@ _settings: dict = {
     "skills_dir": "",
     # 允許模型執行技能資料夾內的 Python 腳本（run_skill_script）；預設關閉
     "skill_scripts": False,
+    "langgraph_enabled": False,  # 允許執行 LangGraph 工作流（伺服器上跑專案的 Python）
+    "langgraph_dir": "",  # 工作流資料夾覆寫；空＝env 預設（LANGGRAPH_DIR）
     # 技能提示詞注入長度上限（字元）；0＝無上限
     "skill_max_chars": SKILL_MAX_CHARS,
-    "sources": {
-        "ollama": _default_source(OLLAMA_URL, 11434),
-        "a1111": _default_source(A1111_URL, 7860),
-        "strata": _default_strata(),
-    },
+    "sources": _default_sources(),
     "web": _default_web(),
 }
 
 
 def _normalize_sources() -> None:
     """確保 sources 結構完整（補齊缺欄位）。"""
-    defaults = {
-        "ollama": _default_source(OLLAMA_URL, 11434),
-        "a1111": _default_source(A1111_URL, 7860),
-        "strata": _default_strata(),
-    }
     src = _settings.setdefault("sources", {})
-    for svc, dflt in defaults.items():
+    for svc, dflt in _default_sources().items():
         cur = src.get(svc) or {}
         src[svc] = {**dflt, **cur}
 
@@ -117,6 +149,8 @@ def load() -> dict:
             pass
     _settings.setdefault("skills_dir", "")
     _settings.setdefault("skill_scripts", False)
+    _settings.setdefault("langgraph_enabled", False)
+    _settings.setdefault("langgraph_dir", "")
     _settings.setdefault("skill_max_chars", SKILL_MAX_CHARS)
     before = (_settings.get("image_dir"), list(_settings.get("known_dirs") or []))
     img = str(_settings.get("image_dir") or "").strip()
@@ -313,7 +347,52 @@ def set_skill_scripts(enabled: bool) -> dict:
     return skills_dir_info()
 
 
-# ---- 服務來源（Ollama / A1111 / Strata）----
+def get_langgraph_enabled() -> bool:
+    """是否允許執行 LangGraph 工作流（工作流頁面的開關，持久化）。"""
+    return bool(_settings.get("langgraph_enabled"))
+
+
+def set_langgraph_enabled(enabled: bool) -> bool:
+    _settings["langgraph_enabled"] = bool(enabled)
+    _save()
+    return get_langgraph_enabled()
+
+
+def get_langgraph_dir() -> Path:
+    """有效的工作流資料夾：UI 覆寫優先，否則用 env 預設（LANGGRAPH_DIR）。"""
+    override = (_settings.get("langgraph_dir") or "").strip()
+    return Path(override) if override else Path(DEFAULT_LANGGRAPH_DIR)
+
+
+def set_langgraph_dir(path: str) -> dict:
+    """設定工作流資料夾；空字串＝回到預設。會建立資料夾並檢查可寫。"""
+    path = (path or "").strip()
+    if path:
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            raise ValueError("請提供絕對路徑")
+        p.mkdir(parents=True, exist_ok=True)
+        if not os.access(p, os.W_OK):
+            raise PermissionError("此資料夾無法寫入")
+        path = str(p.resolve())
+    _settings["langgraph_dir"] = path
+    _save()
+    return langgraph_dir_info()
+
+
+def langgraph_dir_info() -> dict:
+    d = get_langgraph_dir()
+    return {
+        "dir": str(d),
+        "default": str(DEFAULT_LANGGRAPH_DIR),
+        "override": _settings.get("langgraph_dir") or "",
+        "writable": os.access(d, os.W_OK) if d.exists() else os.access(d.parent, os.W_OK),
+        # 在 Docker 裡：換的資料夾得是 docker-compose.yml 掛進來的路徑，否則重建容器就不見
+        "docker": Path("/.dockerenv").exists(),
+    }
+
+
+# ---- 服務來源（Ollama / A1111 / Strata / sd.cpp / MMD 動畫）----
 def effective_url(source: dict) -> str:
     """由來源設定算出實際要連的 URL。"""
     if source.get("mode") == "docker" and source.get("container"):
@@ -329,6 +408,16 @@ def get_a1111_url() -> str:
     return effective_url(_settings["sources"]["a1111"])
 
 
+def get_service_url(service: str) -> str:
+    return effective_url(_settings["sources"][service])
+
+
+def get_mcp_token(server: str) -> str:
+    """MCP 伺服器的 token：設定頁填的優先，其次環境變數。server：a1111 | civitai-helper | sdcpp | mmd。"""
+    service, field, env = _MCP_TOKENS[server]
+    return (_settings["sources"][service].get(field) or "").strip() or env
+
+
 def get_strata_url() -> str:
     return effective_url(_settings["sources"]["strata"])
 
@@ -337,17 +426,21 @@ def get_strata_key() -> str:
     return (_settings["sources"]["strata"].get("api_key") or "").strip()
 
 
-def _public(s: dict) -> dict:
-    """給前端的來源設定：API key 不外流，只說有沒有設。"""
-    out = {k: v for k, v in s.items() if k != "api_key"}
-    if "api_key" in s:
-        out["api_key_set"] = bool((s.get("api_key") or "").strip())
+def _public(service: str, s: dict) -> dict:
+    """給前端的來源設定：API key / MCP token 不外流，只說有沒有設。"""
+    out = {k: v for k, v in s.items() if k not in _SECRET_FIELDS}
+    for key in _SECRET_FIELDS:
+        if key in s:
+            out[f"{key}_set"] = bool((s.get(key) or "").strip())
+    for svc, field, env in _MCP_TOKENS.values():  # 設定頁沒填、但環境變數有給
+        if svc == service:
+            out[f"{field}_env"] = bool(env)
     return {**out, "effective_url": effective_url(s)}
 
 
 def get_sources() -> dict:
     """回傳來源設定 + 算出的有效 URL（給前端顯示）。"""
-    return {svc: _public(s) for svc, s in _settings["sources"].items()}
+    return {svc: _public(svc, s) for svc, s in _settings["sources"].items()}
 
 
 def set_source(service: str, cfg: dict) -> dict:
@@ -368,13 +461,14 @@ def set_source(service: str, cfg: dict) -> dict:
         raise ValueError("API 模式需要網址")
     if mode == "docker" and (not updated["container"] or not updated["port"]):
         raise ValueError("Docker 模式需要容器名稱與 port")
-    if "api_key" in cur:
-        # 沒送 api_key＝保持原值；送空字串＝清除
-        key = cfg.get("api_key")
-        updated["api_key"] = cur.get("api_key", "") if key is None else str(key).strip()
+    for field in _SECRET_FIELDS:
+        if field in cur:
+            # 沒送＝保持原值；送空字串＝清除
+            key = cfg.get(field)
+            updated[field] = cur.get(field, "") if key is None else str(key).strip()
     _settings["sources"][service] = updated
     _save()
-    return _public(updated)
+    return _public(service, updated)
 
 
 # ---- 前端 UI 設定（語言、引擎、SD 參數、system prompt 等）----

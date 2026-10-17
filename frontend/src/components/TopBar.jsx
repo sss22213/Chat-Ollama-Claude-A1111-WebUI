@@ -11,12 +11,14 @@ import {
   BookOpen,
   Sparkles,
   Images,
+  Workflow,
   RotateCw,
   Check,
   AlertCircle,
 } from "lucide-react";
 import { useChat, skillSelection } from "../store/chat";
 import { useT } from "../i18n";
+import { navigate } from "../Root";
 
 export default function TopBar({
   onToggleSidebar,
@@ -250,6 +252,16 @@ export default function TopBar({
       >
         <Images size={16} />
         <span className="hidden xl:inline">{t("storyStudio")}</span>
+      </button>
+
+      <button
+        onClick={() => navigate("workflows")}
+        className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-2 py-1.5 text-sm text-gray-300 hover:bg-ink-750 sm:px-3"
+        title={t("workflows")}
+        data-testid="open-workflows"
+      >
+        <Workflow size={16} />
+        <span className="hidden xl:inline">{t("workflows")}</span>
       </button>
 
       <button

@@ -104,7 +104,7 @@ export default function Message({ msg }) {
             <PngInfoActivity />
           ) : msg.toolName &&
             !["generate_image", "edit_image"].includes(msg.toolName) ? (
-            <ToolActivity toolName={msg.toolName} />
+            <ToolActivity toolName={msg.toolName} progress={msg.progress} />
           ) : (
             <GenProgress
               progress={msg.progress}
@@ -231,14 +231,32 @@ function WebActivity({ toolName }) {
 }
 
 // 技能 API 工具（tools.json 宣告的自訂工具）執行中的提示
-function ToolActivity({ toolName }) {
+// 技能工具執行中；MCP 工具有回報進度時（例如 MMD 算圖、sd.cpp 改圖）顯示百分比與目前階段
+function ToolActivity({ toolName, progress }) {
   const t = useT();
+  const pct = Math.round((progress?.value || 0) * 100);
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-ink-800 px-3 py-2 text-sm text-amber-300">
-      <Loader2 size={15} className="animate-spin" />
-      <Wrench size={14} />
-      {t("callingTool")}
-      <code className="text-xs opacity-80">{toolName}</code>
+    <div className="space-y-1.5 rounded-lg bg-ink-800 px-3 py-2 text-sm text-amber-300">
+      <div className="flex min-w-0 items-center gap-2">
+        <Loader2 size={15} className="shrink-0 animate-spin" />
+        <Wrench size={14} className="shrink-0" />
+        {t("callingTool")}
+        <code className="truncate text-xs opacity-80">{toolName}</code>
+        {progress && (
+          <span className="ml-auto shrink-0 tabular-nums text-xs text-gray-400">{pct}%</span>
+        )}
+      </div>
+      {progress && (
+        <>
+          <div className="h-1 w-full overflow-hidden rounded-full bg-ink-700">
+            <div
+              className="h-full rounded-full bg-amber-400/80 transition-all duration-300"
+              style={{ width: `${Math.max(pct, 3)}%` }}
+            />
+          </div>
+          {progress.text && <div className="truncate text-xs text-gray-400">{progress.text}</div>}
+        </>
+      )}
     </div>
   );
 }

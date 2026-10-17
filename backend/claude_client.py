@@ -178,6 +178,20 @@ def _build_user_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return content
 
 
+# stream-json 一行可能很長：工具結果（例如生成的圖）會以 base64 原樣回顯
+_LINE_LIMIT = 64 * 1024 * 1024
+# 原生 MCP：工具呼叫（生圖、下載模型…）期間 claude 不會輸出任何東西，閒置逾時要放寬
+MCP_IDLE_TIMEOUT = max(CLAUDE_TIMEOUT, 1200.0)
+MCP_SERVER_NAME = "webui"  # 工具在 claude 裡叫 mcp__webui__<名稱>
+
+
+def mcp_args(url: str) -> list[str]:
+    """掛上 webui 的 MCP 閘道（這次對話專用的網址），只准用它的工具、不載入其他 MCP 設定。"""
+    cfg = {"mcpServers": {MCP_SERVER_NAME: {"type": "http", "url": url}}}
+    return ["--mcp-config", json.dumps(cfg), "--strict-mcp-config",
+            "--allowedTools", f"mcp__{MCP_SERVER_NAME}"]
+
+
 def _base_args(
     model: str, system: str, output_format: str, effort: str | None = None
 ) -> list[str]:
@@ -204,12 +218,14 @@ def _base_args(
     return args
 
 
-async def _spawn(args: list[str], stdin_payload: str):
+async def _spawn(args: list[str], stdin_payload: str, env: dict[str, str] | None = None):
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
+        limit=_LINE_LIMIT,
     )
     proc.stdin.write((stdin_payload + "\n").encode())
     await proc.stdin.drain()
@@ -223,8 +239,9 @@ async def chat_stream(
     system: str,
     think: bool = False,
     effort: str | None = None,
+    mcp_url: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """串流 claude 回覆。
+    """串流 claude 回覆。mcp_url：webui MCP 閘道的網址，claude 直接呼叫它的工具。
 
     yield 正規化事件：{type: text|thinking|usage|error, ...}
     """
@@ -233,9 +250,16 @@ async def chat_stream(
         ensure_ascii=False,
     )
     args = _base_args(model, system, "stream-json", effort) + ["--include-partial-messages"]
+    env = None
+    idle = CLAUDE_TIMEOUT
+    if mcp_url:
+        args += mcp_args(mcp_url)
+        # 單次工具呼叫的上限（毫秒）：生圖、等 Civitai 下載都可能好幾分鐘
+        env = {**os.environ, "MCP_TOOL_TIMEOUT": str(int(MCP_IDLE_TIMEOUT * 1000)), "MCP_TIMEOUT": "30000"}
+        idle = MCP_IDLE_TIMEOUT
 
     try:
-        proc = await _spawn(args, payload)
+        proc = await _spawn(args, payload, env)
     except FileNotFoundError:
         yield {"type": "error", "message": f"找不到 claude 執行檔（{CLAUDE_BIN}）"}
         return
@@ -246,9 +270,7 @@ async def chat_stream(
     try:
         while True:
             try:
-                line = await asyncio.wait_for(
-                    proc.stdout.readline(), timeout=CLAUDE_TIMEOUT
-                )
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=idle)
             except asyncio.TimeoutError:
                 proc.kill()
                 errored = True
@@ -264,7 +286,10 @@ async def chat_stream(
             t = evt.get("type")
             if t == "stream_event":
                 e = evt.get("event") or {}
-                if e.get("type") == "content_block_delta":
+                if (e.get("type") == "content_block_start" and got_text
+                        and (e.get("content_block") or {}).get("type") == "text"):
+                    yield {"type": "text", "delta": "\n\n"}  # 工具呼叫前後的文字分段
+                elif e.get("type") == "content_block_delta":
                     d = e.get("delta") or {}
                     if d.get("type") == "text_delta" and d.get("text"):
                         got_text = True
@@ -279,8 +304,8 @@ async def chat_stream(
                 usage = evt.get("usage") or {}
                 if usage.get("input_tokens"):
                     yield {"type": "usage", "prompt_tokens": usage["input_tokens"]}
-    except GeneratorExit:
-        # 消費端提前中止（例如偵測到模型輸出退化重複）：殺掉子行程，
+    except (GeneratorExit, asyncio.CancelledError):
+        # 消費端提前中止（例如偵測到模型輸出退化重複、連線斷了）：殺掉子行程，
         # 否則 finally 的 proc.wait() 會等一個還在無限輸出的 claude 等不完。
         aborted = True
         proc.kill()
@@ -294,12 +319,15 @@ async def chat_stream(
 
 
 async def chat_once(model: str, messages: list[dict[str, Any]], system: str) -> str:
-    """非串流：回傳完整文字（給壓縮摘要用）。"""
+    """非串流：回傳完整文字（壓縮摘要、分鏡、圖片說故事、工作流用）。
+
+    新版 CLI 的 --input-format stream-json 只能配 --output-format stream-json，
+    所以照樣讀串流，取最後的 result 事件（沒有就把助理訊息的文字接起來）。"""
     payload = json.dumps(
         {"type": "user", "message": {"role": "user", "content": _build_user_content(messages)}},
         ensure_ascii=False,
     )
-    args = _base_args(model, system, "json")
+    args = _base_args(model, system, "stream-json")
     proc = await _spawn(args, payload)
     try:
         out = await asyncio.wait_for(proc.stdout.read(), timeout=CLAUDE_TIMEOUT)
@@ -307,11 +335,24 @@ async def chat_once(model: str, messages: list[dict[str, Any]], system: str) -> 
         proc.kill()
         raise RuntimeError("claude 回覆逾時")
     rc = await proc.wait()
-    if rc != 0:
+    result: dict[str, Any] | None = None
+    texts: list[str] = []
+    for line in out.decode(errors="replace").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "result":
+            result = ev
+        elif ev.get("type") == "assistant":
+            for block in (ev.get("message") or {}).get("content") or []:
+                if block.get("type") == "text":
+                    texts.append(block.get("text") or "")
+    if result is not None and result.get("is_error"):
+        raise RuntimeError(str(result.get("result") or result.get("subtype") or "claude 回覆失敗"))
+    if rc != 0 and result is None:
         err = (await proc.stderr.read()).decode(errors="replace").strip()
         raise RuntimeError(err or f"claude 結束碼 {rc}")
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return out.decode(errors="replace") if isinstance(out, bytes) else str(out)
-    return (data.get("result") or "").strip()
+    if result is not None and isinstance(result.get("result"), str):
+        return result["result"].strip()
+    return "".join(texts).strip()

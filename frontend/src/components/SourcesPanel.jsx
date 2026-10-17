@@ -9,24 +9,45 @@ import {
   listDockerContainers,
 } from "../lib/api";
 
+// secrets：只存在後端的欄位（API key、MCP token），前端只拿得到 <欄位>_set / <欄位>_env
 const SERVICES = [
-  { key: "ollama", label: "Ollama", defPort: 11434 },
-  { key: "a1111", label: "A1111", defPort: 7860 },
-  // Strata：本機 LLM 伺服器（OpenAI 相容）；API key 只存在後端
-  { key: "strata", label: "Strata", defPort: 8081, apiKey: true },
+  { key: "ollama", label: "Ollama", defPort: 11434, secrets: [] },
+  // A1111：工具一律走 MCP（Forge 的 /mcp 與 Civitai Helper 的 /civitai-helper/mcp），各要一個 token
+  {
+    key: "a1111",
+    label: "A1111",
+    defPort: 7860,
+    secrets: [
+      { field: "mcp_token", label: "mcpTokenLabel", ph: "mcpTokenPh" },
+      { field: "ch_mcp_token", label: "chMcpTokenLabel", ph: "chMcpTokenPh" },
+    ],
+    hint: "mcpHint",
+  },
+  // Strata：本機 LLM 伺服器（OpenAI 相容）
+  { key: "strata", label: "Strata", defPort: 8081, secrets: [{ field: "api_key", label: "apiKeyLabel", ph: "apiKeyPh" }], hint: "apiKeyHint" },
+  // sd.cpp / MMD 動畫：只提供 MCP 伺服器（改圖、MMD 動畫技能的工具），token 是各自專案 .env 的 MCP_TOKEN
+  { key: "sdcpp", label: "sd.cpp", defPort: 7861, secrets: [{ field: "mcp_token", label: "sdcppTokenLabel", ph: "sdcppTokenPh" }], hint: "sdcppHint" },
+  { key: "mmd", label: "MMD", defPort: 5280, secrets: [{ field: "mcp_token", label: "mmdTokenLabel", ph: "mmdTokenPh" }], hint: "mmdHint" },
 ];
+const SECRET_FIELDS = ["api_key", "mcp_token", "ch_mcp_token"];
 
-// 送給後端的來源設定：API key 只有使用者改過（_keyDirty）才送，空字串＝清除
+// 送給後端的來源設定：秘密欄位只有使用者改過（_dirty）才送，空字串＝清除
 function payloadFor(cfg) {
   if (!cfg) return undefined;
-  const { api_key, _keyDirty, api_key_set, effective_url, ...rest } = cfg;
-  return _keyDirty ? { ...rest, api_key: api_key || "" } : rest;
+  const { _dirty = {}, effective_url, ...rest } = cfg;
+  const out = {};
+  for (const [k, v] of Object.entries(rest)) {
+    if (SECRET_FIELDS.includes(k) || k.endsWith("_set") || k.endsWith("_env")) continue;
+    out[k] = v;
+  }
+  for (const k of SECRET_FIELDS) if (_dirty[k]) out[k] = cfg[k] || "";
+  return out;
 }
 
 export default function SourcesPanel() {
   const t = useT();
   const loadResources = useChat((s) => s.loadResources);
-  const [src, setSrc] = useState(null); // {ollama:{...}, a1111:{...}}
+  const [src, setSrc] = useState(null); // {ollama:{...}, a1111:{...}, ...}
   const [docker, setDocker] = useState(null); // {available, containers, reason}
   const [test, setTest] = useState({}); // {svc: {state, ms, detail}}
   const [saving, setSaving] = useState(false);
@@ -55,7 +76,14 @@ export default function SourcesPanel() {
       setTest((r) => ({
         ...r,
         [svc]: res.ok
-          ? { state: "ok", ms: res.latency_ms, model: res.model, context: res.context }
+          ? {
+              state: "ok",
+              ms: res.latency_ms,
+              model: res.model,
+              context: res.context,
+              tools: res.tools,
+              ch: res.civitai_helper,
+            }
           : { state: "fail", detail: res.detail },
       }));
     } catch (e) {
@@ -66,11 +94,7 @@ export default function SourcesPanel() {
   const onSave = async () => {
     setSaving(true);
     try {
-      await saveSources({
-        ollama: payloadFor(src.ollama),
-        a1111: payloadFor(src.a1111),
-        strata: payloadFor(src.strata),
-      });
+      await saveSources(Object.fromEntries(SERVICES.map((s) => [s.key, payloadFor(src[s.key])])));
       setSrc(await fetchSources()); // 更新「API key 已設定」並清掉輸入框
       setSaved(true);
       await loadResources(); // 用新來源重新抓模型/健康狀態
@@ -212,38 +236,10 @@ function ServiceBlock({ svc, cfg, test, docker, onPatch, onTest, onListContainer
         </div>
       )}
 
-      {svc.apiKey && (
-        <div className="space-y-1">
-          <div className="flex gap-2">
-            <input
-              type="password"
-              value={cfg.api_key || ""}
-              onChange={(e) => onPatch({ api_key: e.target.value, _keyDirty: true })}
-              placeholder={cfg.api_key_set ? t("apiKeySetPh") : t("apiKeyPh")}
-              autoComplete="new-password"
-              spellCheck={false}
-              title={t("apiKeyLabel")}
-              data-testid={`apikey-${svc.key}`}
-              className="flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 font-mono text-xs outline-none focus:border-ink-500"
-            />
-            {cfg.api_key_set && (
-              <button
-                onClick={() => onPatch({ api_key: "", _keyDirty: true })}
-                className="shrink-0 rounded-lg border border-ink-600 px-2.5 text-xs hover:bg-ink-750"
-              >
-                {t("apiKeyClear")}
-              </button>
-            )}
-          </div>
-          <p className="text-[11px] text-gray-500">
-            {cfg._keyDirty && !cfg.api_key && cfg.api_key_set ? (
-              <span className="text-amber-400/90">{t("apiKeyWillClear")}</span>
-            ) : (
-              t("apiKeyHint")
-            )}
-          </p>
-        </div>
-      )}
+      {svc.secrets.map((sec) => (
+        <SecretField key={sec.field} cfg={cfg} sec={sec} onPatch={onPatch} />
+      ))}
+      {svc.hint && <p className="text-[11px] text-gray-500">{t(svc.hint)}</p>}
 
       <div className="flex items-center gap-2">
         <button
@@ -261,6 +257,14 @@ function ServiceBlock({ svc, cfg, test, docker, onPatch, onTest, onListContainer
                 {test.context ? ` · ${Number(test.context).toLocaleString()} ctx` : ""}
               </span>
             )}
+            {test.tools != null && <span className="text-gray-400">· {t("mcpToolsOk", { n: test.tools })}</span>}
+            {test.ch?.ok && <span className="text-gray-400">· {t("chToolsOk", { n: test.ch.tools })}</span>}
+          </span>
+        )}
+        {test?.state === "ok" && test.ch && !test.ch.ok && (
+          <span className="flex min-w-0 items-center gap-1 text-xs text-amber-300" title={test.ch.detail}>
+            <AlertTriangle size={13} className="shrink-0" />
+            <span className="truncate">{t("chFailed")} · {test.ch.detail}</span>
           </span>
         )}
         {test?.state === "fail" && (
@@ -274,6 +278,42 @@ function ServiceBlock({ svc, cfg, test, docker, onPatch, onTest, onListContainer
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+// 只存在後端的欄位：留空＝保持原值，按「清除」＝儲存時清掉；有環境變數時註明
+function SecretField({ cfg, sec, onPatch }) {
+  const t = useT();
+  const { field } = sec;
+  const isSet = cfg[`${field}_set`];
+  const fromEnv = cfg[`${field}_env`];
+  const dirty = cfg._dirty?.[field];
+  const set = (value) => onPatch({ [field]: value, _dirty: { ...(cfg._dirty || {}), [field]: true } });
+  return (
+    <div className="space-y-1">
+      <div className="flex gap-2">
+        <input
+          type="password"
+          value={cfg[field] || ""}
+          onChange={(e) => set(e.target.value)}
+          placeholder={isSet ? t("apiKeySetPh") : fromEnv ? t("tokenEnvPh") : t(sec.ph)}
+          autoComplete="new-password"
+          spellCheck={false}
+          title={t(sec.label)}
+          data-testid={`secret-${field}`}
+          className="flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 font-mono text-xs outline-none focus:border-ink-500"
+        />
+        {isSet && (
+          <button onClick={() => set("")} className="shrink-0 rounded-lg border border-ink-600 px-2.5 text-xs hover:bg-ink-750">
+            {t(field === "api_key" ? "apiKeyClear" : "tokenClear")}
+          </button>
+        )}
+      </div>
+      <p className="text-[11px] text-gray-500">
+        {t(sec.label)}
+        {dirty && !cfg[field] && isSet && <span className="text-amber-400/90"> · {t("tokenWillClear")}</span>}
+      </p>
     </div>
   );
 }

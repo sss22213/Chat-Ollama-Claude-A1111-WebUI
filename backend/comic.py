@@ -6,6 +6,10 @@ danbooru 風格的「場景提示詞」＋對白＋旁白，回傳結構化 JSON
 所以這裡每格只描述「場景 / 動作 / 構圖」與「出場角色名」，不重複角色外觀。
 表情獨立成 expression 欄位（只能從 expression_tags 白名單挑），前端組合提示詞時
 會加權放在畫風之後，才不會被角色固定 tag / LoRA 壓過。
+
+讀得懂英文句子的 checkpoint（Anima）另外要 description 欄位：2–4 句英文描述這格的畫面，
+前端整段放在標籤前面（不拆、不去重）。漫畫自己選的技能（SKILL.md）接在 system 後面，
+並附上漫畫用的轉接說明（沒有工具、只輸出 JSON、哪些東西由 app 自己帶）。
 """
 from __future__ import annotations
 
@@ -14,9 +18,11 @@ import logging
 import re
 from typing import Any
 
+import a1111_client
 import claude_client
 import codex_client
 import ollama_client
+import skills_store
 import strata_client
 from expression_tags import EXPRESSION_TAGS, clean_expression, split_scene
 
@@ -93,6 +99,100 @@ def _system_prompt() -> str:
 def default_system() -> str:
     """內建的分鏡 system 範本（給前端「載入預設」來編輯）。"""
     return _system_prompt()
+
+
+# ---------------- 英文句子（Anima）與技能 ----------------
+
+PROMPT_MODES = ("auto", "tags", "sentences")
+
+_DESCRIPTION_RULE = (
+    "- description: 2-4 English sentences (present tense, third person) describing ONLY "
+    "this panel's picture: who is in frame and where (\"On the left …\", \"Behind her …\" "
+    "when there are several, one sentence per character), each character's pose, action "
+    "and gesture, the visible expression, the props, the place and background, the time "
+    "of day, weather and light, and the framing (\"Close-up.\", \"Wide shot from above.\"). "
+    "NEVER write a cast member's name in description — not the original, not romanized, "
+    "not translated: the image model does not know them. Refer to each one by a short "
+    "look taken from the cast list instead (\"The girl with short orange hair and a yellow "
+    "raincoat crouches …\", \"the boy with glasses\"); only a well-known character of an "
+    "existing series may be named. Turn feelings into something visible. No dialogue, "
+    "captions, sound effects or other text, no quality words, no <lora:…> tags.\n"
+    "- prompt stays a list of 8-15 SHORT danbooru tags (1-3 words each, e.g. \"bus stop, "
+    "rain, umbrella, crouching, from below\") of the same picture — never phrases or "
+    "sentences there. The sentences say how things relate, the tags pin down each detail.\n"
+)
+
+
+def _description_section(shape: str) -> str:
+    """句子模式：接在 system 範本後面（自訂範本也適用），多要一個 description 欄位。"""
+    return (
+        "\n\n# Natural-language description (this checkpoint reads English sentences)\n"
+        "The image model for this comic understands plain English sentences as well as "
+        "danbooru tags. Besides the fields above, write:\n"
+        + _DESCRIPTION_RULE
+        + "Return the JSON in exactly this shape:\n"
+        + shape
+    )
+
+
+def _comic_adapter(sentences: bool) -> str:
+    return (
+        "\n\n# Runtime adapter (Comic Studio — READ THIS, overrides the skills where they "
+        "conflict)\n"
+        "You are writing a comic storyboard as JSON, not chatting: there are NO tools, NO "
+        "scripts and NO image-generation calls here. Use the skills above only for how to "
+        "write each panel's picture — which tags and words to choose and what to describe. "
+        "Keep exactly the JSON fields and rules of this system message; never answer with a "
+        "prompt line, a tool call or markdown. The app builds each panel's image prompt "
+        "itself: the comic's style line (quality words, artist, safety tag), "
+        + ("the 'description' sentences, " if sentences else "")
+        + "the panel's expression, each character's fixed look and LoRA from their card, "
+        "then the scene tags. So do not write quality prefixes, <lora:…> tags, negative "
+        "prompts, sizes or sampler settings, and do not restate a character's fixed look in "
+        "the tags. "
+        + (
+            "Write 'description' the way the skill describes its natural-language part."
+            if sentences
+            else "This checkpoint gets tags only: if a skill asks for English sentences, "
+            "leave them out and put everything into the tags."
+        )
+    )
+
+
+def _skills_section(skills: list[str] | None, sentences: bool) -> str:
+    """漫畫選的技能：說明＋references（受設定頁長度上限）＋漫畫轉接層；自動模式不適用。"""
+    slugs = [x for x in skills_store.parse_selection(skills or []) if x != skills_store.AUTO]
+    if not slugs:
+        return ""
+    text = skills_store.build_prompt(slugs, adapter=_comic_adapter(sentences))
+    return "\n\n" + text if text else ""
+
+
+async def wants_sentences(mode: str, checkpoint: str) -> bool:
+    """這次要不要 description。auto：checkpoint 是 Anima 才要（留空就問 Forge 目前選的）。"""
+    if mode == "sentences":
+        return True
+    if mode == "tags":
+        return False
+    ckpt = (checkpoint or "").strip() or await a1111_client.get_current_model() or ""
+    return await a1111_client.checkpoint_family(ckpt) == "Anima"
+
+
+def _extras(skills: list[str] | None, sentences: bool, shape: str, user_system: str) -> str:
+    """system 範本之後依序接：句子規則 → 技能＋轉接層 → 使用者的額外指示（最後，優先）。"""
+    out = _description_section(shape) if sentences else ""
+    out += _skills_section(skills, sentences)
+    if (user_system or "").strip():
+        out += "\n\n# Additional direction from the user (style/tone/content)\n" + user_system.strip()
+    return out
+
+
+_LORA_TAG_RE = re.compile(r"<lora:[^>]*>", re.IGNORECASE)
+
+
+def clean_description(text: Any) -> str:
+    """一行、去掉 <lora:…>（LoRA 由角色卡 / 畫風帶）。"""
+    return re.sub(r"\s+", " ", _LORA_TAG_RE.sub("", str(text or ""))).strip()
 
 
 def _user_prompt(
@@ -252,6 +352,17 @@ JSON_TRUNCATED_HINT = (
 )
 
 
+MISSING_DESCRIPTION_HINT = (
+    "\n\nYour previous answer left out 'description' in some panels. EVERY panel object "
+    "needs all its fields, including a 'description' of 2-4 English sentences. Reply with "
+    "ONLY the JSON object."
+)
+
+
+def _missing_descriptions(storyboard: dict[str, Any]) -> int:
+    return sum(1 for p in storyboard["panels"] if not p["description"])
+
+
 def json_retry_hint(text: str) -> str:
     return JSON_TRUNCATED_HINT if looks_truncated(text) else JSON_RETRY_HINT
 
@@ -398,6 +509,7 @@ def _normalize(
         panels.append(
             {
                 "prompt": prompt,
+                "description": clean_description(p.get("description") or p.get("sentences")),
                 "expression": ", ".join(expression[:4]),
                 "characters": chars,
                 "dialogue": dialogue_out,
@@ -433,8 +545,9 @@ def _panel_line(i: int, p: dict[str, Any]) -> str:
         if isinstance(d, dict) and (d.get("text") or "").strip()
     )
     chars = ", ".join(str(c) for c in (p.get("characters") or []))
+    desc = f" | description: {p['description']}" if (p.get("description") or "").strip() else ""
     return (
-        f"[Panel {i}] prompt: {p.get('prompt') or '-'} | expression: {p.get('expression') or '-'}"
+        f"[Panel {i}] prompt: {p.get('prompt') or '-'}{desc} | expression: {p.get('expression') or '-'}"
         f" | characters: {chars or '-'} | dialogue: {dlg or '-'} | caption: {p.get('caption') or '-'}"
     )
 
@@ -453,9 +566,12 @@ async def panel_prompt(
     num_ctx: int | None = None,
     system: str = "",
     think: bool | None = None,
+    skills: list[str] | None = None,
+    prompt_mode: str = "auto",
+    checkpoint: str = "",
 ) -> dict[str, Any]:
-    """只為第 index 格（0 起算）重新產生場景關鍵字與表情；對白、旁白、出場角色不動。
-    回傳 {"prompt", "expression", "notices"}。"""
+    """只為第 index 格（0 起算）重新產生場景關鍵字與表情（句子模式連 description）；
+    對白、旁白、出場角色不動。回傳 {"prompt", "expression", "description", "sentences", "notices"}。"""
     if not isinstance(panels, list) or not panels:
         raise ValueError("缺少分鏡")
     if not (0 <= index < len(panels)):
@@ -463,11 +579,10 @@ async def panel_prompt(
     target = panels[index] if isinstance(panels[index], dict) else {}
     notices = ollama_client.start_notices()
 
-    system_prompt = _panel_prompt_system()
-    if (system or "").strip():
-        system_prompt += (
-            "\n\n# Additional direction from the user (style/tone/content)\n" + system.strip()
-        )
+    sentences = await wants_sentences(prompt_mode, checkpoint)
+    system_prompt = _panel_prompt_system() + _extras(
+        skills, sentences, '{"prompt": "...", "description": "...", "expression": "..."}', system
+    )
     lines = [f"Dialogue language: {lang}.", ""]
     if (style or "").strip():
         lines.append(f"Overall art style / mood: {style.strip()}")
@@ -484,8 +599,13 @@ async def panel_prompt(
     lines += [
         "",
         f"Target: panel {index + 1}. Its dialogue, caption and characters stay as they are; "
-        "rewrite ONLY 'prompt' and 'expression' for this panel.",
+        + (
+            "rewrite ONLY 'prompt', 'description' and 'expression' for this panel."
+            if sentences
+            else "rewrite ONLY 'prompt' and 'expression' for this panel."
+        ),
         f"Current prompt: {target.get('prompt') or '-'}",
+        *([f"Current description: {target.get('description') or '-'}"] if sentences else []),
         f"Current expression: {target.get('expression') or '-'}",
         "Direction from the user: "
         + ((instruction or "").strip() or "none — produce a better, more detailed set of tags for this panel."),
@@ -500,6 +620,7 @@ async def panel_prompt(
         "panels": [
             {
                 "prompt": obj.get("prompt") or obj.get("scene") or "",
+                "description": obj.get("description") if sentences else "",
                 "expression": obj.get("expression") or "",
                 "characters": target.get("characters") or [],
                 "dialogue": target.get("dialogue") or [],
@@ -510,7 +631,13 @@ async def panel_prompt(
     out = _normalize(one, 1, characters)["panels"][0]
     if not out["prompt"].strip():
         raise ValueError("模型沒有回傳關鍵字")
-    return {"prompt": out["prompt"], "expression": out["expression"], "notices": notices}
+    return {
+        "prompt": out["prompt"],
+        "expression": out["expression"],
+        "description": out["description"],
+        "sentences": sentences,
+        "notices": notices,
+    }
 
 
 async def storyboard(
@@ -526,14 +653,20 @@ async def storyboard(
     system: str = "",
     system_base: str = "",
     think: bool | None = None,
+    skills: list[str] | None = None,
+    prompt_mode: str = "auto",
+    checkpoint: str = "",
 ) -> dict[str, Any]:
-    """產生分鏡腳本。回傳 {"panels": [...], "notices": [...]}。
+    """產生分鏡腳本。回傳 {"panels": [...], "sentences": bool, "notices": [...]}。
     notices：這次生成中使用者該知道的事（見 ollama_client.start_notices），前端顯示。
 
     think：Ollama 思考型模型是否先思考（None＝模型預設）；CLI 引擎另有自己的推理設定。
 
     system_base：覆寫內建的分鏡 system 範本（空＝用 default_system()）。
     system：使用者自訂的額外指示，接在 system 範本之後（不覆蓋）。
+    skills：漫畫選的技能 slug；說明接在 system 範本之後、使用者額外指示之前。
+    prompt_mode：auto（checkpoint 是 Anima 才寫句子）/ tags / sentences；
+    checkpoint：漫畫出圖設定的 checkpoint（空＝Forge 目前選的）。
     """
     premise = (premise or "").strip()
     if not premise:
@@ -541,15 +674,39 @@ async def storyboard(
     panel_count = max(1, min(MAX_PANELS, int(panel_count or 6)))
     notices = ollama_client.start_notices()  # 例如：思考沒給出答案、自動改用不思考
 
-    system_prompt = (system_base or "").strip() or _system_prompt()
-    if (system or "").strip():
-        system_prompt += (
-            "\n\n# Additional direction from the user (style/tone/content)\n"
-            + system.strip()
-        )
+    sentences = await wants_sentences(prompt_mode, checkpoint)
+    shape = '{"panels": [' + PANEL_JSON_SHAPE.replace(
+        '"prompt": "...", ', '"prompt": "...", "description": "...", '
+    ) + "]}"
+    system_prompt = ((system_base or "").strip() or _system_prompt()) + _extras(
+        skills, sentences, shape, system
+    )
     user = _user_prompt(premise, panel_count, characters, style, lang)
 
     obj = await ask_json(
         engine, model, system_prompt, user, None, num_ctx, think, label="storyboard"
     )
-    return {**_normalize(obj, panel_count, characters), "notices": notices}
+    out = _normalize(obj, panel_count, characters)
+    if sentences and _missing_descriptions(out):
+        # 偶爾有格漏寫句子（連對白、角色一起漏）：再問一次，留比較完整的那份
+        log.warning(
+            "storyboard: %d panel(s) without description, asking once more",
+            _missing_descriptions(out),
+        )
+        try:
+            again = _normalize(
+                await ask_json(
+                    engine, model, system_prompt, user + MISSING_DESCRIPTION_HINT, None,
+                    num_ctx, think, label="storyboard",
+                ),
+                panel_count,
+                characters,
+            )
+            if _missing_descriptions(again) < _missing_descriptions(out):
+                out = again
+        except ValueError as e:
+            log.warning("storyboard retry failed: %s", e)
+    if not sentences:
+        for p in out["panels"]:
+            p["description"] = ""
+    return {**out, "sentences": sentences, "notices": notices}

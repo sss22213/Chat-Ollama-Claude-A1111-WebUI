@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-import settings_store
+import mcp_client
 from config import DATA_DIR
 
 log = logging.getLogger("lora_meta")
@@ -68,34 +68,28 @@ def infer_base(meta: dict[str, Any] | None) -> str | None:
 
 # ---------------- Civitai Helper 清單（來源資料） ----------------
 
-def _ch_url(path: str) -> str:
-    return f"{settings_store.get_a1111_url()}/civitai-helper/v1{path}"
-
-
 async def inventory() -> dict[str, dict[str, Any]]:
-    """{A1111 端的 LoRA 絕對路徑: civitai 摘要}；Civitai Helper 不在時回 {}。"""
+    """{A1111 端的 LoRA 絕對路徑: civitai 摘要}（經 Civitai Helper 的 MCP）；連不上時回 {}。"""
     out: dict[str, dict[str, Any]] = {}
     page = 5000  # API 單頁上限
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            offset = 0
-            while True:
-                r = await client.get(
-                    _ch_url("/loras"),
-                    params={"limit": page, "offset": offset, "format": "json", "metadata": "false"},
-                )
-                r.raise_for_status()
-                d = r.json()
-                folder = str(d.get("folder") or "").rstrip("/")
-                items = d.get("items") or []
-                for it in items:
-                    c = it.get("civitai")
-                    if isinstance(c, dict) and c.get("model_id"):
-                        out[f"{folder}/{it.get('path')}"] = c
-                offset += len(items)
-                if len(items) < page or offset >= int(d.get("total") or 0):
-                    break
-    except (httpx.HTTPError, ValueError) as e:
+        offset = 0
+        while True:
+            d = await mcp_client.call_json(
+                "civitai-helper", "civitai_lora_inventory",
+                {"limit": page, "offset": offset, "format": "json", "metadata": False, "compact": False},
+                timeout=60,
+            )
+            folder = str(d.get("folder") or "").rstrip("/")
+            items = d.get("items") or []
+            for it in items:
+                c = it.get("civitai")
+                if isinstance(c, dict) and c.get("model_id"):
+                    out[f"{folder}/{it.get('path')}"] = c
+            offset += len(items)
+            if len(items) < page or offset >= int(d.get("total") or 0):
+                break
+    except (mcp_client.McpError, AttributeError) as e:
         log.info("civitai helper inventory unavailable: %s", e)
         return {}
     return out

@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 import threading
@@ -30,6 +30,11 @@ import comics_store
 import config
 import conversations_store
 import docker_probe
+import langgraph_exec
+import langgraph_history
+import langgraph_store
+import mcp_client
+import tool_gateway
 import loras
 import ollama_client
 import prompt_history_store
@@ -281,7 +286,7 @@ def make_dir(req: MkdirRequest) -> dict[str, Any]:
     return {"path": str(target.resolve())}
 
 
-# ---- 服務來源（Ollama / A1111）----
+# ---- 服務來源（Ollama / A1111 / Strata / sd.cpp / MMD 動畫）----
 @app.get("/api/sources")
 def get_sources() -> dict[str, Any]:
     return settings_store.get_sources()
@@ -294,27 +299,29 @@ class SourceCfg(BaseModel):
     port: int | None = None
     # 只有 Strata 用：不送＝保持原值，空字串＝清除（存在後端，GET /api/sources 不會回傳）
     api_key: str | None = None
+    # MCP token（同上：不送＝保持，空字串＝清除）：A1111 的 mcp_token / ch_mcp_token（Civitai Helper），
+    # sd.cpp 與 MMD 動畫的 mcp_token
+    mcp_token: str | None = None
+    ch_mcp_token: str | None = None
 
 
 class SourcesRequest(BaseModel):
     ollama: SourceCfg | None = None
     a1111: SourceCfg | None = None
     strata: SourceCfg | None = None
+    sdcpp: SourceCfg | None = None
+    mmd: SourceCfg | None = None
 
 
 @app.put("/api/sources")
 def set_sources(req: SourcesRequest) -> dict[str, Any]:
     changed = []
     try:
-        if req.ollama is not None:
-            settings_store.set_source("ollama", req.ollama.model_dump(exclude_none=True))
-            changed.append("ollama")
-        if req.a1111 is not None:
-            settings_store.set_source("a1111", req.a1111.model_dump(exclude_none=True))
-            changed.append("a1111")
-        if req.strata is not None:
-            settings_store.set_source("strata", req.strata.model_dump(exclude_none=True))
-            changed.append("strata")
+        for svc in ("ollama", "a1111", "strata", "sdcpp", "mmd"):
+            cfg = getattr(req, svc)
+            if cfg is not None:
+                settings_store.set_source(svc, cfg.model_dump(exclude_none=True))
+                changed.append(svc)
     except (ValueError, PermissionError) as e:
         raise HTTPException(400, str(e))
     if "ollama" in changed:
@@ -325,13 +332,16 @@ def set_sources(req: SourcesRequest) -> dict[str, Any]:
 
 
 class TestRequest(BaseModel):
-    service: str  # "ollama" | "a1111" | "strata"
+    service: str  # "ollama" | "a1111" | "strata" | "sdcpp" | "mmd"
     mode: str = "api"
     url: str | None = None
     container: str | None = None
     port: int | None = None
     # Strata：測試尚未儲存的新 key；不送就用已儲存的
     api_key: str | None = None
+    # 測試尚未儲存的 MCP token（A1111 / Civitai Helper / sd.cpp / MMD 動畫）；不送就用已儲存的
+    mcp_token: str | None = None
+    ch_mcp_token: str | None = None
 
 
 @app.post("/api/sources/test")
@@ -342,7 +352,15 @@ async def test_source(req: TestRequest) -> dict[str, Any]:
         return {"ok": False, "url": url, "detail": "URL 為空"}
     if req.service == "strata":
         return await _test_strata(url, req.api_key)
-    path = "/api/version" if req.service == "ollama" else "/sdapi/v1/options"
+    if req.service == "a1111":
+        return await _test_a1111(url, req.mcp_token, req.ch_mcp_token)
+    if req.service in ("sdcpp", "mmd"):  # 只提供 MCP 伺服器的服務
+        t0 = time.monotonic()
+        res = await mcp_client.check(req.service, url, req.mcp_token or None)
+        if not res["ok"]:
+            return {"ok": False, "url": url, "detail": res["detail"]}
+        return {"ok": True, "url": url, "latency_ms": int((time.monotonic() - t0) * 1000), "tools": res["tools"]}
+    path = "/api/version"
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=8) as client:
@@ -352,6 +370,20 @@ async def test_source(req: TestRequest) -> dict[str, Any]:
         return {"ok": True, "url": url, "latency_ms": latency}
     except Exception as e:
         return {"ok": False, "url": url, "detail": str(e)}
+
+
+async def _test_a1111(url: str, token: str | None, ch_token: str | None) -> dict[str, Any]:
+    """A1111 的工具都走 MCP：兩個 MCP 端點（A1111、Civitai Helper）都要連得上、token 要對。"""
+    t0 = time.monotonic()
+    a1111 = await mcp_client.check("a1111", url, token or None)
+    ch = await mcp_client.check("civitai-helper", url, ch_token or None)
+    latency = int((time.monotonic() - t0) * 1000)
+    if not a1111["ok"]:
+        return {"ok": False, "url": url, "detail": a1111["detail"], "civitai_helper": ch}
+    out = {"ok": True, "url": url, "latency_ms": latency, "tools": a1111["tools"], "civitai_helper": ch}
+    if not ch["ok"]:  # 生圖可以用，Civitai Helper 的功能不行
+        out["warning"] = ch["detail"]
+    return out
 
 
 async def _test_strata(url: str, api_key: str | None) -> dict[str, Any]:
@@ -775,6 +807,298 @@ async def compact(req: CompactRequest) -> dict[str, Any]:
     return {"summary": summary.strip(), "notices": notices}
 
 
+# ---- LangGraph 工作流（官方 langgraph.json + Python 專案，每個專案一個 venv）----
+def _lg_errors(e: Exception) -> HTTPException:
+    if isinstance(e, FileNotFoundError):
+        return HTTPException(404, str(e))
+    if isinstance(e, PermissionError):
+        return HTTPException(403, str(e))
+    if isinstance(e, (ValueError, FileExistsError)):
+        return HTTPException(400, str(e))
+    log.exception("LangGraph 工作流失敗")
+    return HTTPException(502, describe(e))
+
+
+def _sse_stream(events: Any) -> StreamingResponse:
+    """把事件產生器包成 SSE；開始前就失敗（未開啟、沒安裝…）也以 error 事件回報。"""
+    async def gen() -> Any:
+        try:
+            async for ev in events:
+                yield chat_mod._sse(ev)
+        except Exception as e:
+            if not isinstance(e, (ValueError, PermissionError, FileNotFoundError, TimeoutError)):
+                log.exception("LangGraph 串流失敗")
+            yield chat_mod._sse({"type": "error", "message": describe(e)})
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/langgraph")
+def langgraph_overview() -> dict[str, Any]:
+    """工作流頁面：是否允許執行、工作流資料夾、專案清單（含 venv 狀態、最近一次執行）。"""
+    return {
+        "enabled": settings_store.get_langgraph_enabled(),
+        "folder": settings_store.langgraph_dir_info(),
+        "projects": langgraph_store.list_projects(),
+        "templates": langgraph_store.list_templates(),
+    }
+
+
+class LgDirRequest(BaseModel):
+    path: str  # 空字串＝回到預設
+
+
+@app.put("/api/langgraph/dir")
+def langgraph_set_dir(req: LgDirRequest) -> dict[str, Any]:
+    """換工作流資料夾（要在 BROWSE_ROOTS 裡）；venv 與執行紀錄依資料夾分開存。"""
+    if req.path.strip():
+        _ensure_allowed(Path(req.path))
+    try:
+        return settings_store.set_langgraph_dir(req.path)
+    except (ValueError, PermissionError) as e:
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(400, f"無法使用此資料夾：{e}")
+
+
+class EnabledRequest(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/langgraph/enabled")
+def langgraph_enable(req: EnabledRequest) -> dict[str, bool]:
+    return {"enabled": settings_store.set_langgraph_enabled(req.enabled)}
+
+
+class LgCreateRequest(BaseModel):
+    slug: str
+    template: str = "example"  # example | empty
+
+
+@app.post("/api/langgraph/projects")
+def langgraph_create(req: LgCreateRequest) -> dict[str, Any]:
+    try:
+        return langgraph_store.create_project(req.slug.strip(), req.template)
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+class LgUploadFile(BaseModel):
+    path: str
+    b64: str
+
+
+class LgUploadRequest(BaseModel):
+    files: list[LgUploadFile] = []  # 資料夾上傳（相對路徑＋內容）
+    zip_b64: str = ""  # 或一個 zip
+    replace: bool = False  # 先清掉專案原本的檔案（venv 保留）
+
+
+@app.post("/api/langgraph/projects/{slug}/upload")
+def langgraph_upload(slug: str, req: LgUploadRequest) -> dict[str, Any]:
+    try:
+        if req.zip_b64:
+            return langgraph_store.import_zip(slug, base64.b64decode(req.zip_b64), replace=req.replace)
+        files = [(f.path, base64.b64decode(f.b64)) for f in req.files]
+        return langgraph_store.import_files(slug, files, replace=req.replace)
+    except binascii.Error:
+        raise HTTPException(400, "檔案內容不是合法的 base64")
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.get("/api/langgraph/projects/{slug}")
+def langgraph_project(slug: str) -> dict[str, Any]:
+    try:
+        return langgraph_store.get_project(slug)
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+class LgNameRequest(BaseModel):
+    new_slug: str
+
+
+@app.post("/api/langgraph/projects/{slug}/rename")
+def langgraph_rename(slug: str, req: LgNameRequest) -> dict[str, Any]:
+    try:
+        return langgraph_store.rename_project(slug, req.new_slug)
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.post("/api/langgraph/projects/{slug}/duplicate")
+def langgraph_duplicate(slug: str, req: LgNameRequest) -> dict[str, Any]:
+    try:
+        return langgraph_store.duplicate_project(slug, req.new_slug)
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.get("/api/langgraph/projects/{slug}/export")
+def langgraph_export(slug: str) -> Response:
+    """專案打包成 zip 下載（不含 .env、venv、快取）。"""
+    try:
+        data = langgraph_store.export_zip(slug)
+    except Exception as e:
+        raise _lg_errors(e)
+    return Response(data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{slug}.zip"'})
+
+
+@app.get("/api/langgraph/projects/{slug}/runs")
+def langgraph_runs(slug: str) -> list[dict[str, Any]]:
+    return langgraph_history.list_runs(slug)
+
+
+@app.get("/api/langgraph/projects/{slug}/runs/{run_id}")
+def langgraph_run_record(slug: str, run_id: str) -> dict[str, Any]:
+    try:
+        return langgraph_history.get_run(slug, run_id)
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.delete("/api/langgraph/projects/{slug}/runs/{run_id}")
+def langgraph_run_delete(slug: str, run_id: str) -> dict[str, bool]:
+    try:
+        langgraph_history.delete_run(slug, run_id)
+        return {"ok": True}
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.delete("/api/langgraph/projects/{slug}/runs")
+def langgraph_runs_clear(slug: str) -> dict[str, int]:
+    try:
+        return {"deleted": langgraph_history.clear_runs(slug)}
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.delete("/api/langgraph/projects/{slug}")
+def langgraph_delete(slug: str) -> dict[str, bool]:
+    try:
+        langgraph_store.delete_project(slug)
+        return {"ok": True}
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.get("/api/langgraph/projects/{slug}/file")
+def langgraph_read_file(slug: str, path: str) -> dict[str, str]:
+    try:
+        return {"path": path, "content": langgraph_store.read_file(slug, path)}
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+class LgFileRequest(BaseModel):
+    path: str
+    content: str
+
+
+@app.put("/api/langgraph/projects/{slug}/file")
+def langgraph_write_file(slug: str, req: LgFileRequest) -> dict[str, Any]:
+    try:
+        return langgraph_store.write_file(slug, req.path, req.content)
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.delete("/api/langgraph/projects/{slug}/file")
+def langgraph_delete_file(slug: str, path: str) -> dict[str, Any]:
+    try:
+        return langgraph_store.delete_file(slug, path)
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+@app.post("/api/langgraph/projects/{slug}/install")
+async def langgraph_install(slug: str) -> StreamingResponse:
+    """建立 / 更新 venv，安裝紀錄以 SSE 逐行回傳（log），最後 done 或 error。"""
+    async def events() -> Any:
+        if not settings_store.get_langgraph_enabled():
+            raise PermissionError("LangGraph 工作流的執行還沒開啟（工作流頁面上方的開關）")
+        async for line in langgraph_store.install(slug):
+            yield {"type": "log", "text": line}
+        yield {"type": "done", "venv": langgraph_store.venv_status(slug)}
+
+    return _sse_stream(events())
+
+
+@app.get("/api/langgraph/projects/{slug}/inspect")
+async def langgraph_inspect(slug: str) -> dict[str, Any]:
+    try:
+        return {"graphs": await langgraph_exec.inspect(slug)}
+    except Exception as e:
+        raise _lg_errors(e)
+
+
+class LgRunRequest(BaseModel):
+    project: str = ""
+    graph: str = ""
+    target: str = ""  # 聊天 /workflow 的名稱（專案、專案:圖、或唯一的圖 id）；給了就不看 project/graph
+    input: Any = None  # JSON 物件，或一段文字（交給執行器對應到輸入欄位）
+    engine: str = "ollama"
+    model: str = ""
+    think: bool | None = None
+    effort: str | None = None
+    num_ctx: int | None = None
+    image_settings: dict[str, Any] | None = None
+    recursion_limit: int | None = None
+    source: str = "page"  # page | chat（記在執行紀錄）
+
+
+@app.post("/api/langgraph/run")
+async def langgraph_run(req: LgRunRequest) -> StreamingResponse:
+    async def events() -> Any:
+        project, graph = (
+            langgraph_exec.resolve_target(req.target) if req.target else (req.project, req.graph)
+        )
+        opts = req.model_dump(include={"engine", "model", "think", "effort", "num_ctx",
+                                       "image_settings", "recursion_limit", "source"})
+        async for ev in langgraph_exec.run(project, graph, req.input, opts):
+            yield ev
+
+    return _sse_stream(events())
+
+
+# ---- MCP 工具閘道（Claude CLI / Codex 原生 MCP 連回來；網址每次對話一個，見 tool_gateway）----
+@app.api_route("/mcp/session/{token}", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+async def mcp_gateway_session(token: str, request: Request) -> Response:
+    return await tool_gateway.handle_http(token, request)
+
+
+@app.middleware("http")
+async def _note_local_port(request: Request, call_next: Any) -> Any:
+    server = request.scope.get("server")
+    if server:
+        tool_gateway.note_port(server[1])
+    return await call_next(request)
+
+
+@app.post("/api/langgraph/runs/{run_id}/cancel")
+async def langgraph_cancel(run_id: str) -> dict[str, bool]:
+    return {"ok": await langgraph_exec.cancel(run_id)}
+
+
+class LgResumeRequest(BaseModel):
+    value: Any = None  # interrupt 的回覆（webui_app.ask 的表單值，或任意 JSON / 文字）
+
+
+@app.post("/api/langgraph/runs/{run_id}/resume")
+async def langgraph_resume(run_id: str, req: LgResumeRequest) -> dict[str, bool]:
+    try:
+        await langgraph_exec.resume(run_id, req.value)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    return {"ok": True}
+
+
 # ---- 前端 UI 設定（跨裝置同步；存於 app_settings.json 的 ui blob）----
 @app.get("/api/ui-settings")
 def get_ui_settings() -> dict[str, Any]:
@@ -959,6 +1283,12 @@ class StoryboardRequest(BaseModel):
     system: str = ""
     # 覆寫內建的分鏡 system 範本（空＝用預設）
     system_base: str = ""
+    # 漫畫選的技能（slug），說明接在分鏡 system 後面
+    skills: list[str] = []
+    # auto（checkpoint 是 Anima 才寫英文句子）/ tags / sentences
+    prompt_mode: str = "auto"
+    # 漫畫出圖設定的 checkpoint（空＝Forge 目前選的；auto 用它判斷）
+    checkpoint: str = ""
 
 
 # ---- 圖片說故事（上傳圖片 → LLM 看圖生成故事或漫畫腳本；與漫畫工作室分開的入口）----
@@ -1018,6 +1348,12 @@ class PanelPromptRequest(BaseModel):
     num_ctx: int | None = None
     think: bool | None = None
     system: str = ""
+    # 漫畫選的技能（slug），說明接在分鏡 system 後面
+    skills: list[str] = []
+    # auto（checkpoint 是 Anima 才寫英文句子）/ tags / sentences
+    prompt_mode: str = "auto"
+    # 漫畫出圖設定的 checkpoint（空＝Forge 目前選的；auto 用它判斷）
+    checkpoint: str = ""
 
 
 @app.post("/api/comic/panel-prompt")
@@ -1037,6 +1373,9 @@ async def comic_panel_prompt(req: PanelPromptRequest) -> dict[str, Any]:
             num_ctx=req.num_ctx,
             system=req.system,
             think=req.think,
+            skills=req.skills,
+            prompt_mode=req.prompt_mode,
+            checkpoint=req.checkpoint,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -1060,6 +1399,9 @@ async def comic_storyboard(req: StoryboardRequest) -> dict[str, Any]:
             think=req.think,
             system=req.system,
             system_base=req.system_base,
+            skills=req.skills,
+            prompt_mode=req.prompt_mode,
+            checkpoint=req.checkpoint,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

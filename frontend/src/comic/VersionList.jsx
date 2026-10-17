@@ -226,6 +226,11 @@ export default function VersionList() {
                       {p.expression && (
                         <div className="text-amber-300/90">{p.expression}</div>
                       )}
+                      {p.description && (
+                        <div className="line-clamp-3 text-gray-300" title={p.description}>
+                          {p.description}
+                        </div>
+                      )}
                       <div className="line-clamp-3 text-gray-400" title={p.prompt}>
                         {p.prompt}
                       </div>

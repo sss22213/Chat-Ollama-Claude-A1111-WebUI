@@ -39,6 +39,7 @@ export default function ScriptPanel() {
   const lang = useChat((s) => s.settings.lang);
   const numCtx = useChat((s) => s.settings.numCtx);
   const chatModel = useChat((s) => s.settings.chatModel);
+  const skillList = useChat((s) => s.skills);
   const [err, setErr] = useState("");
   const [showSysTpl, setShowSysTpl] = useState(false);
   const [loadingDefault, setLoadingDefault] = useState(false);
@@ -57,6 +58,14 @@ export default function ScriptPanel() {
     } finally {
       setLoadingDefault(false);
     }
+  };
+
+  // 分鏡技能（這份漫畫自己的選擇）；已不存在的技能順手剔除
+  const toggleSkill = (slug) => {
+    const known = c.skills.filter((x) => skillList.some((sk) => sk.slug === x));
+    c.set({
+      skills: known.includes(slug) ? known.filter((x) => x !== slug) : [...known, slug],
+    });
   };
 
   const doStoryboard = async () => {
@@ -187,6 +196,52 @@ export default function ScriptPanel() {
             />
           </Labeled>
         </div>
+      </div>
+
+      {/* 分鏡技能 + 提示詞格式 */}
+      <div className="space-y-2 rounded-lg border border-ink-700 bg-ink-850 p-2">
+        <div>
+          <span className="mb-1 block text-xs font-medium text-gray-400">{ct("skillsLabel")}</span>
+          {skillList.length ? (
+            <div className="flex flex-wrap gap-1">
+              {skillList.map((sk) => {
+                const on = c.skills.includes(sk.slug);
+                return (
+                  <button
+                    key={sk.slug}
+                    onClick={() => toggleSkill(sk.slug)}
+                    title={sk.description}
+                    aria-pressed={on}
+                    data-testid={`comic-skill-${sk.slug}`}
+                    className={`rounded-full border px-2 py-0.5 text-[11px] transition ${
+                      on
+                        ? "border-indigo-500/70 bg-indigo-600/25 text-indigo-200"
+                        : "border-ink-600 text-gray-400 hover:bg-ink-750"
+                    }`}
+                  >
+                    {sk.name}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-[11px] text-gray-500">{ct("skillsNone")}</p>
+          )}
+          <p className="mt-1 text-[10px] leading-snug text-gray-500">{ct("skillsHint")}</p>
+        </div>
+        <Labeled label={ct("promptMode")}>
+          <select
+            value={c.promptMode}
+            onChange={(e) => c.set({ promptMode: e.target.value })}
+            data-testid="prompt-mode"
+            className={inputCls}
+          >
+            <option value="auto">{ct("promptModeAuto")}</option>
+            <option value="tags">{ct("promptModeTags")}</option>
+            <option value="sentences">{ct("promptModeSentences")}</option>
+          </select>
+        </Labeled>
+        <p className="text-[10px] leading-snug text-gray-500">{ct("promptModeHint")}</p>
       </div>
 
       {(engine === "ollama" || engine === "strata") && (

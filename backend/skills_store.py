@@ -239,7 +239,7 @@ def tools_for(skill: str | list[str] | None) -> list[dict[str, Any]]:
 
 
 def _tools_note(tools: list[dict[str, Any]]) -> str:
-    """注入 system 的一行工具提示；完整說明由引擎自己帶（ollama function schema / Claude [[CALL]] 指示）。"""
+    """注入 system 的一行工具提示；完整說明由引擎自己帶（工具都經 MCP 閘道，各引擎原生呼叫）。"""
     if not tools:
         return ""
     names = ", ".join(t["name"] for t in tools)
@@ -341,17 +341,21 @@ def _skill_text(skill: dict[str, Any], head: str, budget: int) -> str:
     return text
 
 
-def build_prompt(slug: str | list[str], max_chars: int | None = None) -> str:
+def build_prompt(
+    slug: str | list[str], max_chars: int | None = None, *, adapter: str | None = None
+) -> str:
     """把技能組成要注入 system 的字串：標題＋描述＋本體＋（受限的）references＋轉接層。
 
     max_chars 省略＝用設定頁的上限（0＝無上限，每個技能完整注入）。有上限且同時啟用多個技能時，
     每個技能各分得 max_chars/n（至少 3000）的預算；references 依長度預算逐份加入；
     工具目錄與轉接層永遠接在最後（不被截斷）。找不到任何技能回空字串。
+    adapter：換掉聊天用的工具目錄與轉接層（例如漫畫工作室：沒有工具、要輸出 JSON）；
+    此時不支援自動模式。
     """
     max_chars = _limit(max_chars)
     slugs = parse_selection(slug)
     if slugs == [AUTO]:
-        return build_auto_prompt(max_chars)
+        return "" if adapter is not None else build_auto_prompt(max_chars)
     found = [sk for sk in (get_skill(x) for x in slugs) if sk]
     if not found:
         return ""
@@ -380,6 +384,8 @@ def build_prompt(slug: str | list[str], max_chars: int | None = None) -> str:
                 "\n## Reference: ", "\n### Reference: "
             )
 
+    if adapter is not None:
+        return text + adapter
     # 工具目錄永遠附上（不受長度上限截斷），模型才知道有哪些 API／腳本可用
     tools = tools_for([sk["slug"] for sk in found])
     return text + _tools_note(tools) + _adapter_note(tools)

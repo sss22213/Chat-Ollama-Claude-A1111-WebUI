@@ -25,6 +25,8 @@ const PROJECT_KEYS = [
   "premise",
   "systemPrompt",
   "systemBase",
+  "skills",
+  "promptMode",
   "panelCount",
   "think",
   "style",
@@ -74,6 +76,7 @@ const newCharacter = () => ({ id: uid(), name: "", appearance: "", lora: "" });
 const newPanel = (patch = {}) => ({
   id: uid(),
   prompt: "",
+  description: "", // 英文句子（Anima 等讀得懂自然語言的 checkpoint）；出圖時整段放在標籤前
   expression: "", // 該格表情（danbooru tag，逗號分隔）；獨立於場景 prompt
   characters: [],
   bubbles: [],
@@ -122,6 +125,8 @@ export const useComic = create(
       premise: "",
       systemPrompt: "", // 額外指示，接在 system 範本之後（指引 AI 分鏡）
       systemBase: "", // 覆寫內建分鏡 system 範本；空＝用預設
+      skills: [], // 分鏡時帶入的技能（slug）；說明接在 system 範本後面
+      promptMode: "auto", // auto（checkpoint 是 Anima 才寫英文句子）| tags | sentences
       panelCount: 6,
       style: "masterpiece, best quality, amazing quality",
       negative: "lowres, bad anatomy, worst quality, bad hands, text, watermark",
@@ -258,10 +263,11 @@ export const useComic = create(
       },
 
       // ---- 出圖提示詞 / 設定組裝 ----
-      // 順序：畫風 → (表情:1.2) → 角色外觀 / LoRA（濾掉表情類 tag）→ 場景。
-      // 全程依 tag 去重（外觀與 LoRA 觸發詞常重複；場景若又寫了畫風詞也會被吃掉）。
+      // 順序：畫風 → 英文句子（有的話）→ (表情:1.2) → 角色外觀 / LoRA（濾掉表情類 tag）→ 場景。
+      // 全程依 tag 去重（外觀與 LoRA 觸發詞常重複；場景若又寫了畫風詞也會被吃掉）；
+      // 句子整段放、不拆不去重（裡面的逗號是句子的一部分）。「只有標籤」模式不帶句子。
       composePrompt(panel) {
-        const { characters, style } = get();
+        const { characters, style, promptMode } = get();
         const seen = new Set();
         const take = (tags, { dropExpression = false } = {}) => {
           const out = [];
@@ -292,16 +298,23 @@ export const useComic = create(
           })
         );
         const sceneTags = take(splitTags(panel.prompt));
+        const description =
+          promptMode === "tags" ? "" : (panel.description || "").replace(/\s+/g, " ").trim();
 
         const parts = [
           styleTags.join(", "),
+          description,
           exprTags.length
             ? `(${exprTags.join(", ")}:${EXPRESSION_WEIGHT})`
             : "",
           charTags.join(", "),
           sceneTags.join(", "),
         ].filter(Boolean);
-        return parts.join(", ");
+        // 句子結尾（. ! ?）後面直接接空白，不再補逗號
+        return parts.reduce(
+          (out, part) => (!out ? part : /[.!?]$/.test(out) ? `${out} ${part}` : `${out}, ${part}`),
+          ""
+        );
       },
 
       // 鎖定種子時，把 -1 抽成一個固定值存回設定，之後各格共用同一 seed。
@@ -359,7 +372,8 @@ export const useComic = create(
 
       // ---- AI 生成分鏡 ----
       async generateStoryboard({ engine, model, lang, numCtx }) {
-        const { premise, panelCount, style, systemPrompt, systemBase, think } = get();
+        const { premise, panelCount, style, systemPrompt, systemBase, think, skills, promptMode } =
+          get();
         if (!premise.trim() || get().storyboarding) return;
         // 沒填名字但有外觀 / LoRA 的角色卡：自動命名，分鏡才引用得到、出圖才帶得進去
         let characters = get().characters;
@@ -400,10 +414,14 @@ export const useComic = create(
             think: engine === "ollama" || engine === "strata" ? think : undefined,
             system: systemPrompt,
             system_base: systemBase,
+            skills,
+            prompt_mode: promptMode,
+            checkpoint: get().settings.sd_model_checkpoint || "",
           });
           const panels = (data.panels || []).map((p) =>
             newPanel({
               prompt: p.prompt || "",
+              description: p.description || "",
               expression: p.expression || "",
               characters: canon(p.characters),
               bubbles: bubblesFromScript(p.dialogue, p.caption),
@@ -435,6 +453,7 @@ export const useComic = create(
             instruction: instruction || "",
             panels: st.panels.map((p) => ({
               prompt: p.prompt,
+              description: p.description || "",
               expression: p.expression,
               characters: p.characters,
               dialogue: (p.bubbles || [])
@@ -451,18 +470,27 @@ export const useComic = create(
             num_ctx: numCtx,
             think: engine === "ollama" || engine === "strata" ? st.think : undefined,
             system: st.systemPrompt,
+            skills: st.skills,
+            prompt_mode: st.promptMode,
+            checkpoint: st.settings.sd_model_checkpoint || "",
           });
           const cur = get().panels.find((p) => p.id === id);
           if (!cur) return;
           set({
             promptUndo: {
               ...get().promptUndo,
-              [id]: { prompt: cur.prompt, expression: cur.expression },
+              [id]: {
+                prompt: cur.prompt,
+                expression: cur.expression,
+                description: cur.description || "",
+              },
             },
           });
           get().setPanel(id, {
             prompt: data.prompt || cur.prompt,
             expression: data.expression || cur.expression,
+            // 這次判定只寫標籤（非 Anima）就清掉舊句子，讓這格和新的標籤一致；復原可換回
+            description: data.sentences ? data.description || cur.description || "" : "",
           });
           if (Array.isArray(data.notices) && data.notices.length) set({ notices: data.notices });
         } catch (e) {
@@ -475,8 +503,17 @@ export const useComic = create(
         const u = get().promptUndo[id];
         const cur = get().panels.find((p) => p.id === id);
         if (!u || !cur) return;
-        set({ promptUndo: { ...get().promptUndo, [id]: { prompt: cur.prompt, expression: cur.expression } } });
-        get().setPanel(id, { prompt: u.prompt, expression: u.expression });
+        set({
+          promptUndo: {
+            ...get().promptUndo,
+            [id]: { prompt: cur.prompt, expression: cur.expression, description: cur.description || "" },
+          },
+        });
+        get().setPanel(id, {
+          prompt: u.prompt,
+          expression: u.expression,
+          description: u.description || "",
+        });
       },
 
       // ---- 分鏡版本 ----
@@ -636,6 +673,7 @@ export const useComic = create(
           panels: (panels || []).map((p) =>
             newPanel({
               prompt: p.prompt || "",
+              description: p.description || "",
               expression: p.expression || "",
               characters: (p.characters || [])
                 .map((n) => names.find((m) => sameName(m, n)))
@@ -656,6 +694,8 @@ export const useComic = create(
           premise: "",
           systemPrompt: "",
           systemBase: "",
+          skills: [],
+          promptMode: "auto",
           panelCount: 6,
           style: "masterpiece, best quality, amazing quality",
           negative:
@@ -750,6 +790,8 @@ export const useComic = create(
         premise: st.premise,
         systemPrompt: st.systemPrompt,
         systemBase: st.systemBase,
+        skills: st.skills,
+        promptMode: st.promptMode,
         panelCount: st.panelCount,
         think: st.think,
         style: st.style,

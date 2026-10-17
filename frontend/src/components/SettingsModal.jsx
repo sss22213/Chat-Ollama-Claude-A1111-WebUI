@@ -301,6 +301,19 @@ export default function SettingsModal({ onClose }) {
                 </p>
               </Field>
             )}
+            {/* Strata 的 context 是伺服器啟動時的 --max-context，API 改不了：只顯示，並說去哪改 */}
+            {settings.engine === "strata" && (
+              <Field label={t("numCtx")}>
+                <input
+                  type="text"
+                  readOnly
+                  value={modelMaxCtx ? modelMaxCtx.toLocaleString() : "?"}
+                  data-testid="numctx-strata"
+                  className="w-full cursor-default rounded-lg border border-ink-700 bg-ink-850 px-3 py-2 text-sm text-gray-400 outline-none"
+                />
+                <p className="text-xs text-gray-500">{t("numCtxStrataHint")}</p>
+              </Field>
+            )}
           </Section>
 
           {/* 服務來源 */}

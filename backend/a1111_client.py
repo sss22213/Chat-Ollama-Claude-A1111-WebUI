@@ -1,4 +1,8 @@
-"""A1111 (Automatic1111) 串接：列模型/取樣器/選項、txt2img、img2img、進度查詢、PNG Info。"""
+"""A1111（Forge Neo）串接：列模型 / 取樣器 / LoRA、txt2img、img2img、進度查詢、PNG Info。
+
+一律經由 A1111 與 Civitai Helper 的 MCP 伺服器（mcp_client）：工具名稱見 Forge 的
+extensions-builtin/sd_forge_mcp。只有 LoRA 預覽圖這種靜態檔案（/sd_extra_networks/thumb）直接用 HTTP 取。
+"""
 from __future__ import annotations
 
 import base64
@@ -10,42 +14,41 @@ from typing import Any
 
 import httpx
 
+import mcp_client
 import settings_store
 from config import HTTP_TIMEOUT
 
 
+class A1111Error(RuntimeError):
+    """A1111 / Forge 端的錯誤（伺服器、MCP 連線或模型設定問題，不是 prompt 的問題）。"""
+
+
+async def _mcp(tool: str, args: dict[str, Any] | None = None, *, server: str = "a1111",
+               timeout: float | None = 60) -> Any:
+    """呼叫 A1111（或 Civitai Helper）的 MCP 工具，回結構化結果；連線或工具錯誤丟 A1111Error。"""
+    try:
+        return await mcp_client.call_json(server, tool, args or {}, timeout=timeout)
+    except mcp_client.McpError as e:
+        raise A1111Error(str(e)) from None
+
+
 async def list_sd_models() -> list[dict[str, str]]:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{settings_store.get_a1111_url()}/sdapi/v1/sd-models")
-        resp.raise_for_status()
-        return [
-            {"model_name": m["model_name"], "title": m["title"]}
-            for m in resp.json()
-        ]
+    data = await _mcp("list_checkpoints")
+    return [{"model_name": m["name"], "title": m["title"]} for m in data.get("checkpoints") or []]
 
 
 async def list_samplers() -> list[str]:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{settings_store.get_a1111_url()}/sdapi/v1/samplers")
-        resp.raise_for_status()
-        return [s["name"] for s in resp.json()]
+    return [s["name"] for s in (await _mcp("list_samplers")).get("items") or []]
 
 
 async def list_loras() -> list[dict[str, Any]]:
     """列出 A1111 目前掃描到的 LoRA（含安全張量內嵌 metadata，可萃取觸發詞）。"""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{settings_store.get_a1111_url()}/sdapi/v1/loras")
-        resp.raise_for_status()
-        return resp.json()
+    return (await _mcp("list_loras", {"full": True})).get("items") or []
 
 
 async def refresh_loras() -> None:
     """請 A1111 重新掃描 LoRA 目錄（放了新檔不必重啟 WebUI）。"""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{settings_store.get_a1111_url()}/sdapi/v1/refresh-loras"
-        )
-        resp.raise_for_status()
+    await _mcp("refresh_loras")
 
 
 async def fetch_lora_preview(candidates: list[str]) -> bytes | None:
@@ -68,53 +71,29 @@ async def fetch_lora_preview(candidates: list[str]) -> bytes | None:
     return None
 
 
-async def get_options() -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{settings_store.get_a1111_url()}/sdapi/v1/options")
-        resp.raise_for_status()
-        return resp.json()
-
-
 async def get_current_model() -> str | None:
     try:
-        return (await get_options()).get("sd_model_checkpoint")
+        return (await _mcp("list_checkpoints")).get("current") or None
     except Exception:
         return None
 
 
 async def get_progress() -> dict[str, Any]:
-    """目前生成進度。回傳 A1111 progress payload（含 progress 0~1、state、current_image）。"""
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{settings_store.get_a1111_url()}/sdapi/v1/progress",
-            params={"skip_current_image": "false"},
-        )
-        resp.raise_for_status()
-        return resp.json()
+    """目前生成進度：{progress 0~1, eta_relative, state, current_image（預覽圖 base64）}。"""
+    try:
+        res = await mcp_client.call("a1111", "get_progress", {"preview": True}, timeout=15)
+    except mcp_client.McpError as e:
+        raise A1111Error(str(e)) from None
+    if res.is_error:
+        raise A1111Error(res.text)
+    data = dict(res.structured or {})
+    data["current_image"] = res.images[0][0] if res.images else None
+    return data
 
 
 def _strip_data_url(b64: str) -> str:
     """移除 data:image/...;base64, 前綴。"""
     return b64.split(",", 1)[-1] if b64.startswith("data:") else b64
-
-
-class A1111Error(RuntimeError):
-    """A1111 / Forge 端的錯誤（伺服器或模型設定問題，不是 prompt 的問題）。"""
-
-
-def _check(resp: httpx.Response) -> None:
-    """回錯誤碼時把 Forge 給的原因（error / message / detail）帶進例外，不要只剩「HTTP 500」。"""
-    if resp.status_code < 400:
-        return
-    reason = ""
-    try:
-        data = resp.json()
-        if isinstance(data, dict):
-            parts = [str(data.get(k) or "").strip() for k in ("error", "message", "detail")]
-            reason = "：".join(dict.fromkeys(p for p in parts if p))
-    except ValueError:
-        reason = resp.text[:200].strip()
-    raise A1111Error(f"A1111 回應 HTTP {resp.status_code}" + (f"（{reason}）" if reason else ""))
 
 
 # ---------------- Forge Neo 的額外模組（VAE / 文字編碼器） ----------------
@@ -143,18 +122,16 @@ async def checkpoint_family(checkpoint: str) -> str | None:
     if key in _family_cache:
         return _family_cache[key]
     base = ""
-    url = settings_store.get_a1111_url()
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            models = (await client.get(f"{url}/sdapi/v1/sd-models")).json()
-            m = next((m for m in models if key in (m.get("model_name"), _ckpt_key(m.get("title") or ""))), None)
-            if m:
-                # Civitai Helper 用相對於 checkpoint 資料夾的路徑找模型
-                rel = re.split(r"[\\/]Stable-diffusion[\\/]", m.get("filename") or "", maxsplit=1)[-1]
-                r = await client.get(f"{url}/civitai-helper/v1/models/ckp/info", params={"name": rel})
-                if r.status_code == 200:
-                    base = str(((r.json() or {}).get("civitai") or {}).get("base_model") or "")
-    except (httpx.HTTPError, ValueError, TypeError):
+        models = (await _mcp("list_checkpoints", timeout=10)).get("checkpoints") or []
+        m = next((m for m in models if key in (_ckpt_key(m.get("name") or ""), _ckpt_key(m.get("title") or ""))), None)
+        if m:
+            # Civitai Helper 用相對於 checkpoint 資料夾的路徑找模型
+            info = await mcp_client.call("civitai-helper", "civitai_local_model_info",
+                                         {"type": "ckp", "name": m.get("file") or m["name"]}, timeout=10)
+            if not info.is_error and isinstance(info.structured, dict):
+                base = str((info.structured.get("civitai") or {}).get("base_model") or "")
+    except (A1111Error, mcp_client.McpError):
         return "Anima" if _ANIMA_NAME.search(key) else None  # 暫時查不到：不快取，下次再問
     if base:
         family = "Anima" if base.lower().startswith("anima") else None
@@ -164,17 +141,52 @@ async def checkpoint_family(checkpoint: str) -> str | None:
     return family
 
 
+# 沒有 Civitai 記錄時從檔名猜底模（順序重要：waiANINSFWPONYXL 是 Pony、animagineXL 是 SDXL）
+_BASE_BY_NAME = (
+    (_ANIMA_NAME, "Anima"),
+    (re.compile(r"pony", re.I), "Pony"),
+    (re.compile(r"noob", re.I), "NoobAI"),
+    (re.compile(r"illustrious|illu(?![a-z])", re.I), "Illustrious"),
+    (re.compile(r"flux", re.I), "Flux"),
+    (re.compile(r"xl|sdxl", re.I), "SDXL"),
+)
+
+
+async def list_checkpoints() -> dict[str, Any]:
+    """A1111 的 checkpoint 與各自的底模（Illustrious / Pony / SDXL / SD 1.5 / Anima …）。
+    回 {"current": 目前載入的 model_name, "checkpoints": [{"name", "title", "base", "base_source"}]}；
+    底模用 Civitai Helper 的記錄（civitai），沒有記錄看檔名（name），都猜不到是空字串。"""
+    import lora_meta  # 底模名稱正規化跟 LoRA 共用
+
+    data = await _mcp("list_checkpoints")
+    recorded: dict[str, str] = {}
+    try:
+        inv = await mcp_client.call_json("civitai-helper", "civitai_list_local_models",
+                                         {"type": "ckp", "limit": 5000})
+        for it in (inv or {}).get("items") or []:
+            base = str((it.get("civitai") or {}).get("base_model") or "")
+            if base:
+                recorded[_ckpt_key(str(it.get("path") or it.get("name") or "")).replace("\\", "/")] = base
+    except (mcp_client.McpError, AttributeError):
+        pass  # Civitai Helper 不在：全部看檔名
+    out = []
+    for m in data.get("checkpoints") or []:
+        raw = recorded.get(_ckpt_key(m.get("file") or m["name"]).replace("\\", "/"), "")
+        base = lora_meta.normalize_base(raw) if raw else next(
+            (b for rx, b in _BASE_BY_NAME if rx.search(m["name"])), "")
+        out.append({"name": m["name"], "title": m["title"], "base": base or "",
+                    "base_source": "civitai" if raw else "name" if base else ""})
+    return {"current": data.get("current") or "", "checkpoints": out}
+
+
 async def _module_overrides(checkpoint: str) -> dict[str, Any]:
     """這個 checkpoint 需要的 Forge 額外模組（override_settings 用）；不需要回 {}。"""
     family = await checkpoint_family(checkpoint) if checkpoint else None
     wanted = _FAMILY_MODULES.get(family or "")
     if not wanted:
         return {}
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{settings_store.get_a1111_url()}/sdapi/v1/sd-modules")
-        _check(resp)
-        modules = resp.json()
-    stems = {m["filename"]: _ckpt_key(os.path.basename(m.get("filename") or "")).lower() for m in modules}
+    modules = (await _mcp("list_modules")).get("items") or []
+    stems = {m["file"]: _ckpt_key(os.path.basename(m.get("file") or "")).lower() for m in modules}
     picked, missing = [], []
     for label, stem in wanted:
         # 同名優先（qwen_image_vae 不要挑到 qwen_image_2.1_vae），其次同前綴（例如 _fp8 版）
@@ -231,16 +243,43 @@ def _common_payload(
     return payload
 
 
-def _save_first_image(data: dict[str, Any]) -> str:
-    images = data.get("images") or []
-    if not images:
-        raise RuntimeError("A1111 未回傳任何圖片")
-    raw = base64.b64decode(_strip_data_url(images[0]))
-    filename = f"{uuid.uuid4().hex}.png"
+_GEN_ARGS = ("prompt", "negative_prompt", "steps", "cfg_scale", "width", "height", "sampler_name", "seed",
+             "override_settings", "init_images", "denoising_strength")
+
+
+async def _generate(tool: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """經 A1111 MCP 的 txt2img / img2img 生圖，回跟 REST 一樣的 {"images": [base64], "info": JSON 字串}。
+    MCP 工具沒列的欄位（例如 override_settings_restore_afterwards）放在 extra 原樣帶過去。"""
+    args = {k: payload[k] for k in _GEN_ARGS if k in payload}
+    extra = {k: v for k, v in payload.items() if k not in args}
+    if extra:
+        args["extra"] = extra
+    try:
+        res = await mcp_client.call("a1111", tool, args, timeout=HTTP_TIMEOUT)
+    except mcp_client.McpError as e:
+        raise A1111Error(str(e)) from None
+    if res.is_error:
+        raise A1111Error(f"A1111 生圖失敗：{res.text[:500]}")
+    info = (res.structured or {}).get("info")
+    return {"images": [b for b, _ in res.images], "info": json.dumps(info, ensure_ascii=False) if info else ""}
+
+
+def save_image(b64: str) -> str:
+    """把一張 base64 圖存進 app 的圖片資料夾，回 /images/… 網址。"""
+    raw = base64.b64decode(_strip_data_url(b64))
+    ext = ".jpg" if raw[:3] == b"\xff\xd8\xff" else ".webp" if raw[8:12] == b"WEBP" else ".png"
+    filename = f"{uuid.uuid4().hex}{ext}"
     image_dir = settings_store.get_image_dir()
     image_dir.mkdir(parents=True, exist_ok=True)
     (image_dir / filename).write_bytes(raw)
     return f"/images/{filename}"
+
+
+def _save_first_image(data: dict[str, Any]) -> str:
+    images = data.get("images") or []
+    if not images:
+        raise RuntimeError("A1111 未回傳任何圖片")
+    return save_image(images[0])
 
 
 def _clean_geninfo(data: dict[str, Any]) -> str:
@@ -287,10 +326,7 @@ async def txt2img(
         sd_model_checkpoint=sd_model_checkpoint,
     )
     await _apply_modules(payload, sd_model_checkpoint)
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        resp = await client.post(f"{settings_store.get_a1111_url()}/sdapi/v1/txt2img", json=payload)
-        _check(resp)
-        data = resp.json()
+    data = await _generate("txt2img", payload)
 
     url = _save_first_image(data)
     params = {
@@ -337,10 +373,7 @@ async def img2img(
     payload["denoising_strength"] = denoising_strength
     await _apply_modules(payload, sd_model_checkpoint)
 
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        resp = await client.post(f"{settings_store.get_a1111_url()}/sdapi/v1/img2img", json=payload)
-        _check(resp)
-        data = resp.json()
+    data = await _generate("img2img", payload)
 
     url = _save_first_image(data)
     params = {
@@ -449,19 +482,12 @@ def parse_geninfo(info: str) -> dict[str, Any]:
 
 
 async def png_info(image_b64: str) -> dict[str, Any]:
-    """呼叫 A1111 /sdapi/v1/png-info 讀取圖片內嵌的生成參數並解析。
+    """經 A1111 MCP 的 png_info 讀取圖片內嵌的生成參數並解析。
 
     回傳 {info(原始字串), prompt, negative_prompt, params(原始 key:value), settings(可套用)}。
     info 為空代表該圖沒有可讀的 metadata（截圖、轉存、非 AI 生成等）。
     """
     b64 = _strip_data_url(image_b64)
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{settings_store.get_a1111_url()}/sdapi/v1/png-info",
-            json={"image": f"data:image/png;base64,{b64}"},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-    info = (data.get("info") or "").strip()
+    data = await _mcp("png_info", {"image": f"data:image/png;base64,{b64}"})
+    info = (data.get("parameters") or "").strip()
     return {"info": info, **parse_geninfo(info)}

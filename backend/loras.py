@@ -27,11 +27,9 @@ import time
 from collections import Counter
 from typing import Any
 
-import httpx
-
 import a1111_client
 import lora_meta
-import settings_store
+import mcp_client
 from config import DATA_DIR
 from expression_tags import is_expression_tag
 
@@ -284,7 +282,7 @@ async def thumb_file(name: str, size: int = 256) -> str | None:
         return None
 
 
-# ---- 範例圖 / 刪除（走 A1111 的 Civitai Helper 擴充 API：/civitai-helper/v1） ----
+# ---- 範例圖 / 刪除（經 Civitai Helper 擴充的 MCP 伺服器：/civitai-helper/mcp） ----
 
 class LoraError(Exception):
     """給使用者看的錯誤（main.py 轉成 HTTP 錯誤訊息）。status 對應 HTTP 狀態碼。"""
@@ -297,8 +295,22 @@ class LoraError(Exception):
 _lora_folder: str | None = None  # Civitai Helper 回報的 LoRA 資料夾（A1111 那邊的絕對路徑）
 
 
-def _ch_url(path: str) -> str:
-    return f"{settings_store.get_a1111_url()}/civitai-helper/v1{path}"
+async def _ch(tool: str, args: dict[str, Any], timeout: float = 60) -> Any:
+    """呼叫 Civitai Helper 的 MCP 工具，回結構化結果。工具回報的錯誤保留原本的 HTTP 狀態
+    （「找不到」是 404）與 detail，轉成 LoraError。"""
+    try:
+        res = await mcp_client.call("civitai-helper", tool, args, timeout=timeout)
+    except mcp_client.McpError as e:
+        raise LoraError(str(e))
+    if res.is_error:
+        m = re.search(r"HTTP (\d+) (.*)", res.text, re.S)
+        status, detail = (int(m.group(1)), m.group(2)) if m else (502, res.text)
+        try:
+            detail = str((json.loads(detail) or {}).get("detail") or detail)
+        except (ValueError, AttributeError):
+            pass
+        raise LoraError(detail.strip()[:300] or f"Civitai Helper 的 {tool} 失敗", 404 if status == 404 else 502)
+    return res.structured
 
 
 async def _ch_name(name: str) -> str:
@@ -313,13 +325,8 @@ async def _ch_name(name: str) -> str:
     if not path:
         raise LoraError(f"找不到 LoRA：{name}", 404)
     if _lora_folder is None:
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                r = await client.get(_ch_url("/model-types"))
-                r.raise_for_status()
-                _lora_folder = next((t["folder"] for t in r.json() if t.get("type") == "lora"), "") or ""
-        except (httpx.HTTPError, ValueError):
-            raise LoraError("連不到 A1111 的 Civitai Helper 擴充（/civitai-helper/v1）")
+        types = (await _ch("civitai_model_types", {}, timeout=15) or {}).get("result") or []
+        _lora_folder = next((t["folder"] for t in types if t.get("type") == "lora"), "") or ""
     folder = (_lora_folder or "").rstrip("/")
     if folder and path.startswith(folder + "/"):
         return path[len(folder) + 1:]
@@ -331,19 +338,7 @@ async def examples(name: str) -> dict[str, Any]:
     import civitai_examples
 
     rel = await _ch_name(name)
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(_ch_url("/models/lora/examples"), params={"name": rel})
-    except httpx.HTTPError:
-        raise LoraError("連不到 A1111 的 Civitai Helper 擴充（/civitai-helper/v1）")
-    if r.status_code == 404:
-        detail = _detail(r)
-        if detail == "Not Found":
-            raise LoraError("A1111 沒有 Civitai Helper 的 HTTP API（需要 sss22213 版的 Civitai Helper）")
-        raise LoraError(detail or f"找不到 LoRA：{name}", 404)
-    if r.status_code >= 400:
-        raise LoraError(_detail(r) or f"Civitai Helper 回應 {r.status_code}")
-    d = r.json()
+    d = await _ch("civitai_model_examples", {"type": "lora", "name": rel}, timeout=30) or {}
     return {
         "has_info": bool(d.get("has_info")),
         "model_name": d.get("model_name") or "",
@@ -360,14 +355,7 @@ async def download_examples(name: str) -> dict[str, Any]:
     「Skip NSFW Preview Images」設定。"""
     rel = await _ch_name(name)
     body = {"type": "lora", "name": rel, "max_images": 0, "overwrite": False, "wait": True, "timeout": 600}
-    try:
-        async with httpx.AsyncClient(timeout=660) as client:
-            r = await client.post(_ch_url("/download-examples"), json=body)
-    except httpx.HTTPError:
-        raise LoraError("連不到 A1111 的 Civitai Helper 擴充（/civitai-helper/v1）")
-    if r.status_code >= 400:
-        raise LoraError(_detail(r) or f"Civitai Helper 回應 {r.status_code}", 404 if r.status_code == 404 else 502)
-    task = r.json()
+    task = await _ch("civitai_download_examples", body, timeout=660) or {}
     if task.get("status") == "error":
         raise LoraError(f"下載範例圖失敗：{task.get('error') or '未知錯誤'}")
     if task.get("status") != "done":
@@ -376,28 +364,10 @@ async def download_examples(name: str) -> dict[str, Any]:
     return {k: int(res.get(k) or 0) for k in ("downloaded", "existed", "skipped_nsfw", "failed", "with_info")}
 
 
-def _detail(r: httpx.Response) -> str:
-    try:
-        return str((r.json() or {}).get("detail") or "")
-    except ValueError:
-        return r.text[:200]
-
-
 async def delete(name: str) -> dict[str, Any]:
     """永久刪除一個 LoRA（模型檔、info、預覽圖、卡片 json、範例圖），再請 A1111 重掃清單。"""
     rel = await _ch_name(name)
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(_ch_url("/delete-model"), json={"type": "lora", "name": rel})
-    except httpx.HTTPError:
-        raise LoraError("連不到 A1111 的 Civitai Helper 擴充（/civitai-helper/v1）")
-    if r.status_code == 404 and _detail(r) == "Not Found":
-        raise LoraError(
-            "Civitai Helper 還沒有刪除用的 API（/delete-model）：請更新 Civitai Helper 並重新啟動 WebUI", 501
-        )
-    if r.status_code >= 400:
-        raise LoraError(_detail(r) or f"Civitai Helper 回應 {r.status_code}")
-    out = r.json()
+    out = await _ch("civitai_delete_model", {"type": "lora", "name": rel}) or {}
     # 這個 LoRA 的縮圖快取作廢；清單重掃（A1111 + 本地快取）
     key = hashlib.sha1(name.encode("utf-8")).hexdigest()[:16]
     for f in _THUMB_DIR.glob(f"{key}_*.jpg"):

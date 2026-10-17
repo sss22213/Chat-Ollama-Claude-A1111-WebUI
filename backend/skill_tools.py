@@ -28,7 +28,14 @@ tools.json 格式（放在技能資料夾內，與 SKILL.md 同層；只能由�
       "result_note": "…",                            # 選用，附在結果後面提示模型怎麼用
       "attach_image": {"field": "ref_images", "as": "list"},   # 選用：把使用者最後附的圖（data URL）放進 body
       "query_params": ["full"],                      # 選用：POST/PUT 時這些參數改放網址查詢字串
-      "postprocess": "sdcpp_job"                     # 選用：後端接手輪詢工作、存圖、推 image 事件
+      "postprocess": "lora_inventory"                # 選用：後端把回應整理成摘要＋前端事件
+    },
+    {
+      "name": "sdcpp_edit_image",                    # MCP 工具（頂層 "mcp_server" 或工具自己的 "server"）
+      "server": "sdcpp",                             # a1111 | civitai-helper | sdcpp | mmd（mcp_client.SERVERS）
+      "tool": "sdcpp_edit_image",                    # 選用：伺服器上的工具名（預設同 name）
+      "attach_image": {"field": "image"},            # 選用：對話中最近的圖（data URL）放進這個參數
+      "parameters": {…}, "defaults": {…}, "postprocess": "…", "timeout": 600
     },
     {
       "name": "civitai_search",                      # 固定腳本工具
@@ -60,11 +67,11 @@ GET/DELETE 走 query string、POST/PUT 走 JSON body。回應若是 JSON 就美�
   這些值在輸出中會被遮罩成 ***（避免 token 印給模型／使用者）。
 - 逾時（config.SKILL_SCRIPT_TIMEOUT）直接 kill；stdout/stderr 各自截斷後回給模型。
 
-引擎支援：
-- ollama：直接作為 function calling 的 tools（chat.py 併入 tool_schema）。
-- claude_cli：以 [[CALL]]{"tool": "...", "args": {...}}[[/CALL]] 指令標記呼叫，
-  後端執行後把結果當下一輪輸入再跑一次（見 chat._run_cli_engine）。
-- codex：目前走固定的結構化輸出 schema，尚不支援技能工具。
+MCP 工具（kind "mcp"）：參數照 tools.json 的 schema 給模型看，呼叫時轉給該服務的 MCP 伺服器。
+結果帶圖（例如 sd.cpp 改圖）就存進圖片目錄、推 image 事件，並附縮圖給視覺模型看。
+
+引擎支援：所有引擎都經 webui 的 MCP 閘道（tool_gateway）呼叫這些工具——
+Ollama / Strata 是聊天迴圈送 tools/call，Claude CLI / Codex 是 CLI 自己連閘道（原生 MCP）。
 """
 from __future__ import annotations
 
@@ -77,12 +84,12 @@ import re
 import shlex
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 
 import settings_store
-from config import DATA_DIR, HTTP_TIMEOUT, OLLAMA_URL, SDCPP_URL, SKILL_SCRIPT_ENV, SKILL_SCRIPT_TIMEOUT
+from config import DATA_DIR, HTTP_TIMEOUT, OLLAMA_URL, SKILL_SCRIPT_ENV, SKILL_SCRIPT_TIMEOUT
 
 log = logging.getLogger("skill_tools")
 
@@ -98,6 +105,9 @@ SCRIPT_TOOL = "run_skill_script"
 _SKIP_DIRS = {"__pycache__", "node_modules", "venv", ".venv", "tests", "test"}
 
 
+_MCP_SERVERS = ("a1111", "civitai-helper", "sdcpp", "mmd")  # 跟 mcp_client.SERVERS 一致
+
+
 def normalize(raw: dict[str, Any], slug: str) -> list[dict[str, Any]]:
     """把 tools.json 內容整理成工具定義清單；不合法的項目直接略過。"""
     if not isinstance(raw, dict):
@@ -110,7 +120,8 @@ def normalize(raw: dict[str, Any], slug: str) -> list[dict[str, Any]]:
         name = str(t.get("name") or "").strip()
         if not _NAME_RE.match(name) or name == SCRIPT_TOOL:
             continue
-        kind = str(t.get("kind") or "http").strip().lower()
+        # tools.json 頂層有 mcp_server、或工具自己指定 server：經該 MCP 伺服器呼叫（kind "mcp"）
+        kind = str(t.get("kind") or ("mcp" if (t.get("server") or raw.get("mcp_server")) else "http")).strip().lower()
         params = t.get("parameters")
         if not isinstance(params, dict) or params.get("type") != "object":
             params = {"type": "object", "properties": {}}
@@ -127,6 +138,8 @@ def normalize(raw: dict[str, Any], slug: str) -> list[dict[str, Any]]:
             # 固定附加的參數（模型看不到、也蓋不掉模型明確給的值），例如 wait/timeout
             "defaults": defaults,
             "result_note": str(t.get("result_note") or "").strip(),
+            # 只查資料、不改任何東西（給 tools="auto" 搭配 read_only 的步驟用；MCP 工具看伺服器的 readOnlyHint）
+            "read_only": bool(t.get("read_only")),
         }
         if kind == "script":
             script = str(t.get("script") or "").strip()
@@ -145,6 +158,24 @@ def normalize(raw: dict[str, Any], slug: str) -> list[dict[str, Any]]:
                     "postprocess": str(t.get("postprocess") or "").strip(),
                     "timeout": float(t.get("timeout") or SKILL_SCRIPT_TIMEOUT),
                     "max_chars": int(t.get("max_chars") or _SCRIPT_MAX_CHARS),
+                }
+            )
+            continue
+        if kind == "mcp":
+            server = str(t.get("server") or raw.get("mcp_server") or "").strip()
+            if server not in _MCP_SERVERS:
+                continue
+            out.append(
+                {
+                    **common,
+                    "server": server,
+                    "tool": str(t.get("tool") or name).strip(),  # 伺服器上的工具名（預設同名）
+                    # 對話中最近的圖放進這個參數：{"field": "image", "as": "single"|"list"}
+                    "attach_image": t.get("attach_image") if isinstance(t.get("attach_image"), dict) else None,
+                    "postprocess": str(t.get("postprocess") or "").strip(),
+                    "vision_max": int(t.get("vision_max") or 0),
+                    "timeout": float(t.get("timeout") or _DEFAULT_TIMEOUT),
+                    "max_chars": int(t.get("max_chars") or _DEFAULT_MAX_CHARS),
                 }
             )
             continue
@@ -188,36 +219,6 @@ def ollama_schema(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for t in tools
     ]
-
-
-def directive_instructions(tools: list[dict[str, Any]]) -> str:
-    """給 CLI 引擎（Claude）的 system 指示：如何用 [[CALL]] 標記呼叫技能工具。"""
-    if not tools:
-        return ""
-    lines = [
-        "",
-        "# Skill API tools (IMPORTANT)",
-        "The active skill provides API tools. You call a tool by printing this marker "
-        "on its own line (the app intercepts it, performs the HTTP call, and then sends "
-        "you the result as the next message so you can continue):",
-        '[[CALL]]{"tool": "<tool name>", "args": {<arguments as JSON>}}[[/CALL]]',
-        "Rules: emit at most ONE [[CALL]] marker per reply and STOP right after it — the "
-        "result comes back in the next turn. Never wrap the marker in code fences, never "
-        "invent results, and never claim you cannot call tools. When you have the result, "
-        "answer the user in their language. Do not print raw JSON to the user unless asked.",
-        "Available tools:",
-    ]
-    for t in tools:
-        props = t["parameters"].get("properties") or {}
-        required = set(t["parameters"].get("required") or [])
-        arg_desc = ", ".join(
-            f"{k}{'*' if k in required else ''}: {(v or {}).get('type', 'any')}"
-            + (f" — {(v or {}).get('description')}" if (v or {}).get("description") else "")
-            for k, v in props.items()
-        )
-        lines.append(f"- {t['name']}: {t['description']}" + (f" Args: {arg_desc}" if arg_desc else ""))
-    lines.append("(* = required argument)")
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +539,8 @@ def _resolve_base(url: str) -> str:
     return (
         url.replace("{a1111_url}", settings_store.get_a1111_url().rstrip("/"))
         .replace("{ollama_url}", OLLAMA_URL.rstrip("/"))
-        .replace("{sdcpp_url}", SDCPP_URL)
+        .replace("{sdcpp_url}", settings_store.get_service_url("sdcpp"))
+        .replace("{mmd_url}", settings_store.get_service_url("mmd"))
         .rstrip("/")
     )
 
@@ -587,18 +589,21 @@ def _truncate(text: str, limit: int) -> str:
 class ToolOutput:
     """工具執行結果：text 給模型；events 是要順便推給前端的 SSE 事件（如候選卡片）。"""
 
-    __slots__ = ("text", "events", "vision", "vision_labels")
+    __slots__ = ("text", "events", "vision", "vision_labels", "vision_kind")
 
     def __init__(self, text: str, events: list[dict[str, Any]] | None = None):
         self.text = text
-        # "_vision" 事件不送前端：是要附在工具訊息上給視覺模型看的圖（base64）
+        # "_vision" 事件不送前端：是要附在工具訊息上給視覺模型看的圖（base64）；
+        # kind "generated"＝工具剛產生的圖（例如 sd.cpp 改圖），不是參考用的範例圖
         self.vision: list[str] = []
         self.vision_labels: list[str] = []
+        self.vision_kind = ""
         self.events = []
         for ev in events or []:
             if ev.get("type") == "_vision":
                 self.vision += list(ev.get("images") or [])
                 self.vision_labels += list(ev.get("labels") or [])
+                self.vision_kind = ev.get("kind") or self.vision_kind
             else:
                 self.events.append(ev)
 
@@ -620,15 +625,9 @@ async def _postprocess(name: str, stdout: str) -> tuple[str, list[dict[str, Any]
 
 
 async def _postprocess_http(name: str, tool: dict[str, Any], base: str, data: Any) -> tuple[str, list[dict[str, Any]]]:
-    """HTTP 工具的 postprocess：拿到回應 JSON 後由後端接手（如 sd.cpp 的非同步工作）。"""
-    if name == "sdcpp_job":
-        import sdcpp_jobs
-
-        return await sdcpp_jobs.process(tool, base, data)
-    if name == "sdcpp_caps":
-        import sdcpp_jobs
-
-        return sdcpp_jobs.caps_summary(data), []
+    """HTTP / MCP 工具的 postprocess：拿到回應 JSON 後由後端整理成摘要＋前端事件。"""
+    if name in ("civitai_models", "civitai_images"):  # 跟腳本工具同一套（civitai 搜尋的 JSON）
+        return await _postprocess(name, json.dumps(data, ensure_ascii=False))
     if name == "civitai_examples":
         import civitai_examples
 
@@ -646,6 +645,90 @@ async def _postprocess_http(name: str, tool: dict[str, Any], base: str, data: An
 
         return await a1111_memory.after_action(tool, base, data), []
     return json.dumps(data, ensure_ascii=False, indent=1), []
+
+
+ProgressFn = Callable[[float | None, str | None], Awaitable[None]]
+
+
+async def _call_mcp(tool: dict[str, Any], raw_in: dict[str, Any], image: str | None = None,
+                    on_progress: ProgressFn | None = None) -> ToolOutput:
+    """kind "mcp" 的工具：經該服務的 MCP 伺服器呼叫。結果的整理（postprocess、result_note、截斷）跟 HTTP
+    工具一樣，因為伺服器的結構化結果就是原本 REST API 回的 JSON；結果帶圖就存檔、顯示、附給視覺模型。"""
+    import mcp_client
+
+    args = {**(tool.get("defaults") or {}), **_coerce(raw_in, tool["parameters"])}
+    if tool.get("postprocess") == "lora_inventory":
+        # 分類 / 底模篩選在後端做（loras.llm_inventory）：取符合 q 的全部，分頁留到後處理
+        page = {k: args.pop(k, None) for k in ("category", "base", "limit", "offset")}
+        tool = {**tool, "_page": {**page, "q": args.get("q")}}
+        args.update(limit=5000, offset=0)
+    attach = tool.get("attach_image")
+    field = str((attach or {}).get("field") or "image")
+    if attach:
+        if not image:
+            return ToolOutput(
+                f"Tool {tool['name']} needs an image, but there is none in this conversation yet. Ask the user "
+                "to attach the image to edit (or generate one first), then call the tool again."
+            )
+        args[field] = [_as_data_url(image)] if attach.get("as") == "list" else _as_data_url(image)
+    post = tool.get("postprocess") or ""
+    shows_errors = bool(post or attach)  # 這類工具的結果直接顯示在畫面上，失敗也要讓使用者看到
+    limit = int(tool.get("max_chars") or _DEFAULT_MAX_CHARS)
+
+    async def progress(value: float, total: float | None, message: str | None) -> None:
+        if on_progress:
+            await on_progress(min(1.0, value / total) if total else None, message)
+
+    try:
+        res = await mcp_client.call(tool["server"], tool["tool"], args, on_progress=progress,
+                                    timeout=min(float(tool.get("timeout") or _DEFAULT_TIMEOUT), HTTP_TIMEOUT))
+    except mcp_client.McpError as e:
+        msg = f"Tool {tool['name']} failed: {e}"
+        log.warning(msg)
+        return ToolOutput(msg, [{"type": "error", "message": msg[:300]}] if shows_errors else [])
+    if res.is_error:
+        msg = f"Tool {tool['name']} returned an error:\n{_truncate(res.text, limit)}"
+        log.warning(msg[:500])
+        return ToolOutput(msg, [{"type": "error", "message": msg[:300]}] if shows_errors else [])
+    data = res.structured
+    if isinstance(data, dict) and set(data) == {"result"}:  # 伺服器把清單 / 純量包成 {"result": …}
+        data = data["result"]
+    # 文字內容就是給模型看的（多數伺服器是結構化結果的 JSON，sd.cpp 是摘要）
+    body = rewrite_a1111_thumbs(res.text or json.dumps(data, ensure_ascii=False, indent=1))
+    events: list[dict[str, Any]] = []
+    if post and (isinstance(data, (dict, list)) or post == "a1111_memory_after"):
+        body, events = await _postprocess_http(post, tool, settings_store.get_a1111_url(), data)
+    if res.images:
+        events += _result_images(tool, args, field if attach else "", data, res.images)
+        body += ("\n\nThe result image(s) are already shown to the user inline; do not print image URLs or base64. "
+                 "If no image is attached to this message for you to look at, you cannot see the result: do not "
+                 "claim specific details changed, say the image is shown and ask the user to check it.")
+    text = f"Result of {tool['name']}:\n{_truncate(body, limit)}"
+    if tool.get("result_note"):
+        text += f"\n\n{tool['result_note']}"
+    return ToolOutput(text, events)
+
+
+def _result_images(tool: dict[str, Any], args: dict[str, Any], image_field: str, data: Any,
+                   images: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """MCP 工具回的圖：存進圖片目錄、推 image 事件（跟 A1111 生的圖一樣顯示），再附縮圖給視覺模型。"""
+    import a1111_client
+    import chat as chat_mod  # chat 也 import 這個模組
+
+    params = {k: v for k, v in args.items() if k != image_field}
+    if isinstance(data, dict):  # 伺服器算出的尺寸、seed…
+        params.update({k: data[k] for k in ("width", "height", "seed", "steps") if data.get(k) is not None})
+    events: list[dict[str, Any]] = []
+    for b64, _mime in images:
+        try:
+            url = a1111_client.save_image(b64)
+        except Exception as e:  # noqa: BLE001
+            log.warning("saving %s image failed: %s", tool["name"], e)
+            continue
+        events.append({"type": "image", "url": url, "params": {"mode": tool["name"], **params}, "info": ""})
+    events.append({"type": "_vision", "kind": "generated",
+                   "images": [chat_mod.vision_copy(b64) for b64, _ in images[:4]]})
+    return events
 
 
 async def call(tool: dict[str, Any], args: dict[str, Any] | None, image: str | None = None) -> str:
@@ -678,9 +761,11 @@ def _as_data_url(image: str) -> str:
 
 
 async def call_full(
-    tool: dict[str, Any], args: dict[str, Any] | None, image: str | None = None
+    tool: dict[str, Any], args: dict[str, Any] | None, image: str | None = None,
+    on_progress: ProgressFn | None = None,
 ) -> ToolOutput:
-    """同 call，但連同要推給前端的事件一起回（chat.py 用）。image＝對話中最後附的圖（base64 或 data URL）。"""
+    """同 call，但連同要推給前端的事件一起回（chat.py 用）。image＝對話中最後附的圖（base64 或 data URL）；
+    on_progress(0~1 或 None, 訊息)：MCP 工具執行中的進度。"""
     raw_in = dict(args or {})
     kind = tool.get("kind") or "http"
 
@@ -733,6 +818,9 @@ async def call_full(
         if tool.get("result_note"):
             text += f"\n\n{tool['result_note']}"
         return ToolOutput(text, events)
+
+    if kind == "mcp":
+        return await _call_mcp(tool, raw_in, image, on_progress)
 
     # --- HTTP 工具 ---
     args = _coerce(raw_in, tool["parameters"])

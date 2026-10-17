@@ -1,13 +1,13 @@
 """A1111 記憶體管理技能的結果整理：/sdapi/v1/memory 的原始位元組數 → 模型看得懂的幾行 GB。
 
 由 skill_tools 的 postprocess "a1111_memory"（查詢）與 "a1111_memory_after"
-（卸載 / 載回之後再查一次，回報前後狀態）呼叫。
+（卸載 / 載回之後再經 A1111 MCP 的 a1111_memory 查一次，回報前後狀態）呼叫。
 """
 from __future__ import annotations
 
 from typing import Any
 
-import httpx
+import mcp_client
 
 _GB = 1024**3
 
@@ -58,8 +58,7 @@ async def after_action(tool: dict[str, Any], base: str, data: Any) -> str:
     """卸載 / 載回完成後，再查一次記憶體，讓模型能回報結果。"""
     head = f"{tool['name']} done" + (f" (response: {str(data)[:200]})" if data not in (None, "", {}, []) else "") + "."
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            mem = (await client.get(base.rstrip("/") + "/sdapi/v1/memory")).json()
+        mem = await mcp_client.call_json("a1111", "a1111_memory", timeout=20)
         return head + "\nMemory now:\n" + summary(mem)
-    except (httpx.HTTPError, ValueError) as e:
+    except mcp_client.McpError as e:
         return head + f" (could not read memory afterwards: {e})"

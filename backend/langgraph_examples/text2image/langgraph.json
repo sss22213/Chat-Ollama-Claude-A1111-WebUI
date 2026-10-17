@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "text2image": "./text2image.py:graph"
+  },
+  "env": ".env"
+}

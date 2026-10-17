@@ -4,8 +4,8 @@
 - 提示經 stdin 傳入（prompt 用 "-"），附件圖片寫成暫存檔以 `-i` 傳入（vision）。
 - 解析輸出的 JSONL：`item.completed`(agent_message) 取回覆文字、`turn.completed` 取用量。
 - 沙箱預設 read-only；對話用途幾乎不會執行命令。
-- 生圖：Codex 不肯穩定輸出文字標記，改用 `--output-schema` 結構化輸出
-  回 {reply, image_prompt, edit} → 由 chat._run_codex 轉成 A1111 生圖。
+- 工具（生圖、搜尋、技能與 A1111 / Civitai Helper 的工具）：原生 MCP——`-c mcp_servers.webui.url=…`
+  掛上 webui 的 MCP 閘道，codex 自己呼叫（chat._run_cli_mcp）；codex 內建的生圖、shell 等工具關掉。
 """
 from __future__ import annotations
 
@@ -189,19 +189,6 @@ def _args(
     return args
 
 
-# 生圖意圖的結構化輸出 schema：reply 為對話、image_prompt 非空代表要生圖。
-_IMAGE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "reply": {"type": "string"},
-        "image_prompt": {"type": "string"},
-        "edit_attached_image": {"type": "boolean"},
-    },
-    "required": ["reply", "image_prompt", "edit_attached_image"],
-    "additionalProperties": False,
-}
-
-
 def _write_images(images: list[str]) -> list[str]:
     paths: list[str] = []
     for b64 in images:
@@ -235,6 +222,31 @@ def _reasoning_cfg(think: bool, effort: str | None) -> list[str]:
 _USAGE_GRACE = 5.0
 
 
+# 原生 MCP：工具呼叫（生圖、下載模型…）期間 codex 不會輸出事件，閒置逾時要放寬
+MCP_IDLE_TIMEOUT = max(CODEX_TIMEOUT, 1200.0)
+MCP_SERVER_NAME = "webui"
+
+
+def mcp_config(url: str) -> list[str]:
+    """掛上 webui 的 MCP 閘道（這次對話專用的網址）；工具逾時放寬到跟閒置逾時一樣。
+    codex exec 的核准策略是 never：MCP 工具預設要人核准就會被拒，所以這個伺服器的工具一律核准
+    （閘道只提供這次對話選用的工具）。"""
+    name = MCP_SERVER_NAME
+    args = ["-c", f'mcp_servers.{name}.url="{url}"',
+            "-c", f'mcp_servers.{name}.default_tools_approval_mode="approve"',
+            "-c", f"mcp_servers.{name}.tool_timeout_sec={int(MCP_IDLE_TIMEOUT)}",
+            "-c", f"mcp_servers.{name}.startup_timeout_sec=30"]
+    for feature in _BUILTIN_TOOL_FEATURES:
+        args += ["-c", f"features.{feature}=false"]
+    return args
+
+
+# codex 自己的工具：跟 Claude CLI（--tools ""）一樣全部關掉，只用 webui 閘道的工具——
+# 尤其 image_generation（它會改用 OpenAI 的生圖，不經 A1111）與 shell（不碰後端的檔案）
+_BUILTIN_TOOL_FEATURES = ("image_generation", "shell_tool", "unified_exec", "browser_use", "computer_use",
+                          "apps", "plugins", "view_image")
+
+
 async def _exec(
     model: str,
     prompt: str,
@@ -244,6 +256,7 @@ async def _exec(
     think: bool = False,
     effort: str | None = None,
     stop_after_message: bool = False,
+    idle_timeout: float | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """低階執行 codex exec，yield 原始事件：agent_message / reasoning / usage / error。
     stop_after_message：拿到第一則 agent_message 後只留 _USAGE_GRACE 秒收 usage 就結束並
@@ -263,6 +276,7 @@ async def _exec(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=64 * 1024 * 1024,  # --json 一行可能很長（MCP 工具結果裡的圖）
         )
         proc.stdin.write(prompt.encode())
         await proc.stdin.drain()
@@ -280,7 +294,7 @@ async def _exec(
                     return
                 timeout = remaining
             else:
-                timeout = CODEX_TIMEOUT
+                timeout = idle_timeout or CODEX_TIMEOUT
             try:
                 line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
             except asyncio.TimeoutError:
@@ -356,13 +370,18 @@ async def _run_freeform(
     system: str,
     think: bool = False,
     effort: str | None = None,
+    mcp_url: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     prompt, images = _build_prompt(messages, system)
-    gen = _exec(model, prompt, images, think=think, effort=effort)
+    gen = _exec(model, prompt, images, mcp_config(mcp_url) if mcp_url else None, think=think, effort=effort,
+                idle_timeout=MCP_IDLE_TIMEOUT if mcp_url else None)
+    said = False
     try:
         async for ev in gen:
             if ev["type"] == "agent_message":
-                yield {"type": "text", "delta": ev["text"]}
+                # 工具呼叫前後各是一則訊息：中間空一行
+                yield {"type": "text", "delta": ("\n\n" if said else "") + ev["text"]}
+                said = True
             elif ev["type"] == "reasoning":
                 yield {"type": "thinking", "delta": ev["text"] + "\n"}
             else:
@@ -371,89 +390,15 @@ async def _run_freeform(
         await gen.aclose()  # 提前中止時同步關閉 _exec（觸發 kill 子行程）
 
 
-async def _run_schema(
-    model: str,
-    messages: list[dict[str, Any]],
-    system: str,
-    has_init_image: bool,
-    think: bool = False,
-    effort: str | None = None,
-) -> AsyncIterator[dict[str, Any]]:
-    """結構化輸出模式：回 {reply, image_prompt, edit} → text + image_request。"""
-    prompt, images = _build_prompt(messages, system)
-    fd, schema_path = tempfile.mkstemp(suffix=".json")
-    os.write(fd, json.dumps(_IMAGE_SCHEMA).encode())
-    os.close(fd)
-
-    last_msg = None
-    usage = None
-    err = None
-    gen = _exec(
-        model, prompt, images, extra=["--output-schema", schema_path],
-        think=think, effort=effort, stop_after_message=True,
-    )
-    try:
-        async for ev in gen:
-            if ev["type"] == "agent_message":
-                last_msg = ev["text"]
-            elif ev["type"] == "reasoning":
-                yield {"type": "thinking", "delta": ev["text"] + "\n"}
-            elif ev["type"] == "usage":
-                usage = ev["prompt_tokens"]
-            elif ev["type"] == "error":
-                err = ev["message"]
-    finally:
-        await gen.aclose()  # 提前中止時同步關閉 _exec（觸發 kill 子行程）
-        try:
-            os.remove(schema_path)
-        except OSError:
-            pass
-
-    if err:
-        yield {"type": "error", "message": err}
-        return
-
-    data = None
-    if last_msg:
-        try:
-            data = json.loads(last_msg)
-        except json.JSONDecodeError:
-            data = None
-
-    if isinstance(data, dict):
-        reply = (data.get("reply") or "").strip()
-        if reply:
-            yield {"type": "text", "delta": reply}
-        image_prompt = (data.get("image_prompt") or "").strip()
-        if image_prompt:
-            name = (
-                "editimg"
-                if (data.get("edit_attached_image") and has_init_image)
-                else "genimg"
-            )
-            yield {"type": "image_request", "name": name, "args": {"prompt": image_prompt}}
-    elif last_msg:
-        yield {"type": "text", "delta": last_msg}  # 非 JSON 後備
-
-    if usage:
-        yield {"type": "usage", "prompt_tokens": usage}
-
-
 async def chat_stream(
     model: str,
     messages: list[dict[str, Any]],
     system: str,
     think: bool = False,  # 開啟時請 codex 吐出思考摘要（當 thinking 顯示）
-    use_schema: bool = False,
-    has_init_image: bool = False,
     effort: str | None = None,  # 推理強度：minimal/low/medium/high（低＝更快）
+    mcp_url: str | None = None,  # webui MCP 閘道：codex 直接呼叫它的工具
 ) -> AsyncIterator[dict[str, Any]]:
-    if use_schema:
-        gen = _run_schema(
-            model, messages, system, has_init_image, think=think, effort=effort
-        )
-    else:
-        gen = _run_freeform(model, messages, system, think=think, effort=effort)
+    gen = _run_freeform(model, messages, system, think=think, effort=effort, mcp_url=mcp_url)
     try:
         async for ev in gen:
             yield ev
