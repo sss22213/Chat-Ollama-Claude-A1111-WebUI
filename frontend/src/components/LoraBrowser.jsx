@@ -15,6 +15,7 @@ import {
   Download,
   ExternalLink,
   Filter,
+  Unlink,
 } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
@@ -30,6 +31,7 @@ import {
   refreshOneLora,
 } from "../lib/api";
 import ExampleGallery from "./ExampleGallery";
+import LoraRefsPanel from "./LoraRefsPanel";
 import { copyText } from "../lib/clipboard";
 
 // 篩選：底模（base）與內容分類（category，Civitai 標籤）。沒有值的歸到「未知 / 未分類」。
@@ -74,6 +76,7 @@ export default function LoraBrowser({ onClose, onInsert, onGenerate }) {
   const [base, setBase] = useState(() => loadFilters().base || "");
   const [cat, setCat] = useState(() => loadFilters().cat || "");
   const [meta, setMeta] = useState(null); // 分類抓取進度 {total, done, running}
+  const [refsOpen, setRefsOpen] = useState(false); // 「檢查失效引用」面板
   const qRef = useRef(q);
   qRef.current = q;
   const poll = useRef({ timer: null, lastDone: -1, alive: true });
@@ -199,6 +202,17 @@ export default function LoraBrowser({ onClose, onInsert, onGenerate }) {
             />
           </div>
           <button
+            onClick={() => {
+              setSelected(null);
+              setRefsOpen((v) => !v);
+            }}
+            title={t("loraRefsButton")}
+            data-testid="lora-refs-btn"
+            className={`shrink-0 rounded-lg p-1.5 hover:bg-ink-750 ${refsOpen ? "text-amber-300" : "text-gray-400"}`}
+          >
+            <Unlink size={16} />
+          </button>
+          <button
             onClick={doRefresh}
             disabled={refreshing}
             title={t("loraRefresh")}
@@ -236,6 +250,9 @@ export default function LoraBrowser({ onClose, onInsert, onGenerate }) {
           />
         ) : (
           <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+            {refsOpen && (
+              <LoraRefsPanel t={t} onClose={() => setRefsOpen(false)} names={items.map((it) => it.name)} />
+            )}
             {loading && (
               <div className="flex items-center justify-center gap-2 py-10 text-sm text-gray-400">
                 <Loader2 size={16} className="animate-spin" /> {t("loading")}
@@ -330,6 +347,12 @@ function LoraCard({ lora, onClick }) {
         <p className="truncate text-xs text-gray-300" title={lora.alias}>
           {lora.alias}
         </p>
+        {/* 別名跟檔名不同時也列檔名：不同檔案可能有同一個別名（例如 xxx 與 xxx_2），prompt 用的是檔名 */}
+        {lora.alias && lora.alias !== lora.name && (
+          <p data-testid="lora-file-name" className="line-clamp-2 break-all font-mono text-[10px] leading-tight text-gray-500" title={lora.name}>
+            {lora.name}
+          </p>
+        )}
         <p className="mt-0.5 truncate text-[10px] text-gray-600">
           {lora.triggers && lora.triggers.length
             ? lora.triggers.slice(0, 3).join(", ")
@@ -443,6 +466,11 @@ function LoraDetail({
           >
             <ArrowLeft size={15} className="shrink-0" />
             <span className="truncate">{lora.alias}</span>
+            {lora.alias && lora.alias !== lora.name && (
+              <span className="shrink truncate font-mono text-xs text-gray-500" title={lora.name}>
+                {lora.name}
+              </span>
+            )}
           </button>
           {(up.msg || up.error) && (
             <span

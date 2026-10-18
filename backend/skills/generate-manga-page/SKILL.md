@@ -1,6 +1,6 @@
 ---
 name: Generate Manga Page
-description: "Generate manga/comic pages with consistent recurring characters. Use when the user asks for a manga page, comic page, chapter page, cover, storyboard page, or character-consistent multi-panel art. First lock each recurring character's look (a reference + fixed tags/LoRA/seed), then generate the page so the same character never gets redesigned across panels or pages."
+description: "Generate manga/comic pages with consistent recurring characters. Use when the user asks for a manga page, comic page, chapter page, cover, storyboard page, or character-consistent multi-panel art. First lock each recurring character's look (a reference + fixed tags/LoRA/seed), then generate the page so the same character never gets redesigned across panels or pages; every image is checked against its prompt and confirmed by the user before the next one."
 ---
 
 # Generate Manga Page
@@ -39,18 +39,26 @@ For each recurring character not yet established this conversation:
 - Write their fixed appearance tag block.
 - Generate ONE clean reference image (a simple front-facing portrait / character sheet) at a fixed seed. This is the visual anchor you reuse.
 - State the character's locked tags + seed so they can be reused verbatim.
+- Check the reference image and let the user confirm it (step 4) before any panel uses it: a wrong anchor spoils every panel after it.
 
 ### 3. Generate panels
-Generate the panels (one image each, in reading order). For every panel, the prompt = `ink_style + quality tags` + `each present character's locked appearance block` + `this panel's pose / expression / camera / action` + `background`. Keep the same per-character seed where the backend allows it.
+Generate the panels (one image each, in reading order), and after each panel do the check in step 4 and wait for the user's confirmation before the next panel. When the user asked for the whole page at once (「整頁一次畫完」「不用每格確認」), check each panel right after it is generated but keep going, and ask for confirmation of all panels at the end (only the ❌ / ❓ items per panel). For every panel, the prompt = `ink_style + quality tags` + `each present character's locked appearance block` + `this panel's pose / expression / camera / action` + `background`. Keep the same per-character seed where the backend allows it.
 
 Compose each prompt as comma-separated English danbooru tags (these are SDXL / Pony / Illustrious anime models, not sentences). Example panel prompt:
 `monochrome, manga, screentone, 1girl, silver hair, blue eyes, school uniform, red scarf, determined expression, low angle, running, rooftop, cloudy sky, masterpiece, best quality`
 
-### 4. Quality check
-After each image, verify the recurring character still matches their locked look (face, hair, costume, palette). If it drifted, regenerate with the locked tags/seed reinforced. Reject broken anatomy, accidental text/watermarks, or a confused scene.
+### 4. Check each image and ask the user
+Right after each image (the reference and every panel):
+
+1. **List the features** the image must show, from the prompt you just sent: each present character's locked appearance block (face, hair, eyes, costume pieces, palette, distinctive symbols), the panel's pose / expression / camera / action, the key objects and the background. Leave out ink style and quality words. What the panel's beat in the plan says counts too, even when the prompt left it out; if it is missing, the fix is to add it to the prompt.
+2. **Check them.** If the generated image is attached to the tool result for you, look at it and mark each item ✅ shown, ❌ missing or wrong (say what is there instead), ❓ cannot tell; also say whether each recurring character still matches the locked look, and note broken anatomy, accidental text / watermarks or a confused scene. Mark only what you really see. If no image is attached for you, you cannot see the result: say so in one sentence and give the list as an unticked checklist (☐) for the user.
+3. **Ask the user to confirm** in one short question: is this panel right — go on, or change something? For every ❌ suggest the concrete fix (reinforce the locked tags or the seed, weight the missing tag, change the camera).
+4. **Wait.** Regenerate only when the user asks for it (then check the new image the same way); go on only when they confirm.
+
+Keep the checklist short: a few lines in the user's language, features as the English tags from the prompt (`✅ silver hair`, `❌ red scarf — no scarf`).
 
 ### 5. Wrap up
-Summarize the page: the panel order, each character's locked tags + seed (so the user can reproduce or continue on the next page), and note that speech bubbles / lettering should be added by the user (or in this app's Comic Studio page-layout view).
+After the last panel is confirmed, summarize the page: the panel order, each character's locked tags + seed (so the user can reproduce or continue on the next page), and note that speech bubbles / lettering should be added by the user (or in this app's Comic Studio page-layout view).
 
 ## Notes for this app
 - You generate images with the app's built-in image capability (local Stable Diffusion). Producing the image IS how you "show" it.

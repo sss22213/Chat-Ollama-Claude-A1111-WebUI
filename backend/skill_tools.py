@@ -34,7 +34,10 @@ tools.json 格式（放在技能資料夾內，與 SKILL.md 同層；只能由�
       "name": "sdcpp_edit_image",                    # MCP 工具（頂層 "mcp_server" 或工具自己的 "server"）
       "server": "sdcpp",                             # a1111 | civitai-helper | sdcpp | mmd（mcp_client.SERVERS）
       "tool": "sdcpp_edit_image",                    # 選用：伺服器上的工具名（預設同 name）
-      "attach_image": {"field": "image"},            # 選用：對話中最近的圖（data URL）放進這個參數
+      "attach_image": {"field": "image"},            # 選用：對話中最近的圖（data URL）放進這個參數；
+                                                     # 加 "pick": true 時模型可用 image_numbers 指定對話裡的
+                                                     # 第幾張圖（chat.conversation_images 的編號），多張時放進
+                                                     # "list_field"（每張 {list_item: data URL, name_field: 檔名}）
       "parameters": {…}, "defaults": {…}, "postprocess": "…", "timeout": 600
     },
     {
@@ -106,6 +109,30 @@ _SKIP_DIRS = {"__pycache__", "node_modules", "venv", ".venv", "tests", "test"}
 
 
 _MCP_SERVERS = ("a1111", "civitai-helper", "sdcpp", "mmd")  # 跟 mcp_client.SERVERS 一致
+
+
+PICK_PARAM = "image_numbers"
+
+
+def picks_images(tool: dict[str, Any]) -> bool:
+    """attach_image 設了 pick：模型可以用 image_numbers 指定對話裡的哪幾張圖。"""
+    attach = tool.get("attach_image")
+    return isinstance(attach, dict) and bool(attach.get("pick"))
+
+
+def _with_pick_param(tool: dict[str, Any]) -> None:
+    """pick 的工具：在模型看到的參數裡加上 image_numbers（tools.json 自己寫了就不動）。"""
+    params = tool["parameters"]
+    if not picks_images(tool) or PICK_PARAM in params["properties"]:
+        return
+    attach = tool["attach_image"]
+    many = bool(attach.get("list_field")) or attach.get("as") == "list"
+    tool["parameters"] = {**params, "properties": {**params["properties"], PICK_PARAM: {
+        "type": "array", "items": {"type": "integer"},
+        "description": "Which images of this conversation to use, by number (#1 is the oldest; the numbers are "
+                       "listed in the system message and shown on the images in the chat)"
+                       + (", one or several" if many else ", one number") + ". Leave it out to use the latest image.",
+    }}}
 
 
 def normalize(raw: dict[str, Any], slug: str) -> list[dict[str, Any]]:
@@ -203,6 +230,9 @@ def normalize(raw: dict[str, Any], slug: str) -> list[dict[str, Any]]:
                 "max_chars": int(t.get("max_chars") or _DEFAULT_MAX_CHARS),
             }
         )
+    for t in out:
+        if t.get("attach_image"):
+            _with_pick_param(t)
     return out
 
 
@@ -650,8 +680,112 @@ async def _postprocess_http(name: str, tool: dict[str, Any], base: str, data: An
 ProgressFn = Callable[[float | None, str | None], Awaitable[None]]
 
 
+def _load_conversation_image(ref: dict[str, Any]) -> str | None:
+    """對話裡編號的一張圖 → base64：附的圖直接用，生成的圖從圖片目錄讀原檔（含生成資訊）。"""
+    import base64
+
+    if ref.get("data"):
+        return ref["data"]
+    name = str(ref.get("url") or "").split("?", 1)[0].rsplit("/", 1)[-1]
+    fp = settings_store.find_image(name) if name else None
+    if not fp:
+        return None
+    try:
+        return base64.b64encode(fp.read_bytes()).decode()
+    except OSError:
+        return None
+
+
+_NEEDS_IMAGE = (
+    "Tool {name} needs an image, but there is none in this conversation yet. Ask the user to attach the "
+    "image (or generate one first), then call the tool again."
+)
+
+
+def _pick_images(tool: dict[str, Any], wanted: Any, image: str | None,
+                 images: list[dict[str, Any]] | None) -> tuple[list[tuple[str, str | None]], str | None]:
+    """要附的圖 [(base64 或 data URL, 檔名或 None)]；wanted＝image_numbers（沒給就用最近的那張）。
+    第二個值是給模型的錯誤訊息（編號不存在、讀不到…）。"""
+    if wanted in (None, "", []) or not picks_images(tool):
+        return ([(image, None)] if image else []), None
+    nums: list[int] = []
+    for x in wanted if isinstance(wanted, list) else [wanted]:
+        m = re.fullmatch(r"\s*#?(\d+)\s*", str(x))
+        if not m:
+            return [], f"Tool {tool['name']}: image_numbers takes numbers like 3 (for #3), got {x!r}."
+        nums.append(int(m.group(1)))
+    nums = list(dict.fromkeys(nums))
+    by_n = {r["n"]: r for r in images or []}
+    missing = [n for n in nums if n not in by_n]
+    if missing:
+        have = f"#1-#{max(by_n)}" if by_n else "none"
+        return [], (f"Tool {tool['name']}: there is no image {', '.join(f'#{n}' for n in missing)} in this "
+                    f"conversation (images: {have}).")
+    attach = tool["attach_image"]
+    if len(nums) > 1 and not (attach.get("list_field") or attach.get("as") == "list"):
+        return [], f"Tool {tool['name']} takes one image per call: call it once for each image."
+    out = []
+    for n in nums:
+        data = _load_conversation_image(by_n[n])
+        if not data:
+            return [], f"Tool {tool['name']}: image #{n} can no longer be read (the file was deleted)."
+        out.append((data, str(by_n[n].get("url") or "").rsplit("/", 1)[-1] or None))
+    return out, None
+
+
+def _place_images(attach: dict[str, Any], args: dict[str, Any], picked: list[tuple[str, str | None]]) -> set[str]:
+    """把圖放進參數，回用到的參數名（顯示結果圖時不當成生成參數）。"""
+    field = str(attach.get("field") or "image")
+    name_field = str(attach.get("name_field") or "")
+    list_field = str(attach.get("list_field") or "")
+    if list_field and len(picked) > 1:
+        item = str(attach.get("list_item") or "data")
+        args[list_field] = [{item: _as_data_url(d), **({name_field: n} if name_field and n else {})}
+                            for d, n in picked]
+        return {list_field}
+    if attach.get("as") == "list":
+        args[field] = [_as_data_url(d) for d, _ in picked]
+        return {field}
+    args[field] = _as_data_url(picked[0][0])
+    if name_field and picked[0][1]:
+        args.setdefault(name_field, picked[0][1])
+        return {field, name_field}
+    return {field}
+
+
+# 會改變 LoRA 清單 / 名稱的 Civitai Helper 工具：成功後刷新 webui 的 LoRA 清單與縮圖快取，
+# 改名的話把漫畫作品裡的 <lora:舊名:…> 換成新名，並通知前端（目前開著的作品也一起改）
+LORA_CHANGING = {"civitai_download_model", "civitai_rename_model", "civitai_delete_model", "civitai_fix_names"}
+_background: set[asyncio.Task] = set()
+
+
+async def after_lora_change(tool_name: str, data: Any) -> tuple[str, list[dict[str, Any]]]:
+    """(給模型的補充說明, 前端事件)。"""
+    import lora_refs
+    import loras
+
+    mapping = lora_refs.mapping_from_result(tool_name, data)
+    note, events = "", []
+    if mapping:
+        try:
+            changed = lora_refs.replace(mapping)
+        except Exception as e:  # noqa: BLE001
+            log.warning("replacing LoRA names in comic projects failed: %s", e)
+            changed = []
+        events.append({"type": "lora_renamed", "mapping": mapping, "projects": changed})
+        if changed:
+            note = (f"\n\nThe app also changed {sum(c['count'] for c in changed)} <lora:…> tag(s) in "
+                    f"{len(changed)} Comic Studio project(s) to the new name(s): "
+                    + ", ".join(c["title"] or c["id"] for c in changed) + ".")
+    task = asyncio.ensure_future(loras.after_change(
+        [*mapping, *mapping.values()], clear_example_thumbs=bool(mapping) or tool_name == "civitai_fix_names"))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return note, events
+
+
 async def _call_mcp(tool: dict[str, Any], raw_in: dict[str, Any], image: str | None = None,
-                    on_progress: ProgressFn | None = None) -> ToolOutput:
+                    on_progress: ProgressFn | None = None, images: list[dict[str, Any]] | None = None) -> ToolOutput:
     """kind "mcp" 的工具：經該服務的 MCP 伺服器呼叫。結果的整理（postprocess、result_note、截斷）跟 HTTP
     工具一樣，因為伺服器的結構化結果就是原本 REST API 回的 JSON；結果帶圖就存檔、顯示、附給視覺模型。"""
     import mcp_client
@@ -663,14 +797,15 @@ async def _call_mcp(tool: dict[str, Any], raw_in: dict[str, Any], image: str | N
         tool = {**tool, "_page": {**page, "q": args.get("q")}}
         args.update(limit=5000, offset=0)
     attach = tool.get("attach_image")
-    field = str((attach or {}).get("field") or "image")
+    wanted = args.pop(PICK_PARAM, None)
+    image_fields: set[str] = set()
     if attach:
-        if not image:
-            return ToolOutput(
-                f"Tool {tool['name']} needs an image, but there is none in this conversation yet. Ask the user "
-                "to attach the image to edit (or generate one first), then call the tool again."
-            )
-        args[field] = [_as_data_url(image)] if attach.get("as") == "list" else _as_data_url(image)
+        picked, err = _pick_images(tool, wanted, image, images)
+        if err:
+            return ToolOutput(err)
+        if not picked:
+            return ToolOutput(_NEEDS_IMAGE.format(name=tool["name"]))
+        image_fields = _place_images(attach, args, picked)
     post = tool.get("postprocess") or ""
     shows_errors = bool(post or attach)  # 這類工具的結果直接顯示在畫面上，失敗也要讓使用者看到
     limit = int(tool.get("max_chars") or _DEFAULT_MAX_CHARS)
@@ -698,8 +833,12 @@ async def _call_mcp(tool: dict[str, Any], raw_in: dict[str, Any], image: str | N
     events: list[dict[str, Any]] = []
     if post and (isinstance(data, (dict, list)) or post == "a1111_memory_after"):
         body, events = await _postprocess_http(post, tool, settings_store.get_a1111_url(), data)
+    if tool["server"] == "civitai-helper" and tool["tool"] in LORA_CHANGING:
+        note, more = await after_lora_change(tool["tool"], data)
+        body += note
+        events += more
     if res.images:
-        events += _result_images(tool, args, field if attach else "", data, res.images)
+        events += _result_images(tool, args, image_fields, data, res.images)
         body += ("\n\nThe result image(s) are already shown to the user inline; do not print image URLs or base64. "
                  "If no image is attached to this message for you to look at, you cannot see the result: do not "
                  "claim specific details changed, say the image is shown and ask the user to check it.")
@@ -709,13 +848,13 @@ async def _call_mcp(tool: dict[str, Any], raw_in: dict[str, Any], image: str | N
     return ToolOutput(text, events)
 
 
-def _result_images(tool: dict[str, Any], args: dict[str, Any], image_field: str, data: Any,
+def _result_images(tool: dict[str, Any], args: dict[str, Any], image_fields: set[str], data: Any,
                    images: list[tuple[str, str]]) -> list[dict[str, Any]]:
     """MCP 工具回的圖：存進圖片目錄、推 image 事件（跟 A1111 生的圖一樣顯示），再附縮圖給視覺模型。"""
     import a1111_client
     import chat as chat_mod  # chat 也 import 這個模組
 
-    params = {k: v for k, v in args.items() if k != image_field}
+    params = {k: v for k, v in args.items() if k not in image_fields}
     if isinstance(data, dict):  # 伺服器算出的尺寸、seed…
         params.update({k: data[k] for k in ("width", "height", "seed", "steps") if data.get(k) is not None})
     events: list[dict[str, Any]] = []
@@ -762,9 +901,10 @@ def _as_data_url(image: str) -> str:
 
 async def call_full(
     tool: dict[str, Any], args: dict[str, Any] | None, image: str | None = None,
-    on_progress: ProgressFn | None = None,
+    on_progress: ProgressFn | None = None, images: list[dict[str, Any]] | None = None,
 ) -> ToolOutput:
     """同 call，但連同要推給前端的事件一起回（chat.py 用）。image＝對話中最後附的圖（base64 或 data URL）；
+    images＝對話裡編號過的圖（chat.conversation_images），模型用 image_numbers 指定時從這裡取；
     on_progress(0~1 或 None, 訊息)：MCP 工具執行中的進度。"""
     raw_in = dict(args or {})
     kind = tool.get("kind") or "http"
@@ -820,7 +960,7 @@ async def call_full(
         return ToolOutput(text, events)
 
     if kind == "mcp":
-        return await _call_mcp(tool, raw_in, image, on_progress)
+        return await _call_mcp(tool, raw_in, image, on_progress, images)
 
     # --- HTTP 工具 ---
     args = _coerce(raw_in, tool["parameters"])
@@ -840,17 +980,17 @@ async def call_full(
     method = tool["method"]
     timeout = min(float(tool.get("timeout") or _DEFAULT_TIMEOUT), HTTP_TIMEOUT)
     attach = tool.get("attach_image")
+    wanted = args.pop(PICK_PARAM, None)
     if attach:
-        if not image:
-            return ToolOutput(
-                f"Tool {tool['name']} needs an image, but the user has not attached one in this "
-                "conversation. Ask the user to attach the image to edit, then call the tool again."
-            )
-        field = str(attach.get("field") or "image")
-        args[field] = [_as_data_url(image)] if attach.get("as") == "list" else _as_data_url(image)
+        picked, err = _pick_images(tool, wanted, image, images)
+        if err:
+            return ToolOutput(err)
+        if not picked:
+            return ToolOutput(_NEEDS_IMAGE.format(name=tool["name"]))
+        _place_images(attach, args, picked)
         # 沒指定尺寸時沿用附圖的長寬比（伺服器預設 512x512 會把圖壓成正方形）
         if attach.get("size_from_image") and not (args.get("width") and args.get("height")):
-            size = _image_size(image, int(attach.get("max_pixels") or 1024 * 1024), int(attach.get("multiple") or 32))
+            size = _image_size(picked[0][0], int(attach.get("max_pixels") or 1024 * 1024), int(attach.get("multiple") or 32))
             if size:
                 args["width"], args["height"] = size
 

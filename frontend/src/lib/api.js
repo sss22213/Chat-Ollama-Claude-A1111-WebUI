@@ -259,6 +259,24 @@ export async function deleteLora(name) {
   return r.json();
 }
 
+// 漫畫作品裡用到、但目前沒有的 LoRA 名稱（改名 / 刪除後失效），附建議的替換：{missing: [...]}
+export async function fetchLoraReferences() {
+  const r = await fetch("/api/loras/references");
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "無法檢查 LoRA 引用");
+  return r.json();
+}
+
+// 把漫畫作品裡的 <lora:舊名:…> 換成新名：mapping {舊名: 新名}；回 {projects: [{id, title, count}]}
+export async function replaceLoraReferences(mapping) {
+  const r = await fetch("/api/loras/replace-references", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mapping }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || "替換失敗");
+  return r.json();
+}
+
 // 縮圖 URL（後端代理 A1111 預覽圖 + 即時縮放快取；無預覽回 404）
 export const loraThumb = (name, size = 96) =>
   `/api/lora-thumb?name=${encodeURIComponent(name)}&size=${size}`;

@@ -122,6 +122,24 @@ export function stripEchoedNote(text) {
   return i < 0 ? text : text.slice(0, i).trimEnd();
 }
 
+// 對話裡的圖依序編號（跟後端 chat.conversation_images 一樣：使用者附的圖、助理訊息裡 /images/ 的圖）。
+// 回 Map：訊息 id → 每張圖的編號（user 對 attachments、assistant 對 images；沒編號的是 null）。
+export function imageNumbers(messages) {
+  const out = new Map();
+  let n = 0;
+  for (const m of messages || []) {
+    if (m.role === "user") {
+      out.set(m.id, (m.attachments || []).map(() => ++n));
+    } else if (m.role === "assistant") {
+      out.set(
+        m.id,
+        (m.images || []).map((im) => (typeof im?.url === "string" && im.url.startsWith("/images/") ? ++n : null))
+      );
+    }
+  }
+  return out;
+}
+
 export function genInfoForModel(images) {
   if (!images?.length) return "";
   const blocks = images
@@ -760,6 +778,9 @@ export const useChat = create(
                 toolName: e.name,
                 progress: null,
               });
+            } else if (e.type === "lora_renamed") {
+              // LoRA 改名了：開著的漫畫作品裡的 <lora:舊名:…> 也換掉（伺服器上的作品後端已經換好）
+              import("./comic").then((m) => m.useComic.getState().replaceLoraNames(e.mapping || {}));
             } else if (e.type === "gallery") {
               // 技能工具回傳的圖庫（如 Civitai Helper 的本地範例圖＋提示詞）
               get()._patchMessage(assistantMsg.id, (m) => ({

@@ -160,13 +160,57 @@ async def chat_stream(
                     continue
 
 
+# 思考的 token 上限：思考型模型偶爾會在思考裡打轉，超過就停下來、關掉思考重來（chat_once）
+THINK_TOKEN_LIMIT = 8000
+
+
+async def _stream_chat(client: httpx.AsyncClient, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """用串流收下整段回覆，組成跟非串流一樣的結果。逾時只算「多久沒收到資料」（client 的
+    read timeout），所以生成得久但一直有輸出時不會因為總時間超過 HTTP_TIMEOUT 而失敗。
+    思考超過 THINK_TOKEN_LIMIT 就中斷連線（Ollama 會停止生成），回 done_reason="think_limit"。"""
+    for _ in range(2):
+        body = {**payload, "stream": True}
+        async with client.stream("POST", url, json=body) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
+                if resp.status_code == 400 and "think" in payload and "think" in resp.text.lower():
+                    payload.pop("think")  # 此模型不允許切換思考
+                    continue
+                _raise_for_ollama(resp)
+            thinking: list[str] = []
+            content: list[str] = []
+            last: dict[str, Any] = {}
+            think_tokens = 0
+            async for line in resp.aiter_lines():
+                if not line.strip():
+                    continue
+                chunk = json.loads(line)
+                if chunk.get("error"):
+                    raise RuntimeError(f"Ollama：{chunk['error']}")
+                msg = chunk.get("message") or {}
+                if msg.get("thinking"):
+                    thinking.append(msg["thinking"])
+                    think_tokens += 1
+                    if body.get("think") and think_tokens > THINK_TOKEN_LIMIT:
+                        last = {"done_reason": "think_limit", "eval_count": think_tokens}
+                        break
+                if msg.get("content"):
+                    content.append(msg["content"])
+                if chunk.get("done"):
+                    last = chunk
+                    break
+            return {**last, "message": {"role": "assistant", "thinking": "".join(thinking),
+                                        "content": "".join(content)}}
+    raise RuntimeError("Ollama 拒絕了這個請求")
+
+
 async def chat_once(
     model: str,
     messages: list[dict[str, Any]],
     num_ctx: int | None = None,
     think: bool | None = None,
 ) -> str:
-    """非串流呼叫，回傳模型的最終輸出（分鏡 / 圖片說故事 / compact 摘要用）。
+    """一次拿到完整回覆（分鏡 / 圖片說故事 / compact 摘要用；內部用串流收，見 _stream_chat）。
 
     think：True/False 明確開關思考（只對有 thinking 能力的模型送出），None＝交給模型預設。
     思考型模型有時會在思考裡打轉直到額度用完、沒走到最終答案（content 空字串），
@@ -182,12 +226,7 @@ async def chat_once(
             payload["think"] = bool(think)
 
         async def call() -> dict[str, Any]:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 400 and "think" in payload and "think" in resp.text.lower():
-                payload.pop("think")  # 此模型不允許切換思考
-                resp = await client.post(url, json=payload)
-            _raise_for_ollama(resp)
-            data = resp.json()
+            data = await _stream_chat(client, url, payload)
             msg = data.get("message") or {}
             # done_reason=length 代表輸出被截斷（超出 num_ctx / num_predict），JSON 類回覆會因此壞掉
             (log.warning if data.get("done_reason") == "length" else log.info)(
@@ -199,12 +238,12 @@ async def chat_once(
 
         data = await call()
         content = ((data.get("message") or {}).get("content") or "").strip()
-        # 沒有最終內容、或輸出被截斷（思考把 num_ctx 吃完），且思考還沒關：關掉思考重來一次
-        cut = data.get("done_reason") == "length"
-        if (not content or cut) and can_think and payload.get("think") is not False:
-            log.warning("chat_once %s: %s while thinking; retrying with think=false",
-                        model, "truncated" if cut else "empty content")
-            _notice("think_fallback", reason="truncated" if cut else "empty", model=model)
+        # 沒有最終內容、輸出被截斷（思考把 num_ctx 吃完）或思考超過上限，且思考還沒關：關掉思考重來一次
+        reason = {"length": "truncated", "think_limit": "long"}.get(data.get("done_reason") or "")
+        if (not content or reason) and can_think and payload.get("think") is not False:
+            reason = reason or "empty"
+            log.warning("chat_once %s: %s while thinking; retrying with think=false", model, reason)
+            _notice("think_fallback", reason=reason, model=model)
             payload["think"] = False
             data = await call()
             content = ((data.get("message") or {}).get("content") or "").strip()

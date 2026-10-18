@@ -212,7 +212,7 @@ export default function ComicStudio() {
         </button>
 
         <div className="hidden items-center gap-3 text-xs text-gray-400 lg:flex">
-          <span className="flex items-center gap-1">
+          <span className="flex items-center gap-1" title={health.a1111_detail || ""}>
             <span
               className={`h-2 w-2 rounded-full ${
                 health.a1111 ? "bg-emerald-400" : "bg-red-500"

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from pathlib import Path
 from typing import Any
 
 import settings_store
@@ -120,6 +121,16 @@ def _parse_frontmatter(text: str) -> tuple[str, str, str]:
     return name, desc, body.strip()
 
 
+def _prompt_chars(d: Path) -> int:
+    total = 0
+    for f in [d / "SKILL.md", *sorted((d / "references").glob("*.md"))]:
+        try:
+            total += len(f.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    return total
+
+
 def list_skills() -> list[dict[str, Any]]:
     """列出可用技能（給前端選單）。掃不到目錄就回空清單。"""
     out: list[dict[str, Any]] = []
@@ -145,11 +156,19 @@ def list_skills() -> list[dict[str, Any]]:
                     "has_references": (d / "references").is_dir(),
                     "has_scripts": (d / "scripts").is_dir(),
                     "has_tools": (d / "tools.json").is_file(),
+                    # 帶進提示詞的大約長度（SKILL.md＋references，字元），給前端估成本
+                    "prompt_chars": _prompt_chars(d),
                 }
             )
     except Exception:
         return out
     return out
+
+
+def has_tools(slug: str) -> bool:
+    """技能有沒有 tools.json（工具型技能：說明是教模型呼叫工具，沒有工具的場合用不到）。"""
+    safe = _safe_slug(slug)
+    return bool(safe) and (_base() / safe / "tools.json").is_file()
 
 
 def get_skill(slug: str) -> dict[str, Any] | None:

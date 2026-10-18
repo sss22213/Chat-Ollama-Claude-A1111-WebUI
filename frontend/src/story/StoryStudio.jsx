@@ -147,7 +147,8 @@ export default function StoryStudio() {
         })),
       });
     } else {
-      importScript({ title: r.title, premise: r.story, characters: [], panels: [] });
+      // 生成的故事直接當漫畫的故事（也當劇情大綱），之後按「依故事生成分鏡」
+      importScript({ title: r.title, premise: r.story, story: r.story, characters: [], panels: [] });
     }
     navigate("comic");
     if (render && r.mode === "comic") {

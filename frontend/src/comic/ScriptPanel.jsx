@@ -8,6 +8,7 @@ import {
   AlertCircle,
   ChevronRight,
   ChevronDown,
+  PenLine,
 } from "lucide-react";
 import { useComic } from "../store/comic";
 import { useChat } from "../store/chat";
@@ -40,7 +41,9 @@ export default function ScriptPanel() {
   const numCtx = useChat((s) => s.settings.numCtx);
   const chatModel = useChat((s) => s.settings.chatModel);
   const skillList = useChat((s) => s.skills);
+  const models = useChat((s) => s.models);
   const [err, setErr] = useState("");
+  const [storyHint, setStoryHint] = useState("");
   const [showSysTpl, setShowSysTpl] = useState(false);
   const [loadingDefault, setLoadingDefault] = useState(false);
 
@@ -60,18 +63,39 @@ export default function ScriptPanel() {
     }
   };
 
-  // 分鏡技能（這份漫畫自己的選擇）；已不存在的技能順手剔除
+  // 分鏡技能（這份漫畫自己的選擇）：只列說明型技能——工具型（有 tools.json）在這裡沒有工具可用，
+  // 後端也不會帶它們。已不存在或用不到的技能，勾選時順手剔除。
+  const usableSkills = skillList.filter((sk) => !sk.has_tools);
+  const skillChars = usableSkills
+    .filter((sk) => c.skills.includes(sk.slug))
+    .reduce((n, sk) => n + (sk.prompt_chars || 0), 0);
   const toggleSkill = (slug) => {
-    const known = c.skills.filter((x) => skillList.some((sk) => sk.slug === x));
+    const known = c.skills.filter((x) => usableSkills.some((sk) => sk.slug === x));
     c.set({
       skills: known.includes(slug) ? known.filter((x) => x !== slug) : [...known, slug],
     });
   };
 
+  // 先寫故事：沒有故事就照劇情大綱寫，有故事就照意見改寫（沒給意見＝重寫一版）
+  const doWriteStory = async () => {
+    setErr("");
+    if (!c.premise.trim() && !c.story.trim()) {
+      setErr(ct("needPremise"));
+      return;
+    }
+    try {
+      await c.writeStory({ engine, model, lang, numCtx, instruction: storyHint });
+      setStoryHint("");
+    } catch (e) {
+      setErr(e.message || ct("storyFailed"));
+    }
+  };
+
+  // 再依故事分鏡
   const doStoryboard = async () => {
     setErr("");
-    if (!c.premise.trim()) {
-      setErr(ct("needPremise"));
+    if (!c.story.trim()) {
+      setErr(ct("needStory"));
       return;
     }
     try {
@@ -80,6 +104,11 @@ export default function ScriptPanel() {
       setErr(e.message || ct("storyboardFailed"));
     }
   };
+
+  // 看圖檢查能選的模型：CLI 引擎都能看圖；Ollama / Strata 只列支援圖片的
+  const visionModels =
+    engine === "claude_cli" || engine === "codex" ? models : models.filter((m) => m.supports_vision);
+  const busy = c.storyWriting || c.storyboarding;
 
   return (
     <div className="space-y-4 p-3">
@@ -202,9 +231,9 @@ export default function ScriptPanel() {
       <div className="space-y-2 rounded-lg border border-ink-700 bg-ink-850 p-2">
         <div>
           <span className="mb-1 block text-xs font-medium text-gray-400">{ct("skillsLabel")}</span>
-          {skillList.length ? (
+          {usableSkills.length ? (
             <div className="flex flex-wrap gap-1">
-              {skillList.map((sk) => {
+              {usableSkills.map((sk) => {
                 const on = c.skills.includes(sk.slug);
                 return (
                   <button
@@ -220,12 +249,25 @@ export default function ScriptPanel() {
                     }`}
                   >
                     {sk.name}
+                    {sk.prompt_chars ? (
+                      <span className="ml-1 tabular-nums opacity-60">
+                        {(sk.prompt_chars / 1000).toFixed(1)}k
+                      </span>
+                    ) : null}
                   </button>
                 );
               })}
             </div>
           ) : (
             <p className="text-[11px] text-gray-500">{ct("skillsNone")}</p>
+          )}
+          {skillChars > 0 && (
+            <p
+              data-testid="skills-cost"
+              className={`mt-1 text-[10px] leading-snug ${skillChars > 20000 ? "text-amber-300" : "text-gray-400"}`}
+            >
+              {ct("skillsCost", { chars: skillChars.toLocaleString(), tokens: Math.round(skillChars / 3).toLocaleString() })}
+            </p>
           )}
           <p className="mt-1 text-[10px] leading-snug text-gray-500">{ct("skillsHint")}</p>
         </div>
@@ -258,9 +300,58 @@ export default function ScriptPanel() {
                 </span>
               </label>
             )}
+      {/* 故事：先依劇情大綱寫故事（可改、可要求改寫），再依故事分鏡 */}
+      <section className="space-y-2 rounded-lg border border-ink-700 bg-ink-850 p-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-gray-400">{ct("storyLabel")}</span>
+          {c.story.trim() && (
+            <span className="text-[10px] tabular-nums text-gray-500">
+              {ct("storyChars", { n: c.story.trim().length })}
+            </span>
+          )}
+        </div>
+        <textarea
+          value={c.story}
+          onChange={(e) => c.set({ story: e.target.value })}
+          placeholder={ct("storyPh")}
+          rows={c.story.trim() ? 9 : 3}
+          data-testid="comic-story"
+          className={`${inputCls} resize-y leading-relaxed`}
+        />
+        {c.story.trim() && (
+          <input
+            value={storyHint}
+            onChange={(e) => setStoryHint(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing && !busy) doWriteStory();
+            }}
+            placeholder={ct("storyInstructionPh")}
+            data-testid="story-instruction"
+            className={inputCls}
+          />
+        )}
+        <button
+          onClick={doWriteStory}
+          disabled={busy || (!c.premise.trim() && !c.story.trim())}
+          data-testid="write-story"
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-indigo-500/60 py-1.5 text-sm text-indigo-200 hover:bg-indigo-600/20 disabled:cursor-not-allowed disabled:border-ink-700 disabled:text-gray-500"
+        >
+          {c.storyWriting ? (
+            <>
+              <Loader2 size={15} className="animate-spin" /> {ct("storyWriting")}
+            </>
+          ) : (
+            <>
+              <PenLine size={15} /> {c.story.trim() ? ct("rewriteStory") : ct("writeStory")} · {engine}
+            </>
+          )}
+        </button>
+        <p className="text-[10px] leading-snug text-gray-500">{ct("storyHint")}</p>
+      </section>
       <button
         onClick={doStoryboard}
-        disabled={c.storyboarding || !c.premise.trim()}
+        disabled={busy || !c.story.trim()}
+        data-testid="gen-storyboard"
         className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-ink-700 disabled:text-gray-500"
       >
         {c.storyboarding ? (
@@ -269,7 +360,7 @@ export default function ScriptPanel() {
           </>
         ) : (
           <>
-            <Wand2 size={16} /> {ct("genStoryboard")} · {engine}
+            <Wand2 size={16} /> {ct("genFromStory")} · {engine}
           </>
         )}
       </button>
@@ -427,13 +518,39 @@ export default function ScriptPanel() {
             className={`${inputCls} flex-1 disabled:opacity-50`}
           />
         </div>
+        <p className="text-[10px] leading-snug text-gray-500">
+          {s.lockSeed ? ct("seedLockedHint") : ct("seedRandomHint")}
+        </p>
+        <Labeled label={ct("checkModel")}>
+          <select
+            value={visionModels.some((m) => m.name === s.checkModel) ? s.checkModel : ""}
+            onChange={(e) => c.setSettings({ checkModel: e.target.value })}
+            data-testid="check-model"
+            className={inputCls}
+          >
+            <option value="">{ct("checkModelAuto")}</option>
+            {visionModels.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        </Labeled>
+        <p className="text-[10px] leading-snug text-gray-500">
+          {visionModels.length ? ct("checkModelHint") : ct("checkModelNone")}
+        </p>
       </section>
 
       {/* 動作 */}
       <section className="space-y-2 border-t border-ink-700 pt-3">
         {!health.a1111 && (
-          <div className="flex items-center gap-1.5 text-xs text-amber-400">
-            <AlertCircle size={14} /> {ct("a1111Offline")}
+          <div className="space-y-0.5 text-xs text-amber-400">
+            <div className="flex items-center gap-1.5">
+              <AlertCircle size={14} className="shrink-0" /> {ct("a1111Offline")}
+            </div>
+            {health.a1111_detail && (
+              <p className="break-words text-[11px] text-amber-300/80">{health.a1111_detail}</p>
+            )}
           </div>
         )}
         <button

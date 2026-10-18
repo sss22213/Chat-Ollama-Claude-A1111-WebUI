@@ -35,6 +35,7 @@ import langgraph_history
 import langgraph_store
 import mcp_client
 import tool_gateway
+import lora_refs
 import loras
 import ollama_client
 import prompt_history_store
@@ -109,16 +110,17 @@ class ChatRequest(BaseModel):
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    ollama_ok = a1111_ok = True
+    ollama_ok = True
     try:
         await ollama_client.list_models()
     except Exception:
         ollama_ok = False
-    try:
-        await a1111_client.get_options()
-    except Exception:
-        a1111_ok = False
-    return {"ollama": ollama_ok, "a1111": a1111_ok}
+    # A1111 的功能都走 MCP：連得上 Forge 的 /mcp、token 也對才算連線
+    a1111 = await mcp_client.check("a1111", settings_store.get_a1111_url())
+    out: dict[str, Any] = {"ollama": ollama_ok, "a1111": a1111["ok"]}
+    if not a1111["ok"]:
+        out["a1111_detail"] = a1111["detail"]
+    return out
 
 
 @app.get("/api/models")
@@ -579,6 +581,26 @@ async def lora_delete(req: LoraNameRequest) -> dict[str, Any]:
         return await loras.delete(req.name)
     except loras.LoraError as e:
         raise HTTPException(e.status, str(e))
+
+
+@app.get("/api/loras/references")
+async def lora_references() -> dict[str, Any]:
+    """漫畫作品裡用到、但目前沒有的 LoRA 名稱（改名 / 刪除後失效的），附建議的替換。"""
+    try:
+        names, aliases = await loras.names_and_aliases()
+    except Exception as e:
+        raise HTTPException(502, f"無法取得 LoRA 清單：{describe(e)}")
+    return {"missing": lora_refs.missing(names, aliases)}
+
+
+class LoraReplaceRequest(BaseModel):
+    mapping: dict[str, str]  # {舊名: 新名}
+
+
+@app.post("/api/loras/replace-references")
+def lora_replace_references(req: LoraReplaceRequest) -> dict[str, Any]:
+    """把漫畫作品裡的 <lora:舊名:…> 換成新名，回傳改到的作品。"""
+    return {"projects": lora_refs.replace(req.mapping)}
 
 
 @app.post("/api/loras/refresh")
@@ -1289,6 +1311,8 @@ class StoryboardRequest(BaseModel):
     prompt_mode: str = "auto"
     # 漫畫出圖設定的 checkpoint（空＝Forge 目前選的；auto 用它判斷）
     checkpoint: str = ""
+    # 先寫好的故事（/api/comic/story）；有的話依故事切格，每格多一個 beat
+    story: str = ""
 
 
 # ---- 圖片說故事（上傳圖片 → LLM 看圖生成故事或漫畫腳本；與漫畫工作室分開的入口）----
@@ -1354,6 +1378,7 @@ class PanelPromptRequest(BaseModel):
     prompt_mode: str = "auto"
     # 漫畫出圖設定的 checkpoint（空＝Forge 目前選的；auto 用它判斷）
     checkpoint: str = ""
+    story: str = ""
 
 
 @app.post("/api/comic/panel-prompt")
@@ -1376,6 +1401,7 @@ async def comic_panel_prompt(req: PanelPromptRequest) -> dict[str, Any]:
             skills=req.skills,
             prompt_mode=req.prompt_mode,
             checkpoint=req.checkpoint,
+            story=req.story,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -1402,9 +1428,94 @@ async def comic_storyboard(req: StoryboardRequest) -> dict[str, Any]:
             skills=req.skills,
             prompt_mode=req.prompt_mode,
             checkpoint=req.checkpoint,
+            story=req.story,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
         log.exception("分鏡生成失敗")
         raise HTTPException(502, f"分鏡生成失敗：{describe(e)}")
+
+
+class ComicStoryRequest(BaseModel):
+    engine: str = "ollama"
+    model: str
+    premise: str = ""
+    panel_count: int = 6
+    characters: list[dict[str, Any]] | None = None
+    lang: str = "zh-TW"
+    # 額外指示（跟分鏡共用）
+    system: str = ""
+    # 改寫：目前的故事與修改意見（都空＝寫新的）
+    story: str = ""
+    instruction: str = ""
+    num_ctx: int | None = None
+    think: bool | None = None
+
+
+@app.post("/api/comic/story")
+async def comic_story(req: ComicStoryRequest) -> dict[str, Any]:
+    """先用劇情大綱、角色卡寫出故事，之後依故事分鏡。"""
+    try:
+        return await comic_mod.write_story(
+            engine=req.engine, model=req.model, premise=req.premise, panel_count=req.panel_count,
+            characters=req.characters, lang=req.lang, system=req.system, story=req.story,
+            instruction=req.instruction, num_ctx=req.num_ctx, think=req.think,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("故事生成失敗")
+        raise HTTPException(502, f"故事生成失敗：{describe(e)}")
+
+
+class ComicParseRequest(BaseModel):
+    engine: str = "ollama"
+    model: str
+    cards: list[dict[str, Any]]  # [{name, keywords}]
+    num_ctx: int | None = None
+    think: bool | None = None
+
+
+@app.post("/api/comic/parse-characters")
+async def comic_parse_characters(req: ComicParseRequest) -> dict[str, Any]:
+    """角色卡的角色關鍵字（範例 prompt）→ 人物特徵、預設服裝、範例場景。"""
+    try:
+        return await comic_mod.parse_characters(
+            engine=req.engine, model=req.model, cards=req.cards, num_ctx=req.num_ctx, think=req.think,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("角色關鍵字解析失敗")
+        raise HTTPException(502, f"角色關鍵字解析失敗：{describe(e)}")
+
+
+class ComicCheckRequest(BaseModel):
+    engine: str = "ollama"
+    model: str  # 看圖用的模型（要能看圖）
+    panels: list[dict[str, Any]]  # 整份分鏡（beat / prompt / dialogue…），前後格當參考
+    index: int
+    image: str  # 這格的圖（/images/…）
+    story: str = ""
+    premise: str = ""
+    characters: list[dict[str, Any]] | None = None
+    lang: str = "zh-TW"
+    num_ctx: int | None = None
+    think: bool | None = None
+
+
+@app.post("/api/comic/check-panel")
+async def comic_check_panel(req: ComicCheckRequest) -> dict[str, Any]:
+    """出圖後讓視覺模型看圖，確認這格有演對故事；不符合時附重寫關鍵字的建議。"""
+    try:
+        return await comic_mod.check_panel(
+            engine=req.engine, model=req.model, panels=req.panels, index=req.index, image=req.image,
+            story=req.story, premise=req.premise, characters=req.characters, lang=req.lang,
+            num_ctx=req.num_ctx, think=req.think,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("看圖檢查失敗")
+        raise HTTPException(502, f"看圖檢查失敗：{describe(e)}")

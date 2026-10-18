@@ -1,4 +1,4 @@
-// 漫畫工作室專用 API：分鏡生成（出圖重用 lib/api.js 的 generateImage）。
+// 漫畫工作室專用 API：寫故事、分鏡、單格重寫、看圖檢查（出圖重用 lib/api.js 的 generateImage）。
 
 export async function generateStoryboard(payload) {
   const r = await fetch("/api/comic/storyboard", {
@@ -32,4 +32,32 @@ export async function regeneratePanelPrompt(payload) {
     throw new Error(detail);
   }
   return r.json();
+}
+
+async function postJson(url, payload, fallback) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const detail = (await r.json().catch(() => ({}))).detail || fallback;
+    throw new Error(detail);
+  }
+  return r.json();
+}
+
+// 先用劇情大綱、角色卡寫出故事（之後依故事分鏡）；帶 story＋instruction 就是改寫
+export function writeComicStory(payload) {
+  return postJson("/api/comic/story", payload, "故事生成失敗");
+}
+
+// 出圖後讓視覺模型看圖，確認這格有演對故事：{status: pass | fail | skipped, problems, fix, reason}
+export function checkComicPanel(payload) {
+  return postJson("/api/comic/check-panel", payload, "看圖檢查失敗");
+}
+
+// 角色卡的角色關鍵字 → {cards: [{name, features, outfit, scene, loras}]}
+export function parseComicCharacters(payload) {
+  return postJson("/api/comic/parse-characters", payload, "角色關鍵字解析失敗");
 }

@@ -25,12 +25,13 @@ import {
   Wrench,
 } from "lucide-react";
 import ImageBlock from "./ImageBlock";
+import ImageNo from "./ImageNo";
 import CandidateCards from "./CandidateCards";
 import ExampleGallery from "./ExampleGallery";
 import { useT } from "../i18n";
 import { stripEchoedNote } from "../store/chat";
 
-export default function Message({ msg }) {
+export default function Message({ msg, imageNo }) {
   const isUser = msg.role === "user";
 
   if (isUser) {
@@ -41,12 +42,14 @@ export default function Message({ msg }) {
             {(msg.attachments || []).length > 0 && (
               <div className="flex flex-wrap justify-end gap-1.5">
                 {msg.attachments.map((a, i) => (
-                  <img
-                    key={i}
-                    src={a.dataUrl}
-                    alt="attachment"
-                    className="h-28 w-28 rounded-xl border border-ink-600 object-cover"
-                  />
+                  <div key={i} className="relative">
+                    <img
+                      src={a.dataUrl}
+                      alt="attachment"
+                      className="h-28 w-28 rounded-xl border border-ink-600 object-cover"
+                    />
+                    <ImageNo n={imageNo?.[i]} />
+                  </div>
                 ))}
               </div>
             )}
@@ -91,7 +94,7 @@ export default function Message({ msg }) {
               </div>
             ) : null}
             {part.images.map((img, j) => (
-              <ImageBlock key={j} img={img} />
+              <ImageBlock key={j} img={img} no={imageNo?.[(msg.images || []).indexOf(img)]} />
             ))}
           </Fragment>
         ))}
@@ -200,7 +203,13 @@ function CompactBadge({ notices }) {
           className="rounded-md border border-amber-700/60 bg-amber-900/20 px-2 py-1 text-xs leading-relaxed text-amber-200"
         >
           {n.code === "think_fallback"
-            ? t(n.reason === "truncated" ? "noticeThinkTruncated" : "noticeThinkEmpty")
+            ? t(
+                n.reason === "truncated"
+                  ? "noticeThinkTruncated"
+                  : n.reason === "long"
+                    ? "noticeThinkLong"
+                    : "noticeThinkEmpty"
+              )
             : n.code}
         </div>
       ))}

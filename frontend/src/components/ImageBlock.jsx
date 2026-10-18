@@ -10,6 +10,7 @@ import {
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
 import PngInfoModal from "./PngInfoModal";
+import ImageNo from "./ImageNo";
 
 const blobToDataUrl = (blob) =>
   new Promise((resolve, reject) => {
@@ -19,7 +20,7 @@ const blobToDataUrl = (blob) =>
     r.readAsDataURL(blob);
   });
 
-export default function ImageBlock({ img }) {
+export default function ImageBlock({ img, no }) {
   const t = useT();
   const [zoom, setZoom] = useState(false);
   const [showParams, setShowParams] = useState(false);
@@ -46,6 +47,7 @@ export default function ImageBlock({ img }) {
           onClick={() => setZoom(true)}
           className="block max-h-[28rem] w-full cursor-zoom-in object-contain"
         />
+        <ImageNo n={no} />
         {p.mode === "img2img" && (
           <span className="absolute left-2 top-2 rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] text-emerald-300">
             img2img

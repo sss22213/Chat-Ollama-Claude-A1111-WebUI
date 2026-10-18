@@ -90,12 +90,26 @@ _OLLAMA_RETRY_NUDGE = (
     "with an empty message."
 )
 
+# 防遺忘 5)：開了帶工具的技能，模型卻沒呼叫任何工具就說「已加好 / 已存好」（本地模型常見）→ 補一輪要它真的做
+_CLAIM_RE = re.compile(
+    r"(已經?|都)[^。！？\n]{0,24}?(加入|加到|加進|加好|新增|存|儲存|保存|寫入|寫好|寫到|刪除|刪掉|下載|改名|重新命名|移除)|"
+    r"(加|存|寫|刪|改)好了|搞定|\b(added|saved|stored|written|deleted|removed|downloaded|renamed)\b",
+    re.IGNORECASE,
+)
+_CLAIM_NUDGE = (
+    "(system reminder) Your previous reply says something was done, but you did not call any tool in this "
+    "reply, so nothing happened. If the user asked you to do something a tool does, call that tool NOW with "
+    "the right arguments, then report its result. If you were only recalling what was done earlier, or no "
+    "tool is needed, reply with an empty message."
+)
+
 # 防遺忘 4)：多張圖的故事，模型寫完下一段（「## Scene 10 …」）卻沒呼叫生圖就結束回覆
 _OLLAMA_CONTINUE_NUDGE = (
     "(system reminder) You wrote the text of \"{heading}\" but ended your reply without "
     "generating its image. Call the image tool for that section NOW — do not repeat its "
-    "text. After the image, continue with the remaining sections of your plan, one section "
-    "and its image at a time, until the whole story is finished."
+    "text. After the image, do what your skill says next: usually check the image against "
+    "its prompt and ask the user to confirm it; when the user asked for the whole story at "
+    "once, go on with the remaining sections, one section and its image at a time."
 )
 # 帶編號的標題行：## Scene 3 — …、### 第 3 幕、## 3. …（取第一個數字當編號）
 _NUMBERED_HEADING_RE = re.compile(r"^ {0,3}#{1,6}[ \t]*([^\n]*?(\d+)[^\n]*)$", re.MULTILINE)
@@ -240,6 +254,78 @@ def _last_init_image(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
+# 對話裡的圖依序編號（#1 最舊）：使用者附的圖、助理生成 / 編輯的圖（前端在圖上顯示同樣的編號）。
+# 技能工具的 attach_image 設了 pick 時，模型可用 image_numbers 指定要哪幾張（見 skill_tools）。
+_IMAGE_LIST_MAX = 40
+
+
+def conversation_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """[{"n", "kind": "attached"|"generated", "data"（附圖的 base64）| "url"（/images/…）, "text"}]。
+    _attach_context_images 附上的圖不算（它們本來就是助理生成、已經編號的那幾張）。"""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if m.get("role") == "user":
+            imgs = list(m.get("images") or [])
+            text = re.sub(r"\s+", " ", str(m.get("content") or "")).strip()[:80]
+            for b64 in imgs[: len(imgs) - int(m.get("context_images") or 0)]:
+                out.append({"n": len(out) + 1, "kind": "attached", "data": b64, "text": text})
+        elif m.get("role") == "assistant":
+            for url in m.get("generated_images") or []:
+                out.append({"n": len(out) + 1, "kind": "generated", "url": url})
+    return out
+
+
+def _png_prompt(url: str) -> str:
+    """app 存下的圖裡寫的提示詞（PNG 的 parameters 第一段）；讀不到回空字串。"""
+    name = str(url or "").split("?", 1)[0].rsplit("/", 1)[-1]
+    fp = settings_store.find_image(name) if name else None
+    if not fp:
+        return ""
+    try:
+        from PIL import Image
+
+        with Image.open(fp) as im:
+            text = str(im.info.get("parameters") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+    return re.sub(r"\s+", " ", text.split("\nNegative prompt:", 1)[0].split("\nSteps:", 1)[0]).strip()
+
+
+def image_list_note(images: list[dict[str, Any]]) -> str:
+    """給模型的圖片清單（只在有工具能用 image_numbers 指定圖時附上）。"""
+    lines = []
+    count = {"attached": 0, "generated": 0}  # 第幾張附的 / 第幾張生成的（「第二張生成的圖」）
+    for r in images:
+        count[r["kind"]] += 1
+        r = {**r, "nth": count[r["kind"]]}
+        if r["n"] <= len(images) - _IMAGE_LIST_MAX:
+            continue
+        if r["kind"] == "attached":
+            lines.append(f"#{r['n']}: attached image {r['nth']}, attached by the user"
+                         + (f' (message: "{r["text"]}")' if r["text"] else ""))
+        else:
+            prompt = _png_prompt(r["url"])
+            lines.append(f"#{r['n']}: generated image {r['nth']}, made in this chat, file {r['url'].rsplit('/', 1)[-1]}"
+                         + (f", prompt: {prompt[:200]}" if prompt else ""))
+    return (
+        "# Images in this conversation\n"
+        "Numbered from the oldest; the chat shows the same number on each image. Tools with an "
+        "image_numbers parameter take these numbers (e.g. [3] for #3, [2, 5] for two images); without it "
+        "they use the latest image. When the user says \"this one\", \"the second picture\" or describes it, "
+        "pick the matching number; ask when it is unclear. Nothing happens to an image unless you call the "
+        "tool: never say it was added or saved before the tool result says so.\n" + "\n".join(lines)
+    )
+
+
+def _append_system(messages: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+    msgs = [dict(m) for m in messages]
+    for m in msgs:
+        if m.get("role") == "system":
+            m["content"] = (m.get("content") or "") + "\n\n" + text
+            return msgs
+    return [{"role": "system", "content": text}, *msgs]
+
+
 def vision_copy(b64: str, max_side: int = 768) -> str:
     """給模型看的圖：長邊超過 max_side 就縮小並轉 JPEG（省 context 與傳輸）；讀不了就原樣。"""
     import base64
@@ -329,7 +415,10 @@ def _tool_message_with_images(result: dict[str, Any], can_see: bool) -> dict[str
     否則只給文字並說明看不到。kind=generated：剛用 A1111 生成的圖。"""
     if result.get("kind") == "generated":
         if not (can_see and result.get("images")):
-            return {"role": "tool", "content": result["content"]}
+            return {"role": "tool", "content": result["content"]
+                    + "\n\n(No image is attached for you: you cannot see the result. Do not describe or judge "
+                    "what it shows; tell the user it is shown, and when a check is needed give them the list "
+                    "to check themselves.)"}
         return {
             "role": "tool",
             "content": result["content"]
@@ -435,6 +524,8 @@ async def run_chat(
     """
     # 技能編輯工具的來源圖（含 A1111 生成的圖）；取完就剝掉前端專用欄位
     edit_image = _last_edit_image(messages)
+    # 對話裡的圖（編號給 image_numbers 用）；要在剝掉 generated_images 之前算
+    convo_images = conversation_images(messages)
     # 上一則回覆生成的圖：看得見圖的模型這一輪也看得到（問「剛剛那張」時）
     recent_images = _recent_generated(messages)
     messages = _strip_client_fields(messages)
@@ -443,6 +534,9 @@ async def run_chat(
     # 技能宣告的工具（tools.json）：各引擎都經 MCP 閘道（Ollama / Strata 由這裡呼叫，CLI 原生 MCP）
     skill_tool_defs = skills_store.tools_for(skill)
     skill_tool_map = {t["name"]: t for t in skill_tool_defs}
+    # 有工具能指定對話裡的某張圖（例如把某張圖加進 LoRA 範例圖）：告訴模型每張圖的編號
+    if convo_images and any(skill_tools.picks_images(t) for t in skill_tool_defs):
+        messages = _append_system(messages, image_list_note(convo_images))
 
     if engine in ("claude_cli", "codex"):
         # 原生 MCP：CLI 直接呼叫 webui 閘道的工具（生圖、搜尋、技能工具），畫面事件由閘道推回來
@@ -451,7 +545,7 @@ async def run_chat(
             tools_enabled=tools_enabled, web_enabled=web_enabled,
             skill=skill if skill_tool_defs else None, image_settings=image_settings,
             think=bool(think), effort=effort, edit_image=edit_image,
-            png_source=(image_sources or [None])[-1],
+            png_source=(image_sources or [None])[-1], images=convo_images,
         ):
             yield s
         return
@@ -476,6 +570,7 @@ async def run_chat(
     tool_ctx = tool_gateway.ToolContext(
         image_tools=tools_enabled, web=web_enabled, skill=skill if skill_tool_defs else None,
         image_settings=image_settings, init_image=init_image, edit_image=edit_image, png_source=png_source,
+        images=convo_images,
     )
     tool_schema = (await tool_gateway.schemas(tool_ctx) if can_tools else []) or None
 
@@ -496,6 +591,8 @@ async def run_chat(
         prompt_tokens = 0
         image_generated = False  # 本回合是否已（嘗試）生圖
         nudged = False           # 防遺忘 2) 的補救重試只做一次
+        claim_nudged = False     # 防遺忘 5) 也只做一次
+        tools_ran = False        # 這次回覆有沒有呼叫過工具
         suppress_text = False    # 補救輪的文字不重複輸出給使用者
         seen_calls: set[str] = set()  # 這次回覆跑過的非生圖工具呼叫（名稱＋參數）
         stuck = 0                     # 連續「只重複舊呼叫」的輪數
@@ -567,10 +664,20 @@ async def run_chat(
                     convo.append({"role": "assistant", "content": assistant_content})
                     convo.append({"role": "user", "content": _OLLAMA_RETRY_NUDGE})
                     continue
+                # 防遺忘 5)：沒呼叫工具卻說已經做好了 → 補一輪要它真的呼叫
+                if can_tools and skill_tool_map and not tools_ran and not claim_nudged \
+                        and _CLAIM_RE.search(assistant_content or ""):
+                    log.info("chat %s: claims an action without a tool call; nudging", model)
+                    claim_nudged = True
+                    suppress_text = True
+                    convo.append({"role": "assistant", "content": assistant_content})
+                    convo.append({"role": "user", "content": _CLAIM_NUDGE})
+                    continue
                 answered = True
                 break
 
             suppress_text = False  # 有正常動作了，之後的文字照常輸出
+            tools_ran = True
             convo.append(
                 {
                     "role": "assistant",
@@ -715,6 +822,7 @@ async def _run_cli_mcp(
     effort: str | None,
     edit_image: str | None,
     png_source: str | None,
+    images: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
     """Claude CLI / Codex：掛上 webui 的 MCP 閘道（這次對話專用的網址），CLI 自己呼叫工具。
     CLI 的文字串流與閘道推來的畫面事件（工具呼叫、生圖進度、圖片、搜尋來源、卡片）合併輸出。"""
@@ -727,6 +835,7 @@ async def _run_cli_mcp(
     ctx = tool_gateway.ToolContext(
         image_tools=tools_enabled, web=web_enabled, skill=skill, image_settings=image_settings,
         init_image=init_image, edit_image=edit_image, png_source=png_source or init_image, emit=emit,
+        images=images or [],
     )
     names = [t["function"]["name"] for t in await tool_gateway.schemas(ctx)]
     system = _base_system(messages) + (_mcp_instructions(names) if names else "")
@@ -864,8 +973,10 @@ async def _run_tool(
     png_source: str | None = None,
     skill_tool_map: dict[str, dict[str, Any]] | None = None,
     edit_image: str | None = None,
+    images: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[Any]:
-    """執行單一工具。yield dict=SSE 事件、yield str=要 append 回對話的 tool 訊息。"""
+    """執行單一工具。yield dict=SSE 事件、yield str=要 append 回對話的 tool 訊息。
+    images：對話裡編號過的圖（conversation_images），技能工具用 image_numbers 指定時從這裡取。"""
     # --- 技能 API 工具（tools.json）---
     if skill_tool_map and name in skill_tool_map:
         yield {"type": "tool_call", "name": name, "args": args}
@@ -874,7 +985,7 @@ async def _run_tool(
             # MCP 工具執行中的進度（例如 MMD 算圖、sd.cpp 改圖）邊跑邊送給前端
             async for item in _with_progress(
                 lambda on_progress: skill_tools.call_full(skill_tool_map[name], args, image=edit_image or init_image,
-                                                          on_progress=on_progress)
+                                                          on_progress=on_progress, images=images)
             ):
                 if isinstance(item, skill_tools.ToolOutput):
                     out = item
@@ -920,8 +1031,7 @@ async def _run_tool(
             text = (
                 "Image generated successfully and shown to the user. "
                 f"Prompt used: {params.get('prompt')}. "
-                "Briefly describe it to the user in their language; "
-                "do not call the tool again unless asked."
+                "Do not call the tool again unless asked."
             )
             b64 = _load_generated(url) if url else None
             # 視覺模型看得到剛生成的圖（由 _tool_message_with_images 決定附不附）

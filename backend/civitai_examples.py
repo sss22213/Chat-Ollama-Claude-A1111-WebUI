@@ -64,8 +64,11 @@ def gallery_items(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for k in ("steps", "sampler", "cfg_scale", "seed", "clip_skip", "model", "size")
             if im.get(k) not in (None, "", "None")
         }
+        loras = {"loras": ", ".join(im["loras"])} if im.get("loras") else {}
         if im.get("source") == "user":  # 從 civitai 使用者的圖加進來的範例（#101 起）
-            params = {"by": im.get("username"), **params, **({"loras": ", ".join(im["loras"])} if im.get("loras") else {})}
+            params = {"by": im.get("username"), **params, **loras}
+        elif im.get("source") == "local":  # 使用者自己生成、加進來的範例（#101 起）
+            params = {"from": "local image", **params, **loras}
         out.append(
             {
                 "index": im.get("index"),
@@ -134,7 +137,9 @@ def model_text(data: dict[str, Any], items: list[dict[str, Any]], seen: list[int
         par = ", ".join(f"{k} {v}" for k, v in p.items())
         lines.append(
             f"#{it['index']}{' (NSFW)' if it['nsfw'] else ''}"
-            f"{' (added from civitai user ' + str(it['params'].get('by')) + ')' if 'by' in it['params'] else ''}{' [attached for you to see]' if it['index'] in seen else ''}: "
+            f"{' (added from civitai user ' + str(it['params'].get('by')) + ')' if 'by' in it['params'] else ''}"
+            f"{' (the user’s own picture, added locally)' if 'from' in it['params'] else ''}"
+            f"{' [attached for you to see]' if it['index'] in seen else ''}: "
             f"prompt: {_short(it['prompt'], 500) or '(none)'}"
             + (f" | negative: {_short(it['negative_prompt'], 160)}" if it["negative_prompt"] else "")
             + (f" | {par}" if par else "")

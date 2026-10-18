@@ -3,7 +3,9 @@
 export function noticeText(n, t) {
   if (!n) return "";
   if (n.code === "think_fallback") {
-    return t(n.reason === "truncated" ? "noticeThinkTruncated" : "noticeThinkEmpty", {
+    const key =
+      n.reason === "truncated" ? "noticeThinkTruncated" : n.reason === "long" ? "noticeThinkLong" : "noticeThinkEmpty";
+    return t(key, {
       model: n.model || "",
     });
   }

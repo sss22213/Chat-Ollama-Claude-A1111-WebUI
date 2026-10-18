@@ -48,6 +48,8 @@ class ToolContext:
     init_image: str | None = None  # 對話最後附的圖（改圖、技能的 attach_image）
     edit_image: str | None = None
     png_source: str | None = None  # 讀 PNG Info 用的原圖
+    # 對話裡編號過的圖（chat.conversation_images）：技能工具用 image_numbers 指定圖時從這裡取
+    images: list[dict[str, Any]] = field(default_factory=list)
     emit: Emit | None = None
     # 工作流裡的 Python 函式（Claude CLI / Codex 透過閘道呼叫時，轉回工作流執行）：
     # local_tools＝{名稱: function schema}，call_local(名稱, 參數) → 結果文字
@@ -184,6 +186,14 @@ def _remote_handler(ctx: ToolContext, remote: str, name: str):
                 await ctx.emit({"type": "error", "message": str(e)})
             return mcp_lite.Result([mcp_lite.text(f"Tool {name} failed: {e}")], is_error=True)
         text = res.text or "(no text)"
+        import skill_tools
+
+        if remote == "civitai-helper" and name in skill_tools.LORA_CHANGING and not res.is_error:
+            note, events = await skill_tools.after_lora_change(name, res.structured)
+            text += note
+            for ev in events:
+                if ctx.emit:
+                    await ctx.emit(ev)
         if not res.images:
             return mcp_lite.Result([mcp_lite.text(text)], is_error=res.is_error)
         info = ((res.structured or {}).get("info") or {}) if isinstance(res.structured, dict) else {}
@@ -222,6 +232,7 @@ async def _execute(ctx: ToolContext, name: str, args: dict[str, Any],
     async for item in chat_mod._run_tool(
         name, args, ctx.image_settings, ctx.init_image, ctx.png_source,
         skill_tool_map={name: defs[name]} if name in defs else None, edit_image=ctx.edit_image,
+        images=ctx.images,
     ):
         if isinstance(item, str):
             texts.append(item)

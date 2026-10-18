@@ -44,16 +44,37 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
 - 📚 **Illustrated stories in chat** — with the `story-illustrator` skill the model plans the
   whole story first (cast sheet + numbered scenes, each with a one-sentence picture line),
   then writes each scene and generates its image one at a time, so every picture sits under
-  its own scene; ask for "keywords only" to get one prompt per scene instead. If the model
-  writes the next scene and stops without its image, the backend reminds it to draw that
-  scene and finish the story.
+  its own scene; after each image it checks the picture against the prompt (✅ / ❌ / ❓ per
+  feature) and waits for your OK before the next scene (or say "draw all at once"); ask for
+  "keywords only" to get one prompt per scene instead. If the model writes a scene and stops
+  without its image, the backend reminds it to draw that scene.
+- ✅ **Check after every image** — the SD prompt guides, Story Illustrator and the manga skill
+  have the model list the prompt's features after each picture, mark what it sees (a model
+  without vision is told it cannot see the result and hands you an unticked list), suggest a
+  prompt fix for each miss and wait for you to confirm before redrawing or moving on.
 - 🖼️ **Image upload (vision)** — attach or paste an image and ask a vision model about it.
-- 📖 **Comic Studio** (`#/comic`) — describe a story, let the LLM break it into panels
+  Every image in a conversation (your attachments and the generated ones) carries a **#number**
+  badge (#1 is the oldest), so you can say "add #3 and #5 to the LoRA's examples".
+- 📖 **Comic Studio** (`#/comic`) — describe a premise, let the LLM **write the story** first
+  (editable; ask for a rewrite with a note), then break that story into panels — each panel
+  records its **story beat** (which moment it shows) and gets
   (8–15 scene tags led by subject-count tags, a per-panel **expression** picked from a
   danbooru whitelist with off-list words mapped to the closest tag, dialogue in the
   premise's language, captions), regenerate one panel's tags on demand (with an
   optional direction such as "from above, add rain", and an undo), keep characters consistent
-  with character cards + LoRA, render every panel through A1111, lay them out as a page
+  with **character cards**: paste a sample prompt of the character as its keywords (plus a LoRA)
+  and the LLM splits it into features, a default outfit, an example pose and an example scene
+  (quality, count, framing and expression tags are dropped, `<lora:…>` goes to the card's LoRA);
+  these are examples the storyboard adapts to the story: every character in a panel gets its own
+  pose for that moment, the outfit or features change only where the story needs it (pajamas at
+  night, wet hair in the rain) and otherwise come from the card, and the example scene is reused
+  where it fits. Render every panel through A1111 — after each render a
+  **vision model checks the picture** against the panel's beat (people, action, place, the
+  details the story states such as a black cat); if it does not match, the panel's tags are
+  rewritten from the check's note and redrawn, up to 2 times, then the panel is marked for
+  your review (the check model is picked in the image settings; models that cannot see
+  images leave panels marked *Not checked*). The seed is shared by all panels when **Lock seed**
+  is on, random per render otherwise (the seed actually used is shown on the panel). Lay them out as a page
   with draggable speech bubbles, and export a PNG. Bubbles come in six styles (speech,
   box, shout burst, whisper, thought, caption) with a selectable tail direction (eight
   directions or none); the page preview and the exported PNG share the same geometry.
@@ -66,8 +87,8 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   picture, with characters referred to by their look instead of their names. The sentences
   go into the image prompt as a whole, after the style and before the tags.
   A **Thinking mode** switch (Ollama) decides whether thinking-capable models reason
-  before writing the storyboard; if a model gets stuck thinking and returns no answer (or the
-  answer is cut off), the request is retried once without thinking and the page shows a
+  before writing the storyboard; if a model gets stuck thinking and returns no answer, the
+  answer is cut off, or it thinks for more than 8000 tokens, the request is retried once without thinking and the page shows a
   notice saying the result was produced without thinking. The same switch exists on the
   Image Story page, and the chat's conversation summary shows the same notice.
   Comics are **saved on the server automatically** (title, premise, cards, panels, bubbles,
@@ -183,7 +204,13 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   (all LoRAs, in the background) or **Update** in a LoRA's details (just that one). The
   details show the Civitai source (model / version / creator, link to the page), the example
   images with their prompts (copy button), **Download all example images**, and **Delete**
-  (removes the LoRA and every file that belongs to it). The chat model searches the same way:
+  (removes the LoRA and every file that belongs to it). A card whose alias differs from its
+  file name also shows the file name (two files can share an alias, e.g. `xxx` and `xxx_2`).
+  The 🔗 button checks Comic Studio projects for **broken LoRA references** (names that no
+  longer exist after a LoRA was renamed or deleted) and replaces them with an existing LoRA,
+  suggesting the obvious one (`xxx_2` ↔ `xxx`, same alias). When a LoRA is downloaded, renamed,
+  merged or deleted through the `civitai-helper` tools, the app refreshes its LoRA list and
+  changes `<lora:old:…>` in Comic Studio projects (also the one open in the browser) by itself. The chat model searches the same way:
   its LoRA inventory tool filters by category and base model and reports how many LoRAs each
   category holds.
 - 🎛️ **Anima checkpoints** — when the selected checkpoint is an Anima model (WAI-ANIMA,
@@ -325,11 +352,18 @@ npm run dev
     so the next message does not trigger another load. Use it after overwriting a model
     with `ollama create`, or when a model starts behaving oddly.
 13. **Comic Studio:** the 📖 button opens `#/comic`. Write a premise, add character cards
-    (fixed appearance tags + optional LoRA; unnamed cards are auto-named), optionally tick
+    (a sample prompt as the character's keywords + optional LoRA; **AI parse** splits the keywords
+    into features / outfit / example pose / example scene, also done automatically before the
+    story or the storyboard, and the result is editable; unnamed cards are auto-named; each panel
+    has pose / outfit / features fields per character: the storyboard always writes the pose and
+    fills the outfit or features when the story changes them, empty means the card's), optionally tick
     **Thinking mode** for thinking-capable Ollama models, pick **Storyboard skills** and the
-    **Prompt format** if you like, press **AI storyboard** to get panels with scene tags
-    (plus English sentences for Anima), a per-panel **Face** (expression) field, dialogue
-    and captions, then **Generate all**. Each panel has **Regenerate tags** (type a direction such as
+    **Prompt format** if you like, press **AI write story** (or write the story yourself), edit
+    it or ask for a rewrite, then press **Storyboard from story** to get panels with a story
+    beat, scene tags (plus English sentences for Anima), a per-panel **Face** (expression)
+    field, dialogue and captions, then **Generate all**: every panel is checked against its
+    beat after rendering and fixed automatically when it is off-story (the badge on each
+    panel shows *Matches the story*, *fixed n×*, *Needs your review* or *Not checked*). Each panel has **Regenerate tags** (type a direction such as
     "from above, add rain", Enter; **Undo** brings the previous tags back). Switch to page
     view to drag bubbles around, hover one to change its style and tail direction (also
     editable per bubble in the storyboard cards), and export a PNG. Everything is saved
@@ -340,7 +374,7 @@ npm run dev
     like (the page shows an estimated token count against the context window), pick
     **Story**, **Comic script** or **Image panels** (your images are the panels; reorder
     them with ◀ ▶), optionally add direction ("heartwarming, twist ending"),
-    and press **Generate**. A story can be sent to Comic Studio as the premise; a comic
+    and press **Generate**. A story can be sent to Comic Studio as its story; a comic
     script can be opened there directly — **Open & render all** imports the cast and
     panels and starts rendering. Needs a vision-capable model (👁 in the dropdown).
 15. **Illustrated story in chat:** enable **Story Illustrator** (and **SD Prompt Guide (Illustrious)**)
@@ -579,15 +613,16 @@ runtime-adapter note maps a skill's assumed `image_gen` to the app's A1111 gener
 Several skills can be enabled at once: their instructions are injected together (each gets a
 share of the skill length limit when one is set) and their tools are all available. The selection is
 saved with the other settings on the backend, so it survives reloads and follows you across
-devices. Comic Studio has its own skill selection per comic (instructions only, no tools; see
-[Comic Studio](#features)).
+devices. Comic Studio has its own skill selection per comic (instructions only, no tools, so
+skills with a `tools.json` are not listed there; each skill shows its prompt size and the
+selection's total is estimated in tokens; see [Comic Studio](#features)).
 
 **How a skill can act**
 
 | Mechanism | Declared in | What the model gets |
 |---|---|---|
 | Instructions | `SKILL.md`, `references/` | Injected into the system prompt in full by default. ⚙️ Settings → Skills → **Skill prompt length limit** caps it (0 = unlimited, the default; with a limit, several enabled skills split it, at least 3000 characters each). |
-| MCP tools | `tools.json` with a top-level `"mcp_server"` (or `"server"` per tool): `a1111`, `civitai-helper`, `sdcpp` or `mmd` | A function per tool, called on that MCP server (Forge's `/mcp`, Civitai Helper's `/civitai-helper/mcp`, sd.cpp's and anime-render's `/mcp`; `"tool"` names it when it differs). `parameters`, `defaults`, `result_note`, `max_chars`, `postprocess` and `vision_max` work as for HTTP tools: the server's structured result is the same JSON its REST API returns. `"attach_image": {"field": "image"}` puts the most recent image of the conversation into that argument. Images in the result are saved, shown in the chat and attached for vision models; progress notifications show on the tool row. Used by `civitai-helper`, `a1111-memory-manager`, `civitai-api`, `sdcpp-image-edit` and `mmd-animation`. |
+| MCP tools | `tools.json` with a top-level `"mcp_server"` (or `"server"` per tool): `a1111`, `civitai-helper`, `sdcpp` or `mmd` | A function per tool, called on that MCP server (Forge's `/mcp`, Civitai Helper's `/civitai-helper/mcp`, sd.cpp's and anime-render's `/mcp`; `"tool"` names it when it differs). `parameters`, `defaults`, `result_note`, `max_chars`, `postprocess` and `vision_max` work as for HTTP tools: the server's structured result is the same JSON its REST API returns. `"attach_image": {"field": "image"}` puts the most recent image of the conversation into that argument; with `"pick": true` the model gets an `image_numbers` parameter to choose images by the numbers shown on them in the chat (#1 is the oldest; the list with each image's prompt is added to the system message), and several images go into `"list_field"` as `{"data", <name_field>}` objects. Images in the result are saved, shown in the chat and attached for vision models; progress notifications show on the tool row. Used by `civitai-helper`, `a1111-memory-manager`, `civitai-api`, `sdcpp-image-edit` and `mmd-animation`. |
 | HTTP API tools | `tools.json` (`kind` omitted or `"http"`) | A function per tool; the backend performs the request. `base_url` may use `{a1111_url}` / `{ollama_url}`. |
 | WebUI-local images | automatic for tools whose `base_url` uses `{a1111_url}` | A1111-relative image links such as Civitai Helper's `local_url` (`./sd_extra_networks/thumb?filename=…`) are rewritten to the app's `/api/a1111-thumb` proxy (resized to 1024 px and cached), and the chat renderer rewrites them too if the model copies the raw link. |
 | Images for the model to see | `tools.json` HTTP tool with `"postprocess": "civitai_examples"` (and `"vision_max"`) | The backend shows a `gallery` in the chat and attaches up to `vision_max` downscaled images to the tool message. Vision-capable Ollama models see them; other models are told they cannot. |
@@ -622,13 +657,13 @@ Bundled skills:
 
 | Skill | What it does |
 |---|---|
-| `generate-manga-page` | agent-mangaka-forge's consistency workflow adapted to A1111 LoRA / seed reuse. |
-| `story-illustrator` | Illustrated stories in chat: the model first writes an outline (a cast sheet with each character's fixed **Core** look and **Outfit** tags, then numbered scenes forming a full arc, each with a one-sentence *picture line* of what the image shows), then writes each `## Scene N` and generates its image before the next one, so pictures sit under their scenes — or, when you only want keywords, gives one ready-to-paste prompt per scene. Scene prompts put the count of everyone visible, the character's core look and the scene's action / key objects / other people first (the defining action weighted), then expression, setting, a shot that can show the action, the outfit and the quality tags; `solo` only when the character is alone. |
+| `generate-manga-page` | agent-mangaka-forge's consistency workflow adapted to A1111 LoRA / seed reuse. After the reference image and every panel the model checks the picture against its prompt (✅ / ❌ / ❓ per feature) and waits for your OK before the next panel. |
+| `story-illustrator` | Illustrated stories in chat: the model first writes an outline (a cast sheet with each character's fixed **Core** look and **Outfit** tags, then numbered scenes forming a full arc, each with a one-sentence *picture line* of what the image shows), then writes each `## Scene N` and generates its image, so pictures sit under their scenes; after each image it checks the picture against the scene's prompt and picture line (✅ / ❌ / ❓ per feature, with a suggested fix for each ❌) and waits for your OK before the next scene (say "draw all at once" to get every scene first and confirm at the end) — or, when you only want keywords, gives one ready-to-paste prompt per scene. Scene prompts put the count of everyone visible, the character's core look and the scene's action / key objects / other people first (the defining action weighted), then expression, setting, a shot that can show the action, the outfit and the quality tags; `solo` only when the character is alone. |
 | `sdcpp-image-edit` | Instruction-based editing of an attached image through the MCP server of a local **stable-diffusion.cpp** bridge (Settings → Service sources → sd.cpp, default port 7861) running an editing model such as Qwen-Image 2.1: the app passes the most recent image in the conversation (your attachment, or the last image generated with A1111 or edited here, so "edit the picture you just made" works without re-attaching), the server uses it as the reference image, reports progress and returns the result, which is shown inline like a generated image and attached for vision models. Also has an img2img tool and a status tool that reports whether the loaded model can edit (an edit on a plain SD checkpoint comes back with a warning). |
 | `a1111-memory-manager` | Memory tools for the A1111 / Forge image generator: show RAM / VRAM (`/sdapi/v1/memory`, summarized in GB), unload the checkpoint from VRAM only or fully (`/sdapi/v1/unload-checkpoint[?full=true]`), and load it back (`/sdapi/v1/reload-checkpoint`). Handy when Ollama, A1111 and sd.cpp share one GPU. |
-| `sd-prompt-guide` | **SD Prompt Guide (Illustrious)** — prompt-writing rules for the local SD backend, tuned for **WAI-illustrious-SDXL**: danbooru tag order, weights, negative prompt, sizes, no tag-count limit, and the WAI author's quality tags `masterpiece, best quality, amazing quality` at the end with no extra quality / aesthetic tags (they blur the image). How to apply a LoRA (`<lora:filename:0.6–1>` plus its trigger words in the prompt); points to Civitai Helper for the installed-LoRA inventory, prefers Illustrious / NoobAI LoRAs by base model, and stops after two lookups instead of searching on and on. |
-| `sd-prompt-guide-anima` | **SD Prompt Guide (Anima)** — prompt-writing rules for **Anima** checkpoints (default WAI-ANIMA; also One Obsession Anima 2.9B and Anima base): a short head (quality prefix, LoRA trigger word, safety tag), then an English description of the character, outfit, action and place, then a full danbooru tag list of the same picture with the LoRA tag at the end, `@artist` tags, heavier weights, each checkpoint's own quality prefix and negative prompt, Anima-only LoRAs (`civitai_lora_inventory` with `base: "Anima"`). Enable only the guide that matches the selected checkpoint. When the selected checkpoint — or, with no checkpoint set in the app, the one currently selected in Forge — is Anima (Civitai Helper base model, or `anima` in the file name), the app loads Forge Neo's `qwen_3_06b_base` text encoder and `qwen_image_vae` by itself; Anima 2.9B needs Forge Neo from August 2026 or later. |
-| `civitai-helper` | MCP tools of the A1111 **Civitai Helper** extension ([sss22213 fork](https://github.com/sss22213/Stable-Diffusion-Webui-Civitai-Helper)): local LoRA / checkpoint inventory with trigger words (the LoRA inventory is filtered by the app by `category` and `base` model, with per-category counts, the same data as the LoRA browser), model lookup by URL or id, download into the WebUI, scan, check for new versions, refresh lists, save civitai users' images as extra examples of an installed model, rename an installed model with all its files, optionally changing the file extension (Civitai Helper 1.15.0+). Example images of an installed model are shown as a **gallery** (local copies first, with prompts and a copy button), and the first 4 are also attached to the tool result so a vision-capable Ollama model can actually see and describe them. |
+| `sd-prompt-guide` | **SD Prompt Guide (Illustrious)** — prompt-writing rules for the local SD backend, tuned for **WAI-illustrious-SDXL**: danbooru tag order, weights, negative prompt, sizes, no tag-count limit, and the WAI author's quality tags `masterpiece, best quality, amazing quality` at the end with no extra quality / aesthetic tags (they blur the image). How to apply a LoRA (`<lora:filename:0.6–1>` plus its trigger words in the prompt); points to Civitai Helper for the installed-LoRA inventory, prefers Illustrious / NoobAI LoRAs by base model, and stops after two lookups instead of searching on and on. After each image the model lists the prompt's features, marks what it can see in the picture (✅ / ❌ / ❓; a model without vision gives you the list to tick) and asks you to confirm before regenerating or moving on. |
+| `sd-prompt-guide-anima` | **SD Prompt Guide (Anima)** — prompt-writing rules for **Anima** checkpoints (default WAI-ANIMA; also One Obsession Anima 2.9B and Anima base): a short head (quality prefix, LoRA trigger word, safety tag), then an English description of the character, outfit, action and place, then a full danbooru tag list of the same picture with the LoRA tag at the end, `@artist` tags, heavier weights, each checkpoint's own quality prefix and negative prompt, Anima-only LoRAs (`civitai_lora_inventory` with `base: "Anima"`). Enable only the guide that matches the selected checkpoint. When the selected checkpoint — or, with no checkpoint set in the app, the one currently selected in Forge — is Anima (Civitai Helper base model, or `anima` in the file name), the app loads Forge Neo's `qwen_3_06b_base` text encoder and `qwen_image_vae` by itself; Anima 2.9B needs Forge Neo from August 2026 or later. After each image the model lists the prompt's features, marks what it can see in the picture (✅ / ❌ / ❓; a model without vision gives you the list to tick) and asks you to confirm before regenerating or moving on. |
+| `civitai-helper` | MCP tools of the A1111 **Civitai Helper** extension ([sss22213 fork](https://github.com/sss22213/Stable-Diffusion-Webui-Civitai-Helper)): local LoRA / checkpoint inventory with trigger words (the LoRA inventory is filtered by the app by `category` and `base` model, with per-category counts, the same data as the LoRA browser), model lookup by URL or id, download into the WebUI, scan, check for new versions, refresh lists, save civitai users' images as extra examples of an installed model, keep pictures from the conversation (generated or attached; pick them by the #number shown on each image, e.g. "add #3 to the LoRA's examples") as examples of the LoRAs in their prompt (Civitai Helper 1.17.0+), rename an installed model with all its files, optionally changing the file extension (Civitai Helper 1.15.0+), find models saved as `name_2` (a version downloaded twice) or duplicate copies of one version and rename / merge them back (`civitai_check_names` / `civitai_fix_names`, Civitai Helper 1.18.0+; downloads then skip versions that are already installed and use `name_<version>` instead of `name_2` when civitai's file name is taken). Example images of an installed model are shown as a **gallery** (local copies first, with prompts and a copy button), and the first 4 are also attached to the tool result so a vision-capable Ollama model can actually see and describe them. |
 | `civitai-api` | [stanestane/civitai-api](https://clawhub.ai/stanestane/skills/civitai-api) (MIT-0) plus app-specific search tools that run as Civitai Helper MCP tools (so they use its civitai domain, API key and proxy): `civitai_search_models` searches civitai.com (LoRA by default) and the chat shows the results as **cards** with server-cached example images, base model, trigger words and a **Download this** button that hands the model page to Civitai Helper (`base_model` shows the version made for that base model). `civitai_search_images` shows images people posted (by user, by model, or both) as a gallery with their prompts, and the picked ones can be saved as examples with Civitai Helper. Other commands (by-hash, tags, creators…) run the skill's script through `run_skill_script` (needs scripts enabled; `CIVITAI_API_KEY=…` in `backend/data/skill-work/civitai-api/.env` for authenticated calls). |
 | `mmd-animation` | Turns a story into a short mp4 acted out by a 3D MMD character: the model writes a storyboard (narration, voiced and lip-synced lines, motions, expressions, camera) and the separate **anime-render** service (Blender + mmd_tools + TTS, Settings → Service sources → MMD, default `http://host.docker.internal:5280`) renders it through its MCP server, with queue and render progress in the chat. Optional; needs that service running. |
 
@@ -688,7 +723,9 @@ most `max_rounds` rounds, then one last answer without tools) and returns its fi
 
 `skill="civitai-helper"` (comma-separated slugs, or `"__auto__"`) puts the skill's SKILL.md in the
 system prompt, as choosing a skill in the chat does, and offers all of its tools (`tools=False`
-for the instructions only). `details=True` returns `{"text", "calls": [{"name", "args", "result",
+for the instructions only). Nobody can answer in the middle of a run, so the model is told that a
+skill's "ask the user and wait" steps (e.g. the check after each image) are done and reported in
+its answer without waiting. `details=True` returns `{"text", "calls": [{"name", "args", "result",
 "images"}], "images"}`. **`tools="auto"`** hands the choice to the model: it gets every MCP tool —
 `generate_image`, web search, all skills' tools and the other tools of the A1111 / Civitai Helper
 servers (`list_checkpoints`, `set_checkpoint`, `list_loras`, `png_info`, `txt2img` with full
@@ -903,8 +940,12 @@ tool called again with identical arguments is not re-run (the model is told to u
 earlier result), and three rounds in a row of only such repeats end the tool loop with a
 text answer. Image tools are exempt, since "four images from the same prompt" is a valid
 request. When a multi-image reply opens the next numbered section (`## Scene N`) and ends
-without generating its image, the model is reminded to draw it and continue (again only
-after each new image, so a model that refuses cannot loop). Every `image` event is stored
+without generating its image, the model is reminded to draw it (again only after each new
+image, so a model that refuses cannot loop). When skill tools are offered and a reply says
+something was done ("added", "已加入", "saved"…) without any tool having run in it, the model
+is reminded once that nothing happened and asked to call the tool. When a skill can pick
+images (`attach_image` with `"pick"`), the system message lists the conversation's images by
+number, with each generated image's prompt. Every `image` event is stored
 with the length of the text streamed so far (`at`), and the chat renders each image under
 that paragraph; older messages without `at` show their images at the end as before.
 
@@ -914,17 +955,17 @@ that paragraph; older messages without `at` show their images at the end as befo
 |------|-------------|
 | `backend/main.py` | FastAPI routes, SSE, static images, engine selection |
 | `backend/errors.py` | turns httpx/engine exceptions into readable error messages (which host timed out, HTTP status + body) |
-| `backend/chat.py` | agentic tool loop (no round cap; stuck detection; "draw the scene you just wrote" reminder); Claude / Codex runs with the MCP gateway attached, merging the CLI stream with the gateway's UI events |
+| `backend/chat.py` | agentic tool loop (no round cap; stuck detection; "draw the scene you just wrote" and "you said it was done but called no tool" reminders; numbered conversation images for tools that pick images); Claude / Codex runs with the MCP gateway attached, merging the CLI stream with the gateway's UI events |
 | `backend/tools.py` | tool schemas: `generate_image` / `edit_image` / `read_png_info` / `web_search` / `fetch_url`; model-written tags are de-duplicated (no count or length cap) |
 | `backend/ollama_client.py` | Ollama engine (chat stream, models, capabilities, context length, thinking switch with automatic no-thinking retry + user notices, unload / reload a model with the chat's `num_ctx`) |
 | `backend/claude_client.py` | Claude CLI engine (subprocess `claude -p` stream-json; tools via native MCP: `--mcp-config` with the gateway session) |
 | `backend/codex_client.py` | OpenAI Codex CLI engine (subprocess `codex exec --json`; chat + vision via `-i`; tools via native MCP, built-in tools off) |
 | `backend/comics_store.py` | Comic projects + storyboard versions persisted in SQLite (`DATA_DIR/comics.db`) for the Comic Studio library |
-| `backend/comic.py` | Comic storyboard: premise + cast → panels (scene tags, English sentences for Anima, expression, dialogue, caption) as strict JSON; the comic's skills plus a Comic Studio adapter note; lenient JSON parsing with retries; per-panel tag regeneration; character-name matching |
+| `backend/comic.py` | Comic Studio LLM steps: character keywords → features / outfit / example pose / example scene; premise + cast → story; story → panels (story beat, scene tags, each character's pose and changed outfit / features, English sentences for Anima, expression, dialogue, caption) as strict JSON; per-panel picture check with a vision model (describe, compare with the beat, suggest a tag fix); the comic's skills plus a Comic Studio adapter note; lenient JSON parsing with retries; per-panel tag regeneration; character-name matching |
 | `backend/story.py` | Image Story: uploaded image(s) → short story, a full comic script (cast, style, premise, panels), or per-image panel text (describe each image, then write the script) |
 | `backend/expression_tags.py` | danbooru expression-tag whitelist (+ synonym map for off-list words) shared by the storyboard prompt and the LoRA trigger filter |
 | `frontend/src/comic/` | Comic Studio page (script panel, character cards, panel cards, page layout, PNG export, library modal, storyboard versions); `bubbleShape.js` = bubble geometry shared by the page preview and the PNG export, `names.js` = lenient character-name matching, `notices.js` = backend notice texts |
-| `frontend/src/store/comic.js` | Comic Studio state: storyboard, cards, panels, bubbles, autosave to the server, versions cache, per-panel tag regeneration |
+| `frontend/src/store/comic.js` | Comic Studio state: story, storyboard, cards, panels, bubbles, autosave to the server, versions cache, per-panel tag regeneration, render → picture check → automatic fix loop |
 | `frontend/src/story/` | Image Story page (upload, mode/options, result view, hand-off to Comic Studio); state in `frontend/src/store/story.js`, API in `frontend/src/lib/storyApi.js`, client-side downscaling in `frontend/src/lib/image.js` |
 | `backend/a1111_client.py` | A1111 over its MCP tools: txt2img / img2img / progress / models / samplers / LoRAs / png-info; adds the Forge extra modules (text encoder / VAE) an Anima checkpoint needs, and puts Forge's error reason into the exception |
 | `backend/mcp_client.py` | MCP client (official SDK) for Forge's `/mcp`, Civitai Helper's `/civitai-helper/mcp`, sd.cpp's and anime-render's `/mcp`: tool lists (cached; unreachable servers skipped for 20 s), calls with progress, plain-language errors (wrong token, no MCP, unreachable), connection test |
@@ -947,7 +988,8 @@ that paragraph; older messages without `at` show their images at the end as befo
 | `backend/civitai_cards.py` | `civitai_models` postprocess: Civitai search results → model summary + result cards (thumbnails cached in `DATA_DIR/civitai-cache/`) |
 | `backend/civitai_examples.py` | `civitai_examples` postprocess: Civitai Helper example images → chat gallery + downscaled vision images for the model |
 | `backend/civitai_images.py` | `civitai_images` postprocess: civitai image search → chat gallery (prompts, parameters, author, LoRAs used) + numbered summary with image ids |
-| `backend/loras.py` | LoRA list for the browser (A1111 + Civitai Helper source), thumbnails, examples, download / delete, and the `lora_inventory` postprocess that filters the model's LoRA inventory by category / base |
+| `backend/loras.py` | LoRA list for the browser (A1111 + Civitai Helper source), thumbnails, examples, download / delete, refresh after a LoRA is downloaded / renamed / deleted by a tool, and the `lora_inventory` postprocess that filters the model's LoRA inventory by category / base |
+| `backend/lora_refs.py` | LoRA names saved in Comic Studio projects: replace `<lora:old:…>` after a rename, list names that no longer exist with a suggested replacement |
 | `backend/lora_meta.py` | LoRA base-model grouping / inference, Civitai source, content categories (Civitai model tags, fetched only on request, cached in `DATA_DIR/civitai-cache/model_tags.json`) |
 | `backend/a1111_memory.py` | `a1111_memory` postprocess: A1111 RAM / VRAM figures → readable GB summary |
 | `frontend/src/store/chat.js` | zustand state + streaming coordination + persistence |

@@ -298,8 +298,19 @@ def _clean_geninfo(data: dict[str, Any]) -> str:
     return str(raw)
 
 
+def _actual_seed(data: dict[str, Any]) -> int | None:
+    """A1111 info 裡實際用到的 seed（送 -1 時才知道抽到哪個）。"""
+    try:
+        obj = json.loads(data.get("info") or "{}")
+    except (TypeError, ValueError):
+        return None
+    seed = obj.get("seed") if isinstance(obj, dict) else None
+    return int(seed) if isinstance(seed, (int, float)) else None
+
+
 def _result(url: str, params: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
-    return {"url": url, "params": params, "info": _clean_geninfo(data)}
+    # params.seed 保留送出的值（-1＝每次隨機，聊天的重畫靠它換新圖）；實際的另外放 seed
+    return {"url": url, "params": params, "info": _clean_geninfo(data), "seed": _actual_seed(data)}
 
 
 async def txt2img(

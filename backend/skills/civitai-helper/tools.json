@@ -174,7 +174,7 @@
     },
     {
       "name": "civitai_download_model",
-      "description": "Download a civitai model version into the WebUI's model folder for its type (LoRA, checkpoint, embedding or hypernetwork), then save its civitai info file and preview image. Defaults to the newest version and the folder root. The call waits up to ~9 minutes; larger checkpoints may still be running afterwards.",
+      "description": "Download a civitai model version into the WebUI's model folder for its type (LoRA, checkpoint, embedding or hypernetwork), then save its civitai info file and preview image. Defaults to the newest version and the folder root. A version that is already installed (under any name or subfolder) is not downloaded again (status 'exists', existing = where it is). The file gets civitai's file name; when another model already uses it, it is saved as name_<version> (renamed true) or, with on_conflict 'error', nothing is downloaded (status 'conflict', suggested_name). The call waits up to ~9 minutes; larger checkpoints may still be running afterwards.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -201,6 +201,14 @@
           "dl_all": {
             "type": "boolean",
             "description": "Download every file of the version instead of only the primary one"
+          },
+          "on_conflict": {
+            "type": "string",
+            "enum": [
+              "version",
+              "error"
+            ],
+            "description": "When another model already uses civitai's file name: 'version' (default) saves it as name_<version>; 'error' downloads nothing so you can ask the user for a name."
           }
         },
         "required": [
@@ -212,7 +220,7 @@
         "timeout": 540
       },
       "timeout": 580,
-      "result_note": "If status is 'done': report result.file and result.trained_words, then call refresh_loras (for a LoRA) or refresh_checkpoints (for a checkpoint) so the WebUI sees the new file. If status is 'running': tell the user the download continues in the background and check later with civitai_task_status using the task id. If status is 'error': relay the error (a login/API-key error means the civitai API key must be set in the WebUI Settings → Civitai Helper)."
+      "result_note": "Read result.status. 'done': report result.name and result.prompt_tag (the tag to use in prompts) and result.trained_words; if result.renamed, say civitai's file name was taken so it was saved as result.name. The app refreshes its LoRA list by itself; still call refresh_loras / refresh_checkpoints so the WebUI sees the file. 'exists': it is installed already as result.existing — do not download again; give its prompt tag. 'conflict': nothing was downloaded; tell the user the name is taken and ask whether to save it as result.suggested_name. If the task status is 'running': the download continues in the background, check later with civitai_task_status. If 'error': relay it (a login/API-key error means the civitai API key must be set in the WebUI Settings → Civitai Helper)."
     },
     {
       "name": "civitai_scan_models",
@@ -457,8 +465,58 @@
       "result_note": "Report result.added / existed / in_civitai_list / skipped_nsfw / skipped_video / failed / not_found and the example numbers (result.images[].index). Saved images appear in civitai_model_examples as #101 and up (source 'user'); offer to show them or to write the prompts to the card (civitai_write_card_info with overwrite true to refresh the notes). If status is 'running', check later with civitai_task_status."
     },
     {
+      "name": "civitai_add_local_examples",
+      "description": "Save pictures of this conversation as example images of installed models, next to the model file as <model>.example_NNN.<ext> (numbers from 101, shared with images added from civitai users). Pick the pictures with image_numbers (the numbers shown on the images in the chat and listed in the system message; several at once are fine); without it the latest picture is used. The files are kept as they are; their prompt and parameters are read from each image's generation info, or give prompt / negative_prompt for pictures without it. Without name each picture goes to every installed LoRA in its prompt (<lora:name:w>); with type ckp, to its checkpoint. The same picture added again keeps its number. Only call it when the user asks to keep / save / add pictures as examples or sample images of a LoRA or model.",
+      "attach_image": {
+        "field": "image",
+        "pick": true,
+        "list_field": "images",
+        "name_field": "file_name"
+      },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "lora",
+              "ckp",
+              "ti",
+              "hyper"
+            ],
+            "description": "Model type (default lora)"
+          },
+          "name": {
+            "type": "string",
+            "description": "File name (e.g. foo.safetensors) or path relative to the model folder; find it with civitai_lora_inventory. Leave empty to use every LoRA in the image's prompt."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Only for pictures without generation info (uploaded or edited ones): the prompt to store with them, e.g. the prompt they were generated with."
+          },
+          "negative_prompt": {
+            "type": "string"
+          },
+          "nsfw": {
+            "type": "boolean",
+            "description": "Mark the image as NSFW."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "Re-save an image that was added before and refresh its prompt."
+          }
+        }
+      },
+      "defaults": {
+        "type": "lora"
+      },
+      "timeout": 120,
+      "max_chars": 3000,
+      "result_note": "Report for each model (results[].name) how many were added / already there and the example numbers (results[].images[].index); 'unmatched' lists images whose prompt names no installed LoRA. The images appear in civitai_model_examples as #101 and up (source 'local'); offer to show them or to write the prompts to the card (civitai_write_card_info with overwrite true)."
+    },
+    {
       "name": "civitai_remove_user_examples",
-      "description": "Delete example images that were added from civitai users (numbers 101 and up) from ONE installed model: by civitai image id, by example number, or all of them. Does not touch the civitai example list (#1-#100).",
+      "description": "Delete example images that were added (numbers 101 and up: images from civitai users or local images) from ONE installed model: by civitai image id, by example number, or all of them (source narrows 'all' to 'user' or 'local'). Does not touch the civitai example list (#1-#100).",
       "parameters": {
         "type": "object",
         "properties": {
@@ -492,7 +550,15 @@
           },
           "all": {
             "type": "boolean",
-            "description": "Remove every user-added example of this model"
+            "description": "Remove every added example (#101+) of this model"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "user",
+              "local"
+            ],
+            "description": "With all: only images from civitai users (user) or only local images (local)"
           }
         },
         "required": [
@@ -555,7 +621,7 @@
     },
     {
       "name": "civitai_rename_model",
-      "description": "Rename ONE installed model (LoRA, checkpoint, embedding or hypernetwork) together with every file that belongs to it — civitai info, previews, card metadata (.json), example images — inside its own folder; it can also change the model file's extension (.safetensors / .ckpt / .pt / .bin). Changing the extension only renames the file, it does NOT convert it. Nothing is renamed when a target file already exists or another model of the same type already has the new name, and a failure half way is rolled back. Only call it when the user explicitly asks to rename a model or change its extension. The WebUI sees the new name only after its list is refreshed (refresh_loras / refresh_checkpoints / refresh_embeddings), and prompts that used the old <lora:old_name:...> tag must then use the new one.",
+      "description": "Rename ONE installed model (LoRA, checkpoint, embedding or hypernetwork) together with every file that belongs to it — civitai info, previews, card metadata (.json), example images — inside its own folder; it can also change the model file's extension (.safetensors / .ckpt / .pt / .bin). Changing the extension only renames the file, it does NOT convert it. Nothing is renamed when a target file already exists or another model of the same type already has the new name, and a failure half way is rolled back. Only call it when the user explicitly asks to rename a model or change its extension. The WebUI sees the new name only after its list is refreshed (refresh_loras / refresh_checkpoints / refresh_embeddings), and prompts that used the old <lora:old_name:...> tag must then use the new one. Its name in the prompts of its own added examples and card text is updated automatically, and the app changes <lora:old:...> in its Comic Studio projects too.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -586,6 +652,67 @@
       },
       "max_chars": 3000,
       "result_note": "On success: tell the user old_name -> new_name and the new prompt_tag, then call the refresh tool named in 'refresh' (refresh_loras for a LoRA, refresh_checkpoints for a checkpoint, refresh_embeddings for an embedding; a hypernetwork has none — tell the user to refresh the Extra Networks tab). Relay every entry of 'warnings' in one sentence each. A warning that the file content does not match the new extension (it was not converted, so the WebUI cannot load it) or that the WebUI does not list that extension is serious: say so clearly and offer to rename it back to the old extension — do not do it without asking. Other warnings: old <lora:...> tags in saved prompts must be changed; a LoRA alias stored in the file may still be what its card inserts. HTTP 409 means a file or another model already has that name and HTTP 400 means the name is not allowed: report it and ask the user for another name — never pick a different name yourself. HTTP 404: the model was not found; look it up with civitai_lora_inventory or civitai_list_local_models and use its exact file name / relative path."
+    },
+    {
+      "name": "civitai_check_names",
+      "description": "Find installed models whose file name is civitai's file name plus a _2 / _3 suffix (left by downloading a version twice, or a new version saved next to the old one) and duplicate copies of the same civitai version. Each item: name, civitai_file, action (rename = back to civitai's name, merge = into another copy of the same version which keeps the added examples, conflict = needs the user's decision), target, reason. Read-only.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "lora",
+                "ckp",
+                "ti",
+                "hyper"
+              ]
+            },
+            "description": "Model types to check (default lora)"
+          }
+        }
+      },
+      "read_only": true,
+      "max_chars": 6000,
+      "result_note": "Show the user the list as a short table (model → action → target, why). For merge, say the extra copy is deleted after its added example images move over. Ask before fixing; then call civitai_fix_names (optionally only for the names they chose, merge false to skip merging)."
+    },
+    {
+      "name": "civitai_fix_names",
+      "description": "Apply what civitai_check_names suggested: rename _2 / _3 models back to civitai's file name (every file moves; the model's name in its example prompts and card is updated) and merge duplicate copies of one version (added example images move to the copy that stays, the extra copy is DELETED). Only after the user OKed the check result. The app then updates <lora:old:...> in its Comic Studio projects and refreshes its LoRA list by itself.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "model_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "lora",
+                "ckp",
+                "ti",
+                "hyper"
+              ]
+            },
+            "description": "Model types (default lora)"
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only these models (name from civitai_check_names); default every suggestion"
+          },
+          "merge": {
+            "type": "boolean",
+            "description": "Also merge duplicate copies (default true); false = only renames"
+          }
+        }
+      },
+      "timeout": 300,
+      "max_chars": 4000,
+      "result_note": "Report each fixed model (old → new name) and anything skipped with its reason, and the new <lora:name:1> tags from mapping. Then call refresh_loras (or refresh_checkpoints for checkpoints)."
     },
     {
       "name": "civitai_task_status",

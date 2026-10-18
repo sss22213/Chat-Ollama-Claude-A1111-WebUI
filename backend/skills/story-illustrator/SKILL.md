@@ -1,6 +1,6 @@
 ---
 name: Story Illustrator
-description: "Tell a story with pictures in chat: first write a scene outline (a cast sheet with each character's fixed appearance tags, then numbered scenes), then generate the images one by one in order — or, when the user only wants prompts, give one ready-to-use prompt per scene. Use when the user asks for an illustrated story, a picture book, a story told in N images, a sequence of scenes, or keywords / prompts for each scene of a story (e.g. 「用圖片講故事」「畫一個故事」「繪本」「每個場景的關鍵字」)."
+description: "Tell a story with pictures in chat: first write a scene outline (a cast sheet with each character's fixed appearance tags, then numbered scenes), then generate the images one by one in order, checking each image against its prompt and letting the user confirm it before the next scene — or, when the user only wants prompts, give one ready-to-use prompt per scene. Use when the user asks for an illustrated story, a picture book, a story told in N images, a sequence of scenes, or keywords / prompts for each scene of a story (e.g. 「用圖片講故事」「畫一個故事」「繪本」「每個場景的關鍵字」)."
 ---
 
 # Story Illustrator
@@ -32,11 +32,24 @@ The app shows every image directly under the text that was written just before i
 
 1. Write a heading exactly in the form `## Scene N — <short title>` and the scene's narration (2–4 sentences in the user's language; dialogue goes here, not into the image). The narration must describe the same moment the picture line shows — the reader looks at the image right below it.
 2. Immediately call the image tool once for this scene — before writing anything about the next scene.
-3. Wait for the image result. Only then write the next scene's heading and narration, and repeat.
+3. Wait for the image result, then check it and ask the user to confirm it (see "Checking each image" below) and end your reply there. The next scene's heading, narration and image come in your next reply, after the user's OK.
 
 Never write the text of several scenes first and generate their images afterwards, and never request several scenes' images in one batch — the pictures would all pile up under the last paragraph instead of under their own scenes. The outline from step 1 has no image; the first image comes right after Scene 1's narration.
 
-Do not stop early, do not ask "shall I continue?" between scenes, and do not regenerate a scene unless the user asks. There is no limit on how many images one reply may generate, so a 10- or 12-scene story is fine — one image call per scene. If a generation fails, say so in one line and continue with the next scene.
+Go on scene by scene this way until the story is finished; do not stop for any other reason and do not regenerate a scene unless the user asks. A 10- or 12-scene story is fine — one image call per scene. If a generation fails, say so in one line and ask whether to retry it or go on.
+
+**Whole story at once**: when the user asked to draw the whole story without stopping (「一次畫完」「不用每張確認」「draw all scenes」), still check every image right after it is generated, but keep going without waiting; after the last scene ask the user to confirm the whole story, listing per scene only the ❌ / ❓ items and the fixes you suggest.
+
+### Checking each image
+
+Right after each scene's image:
+
+1. **List the features** the picture must show, from the scene's picture line and the prompt you just sent: who is visible and how many (including teachers, classmates, crowds); each visible main character's Core look (hair, eyes, signature traits, the LoRA character) and Outfit pieces from the cast sheet; the action that defines the scene; the key objects; the place, time of day and light; the expression; the framing. Leave out quality and style words. Everything the picture line and the narration name counts, even when the prompt left it out (e.g. the narration says she holds an umbrella): such an item is checked too, and if it is missing, the fix is to add it to the prompt.
+2. **Check them.** If the generated image is attached to the tool result for you, look at it and mark each item ✅ shown, ❌ missing or wrong (say what is there instead), ❓ cannot tell. Also say whether each recurring character still looks like in the earlier scenes. Mark only what you really see. If no image is attached for you, you cannot see the result: say so in one sentence and give the list as an unticked checklist (☐) for the user.
+3. **Ask the user to confirm** in one short question: does this scene look right — continue with the next scene, or change something? For every ❌ suggest the concrete prompt change (add the tag, move it earlier, weight the action like `(head on desk:1.3)`, change the framing).
+4. **Wait.** Regenerate only when the user asks for it (then check the new image the same way); go to the next scene only when they confirm.
+
+Keep the checklist short: a few lines in the user's language, features as the English tags from the prompt (`✅ yellow raincoat`, `❌ black cat — the cat is orange`).
 
 ### Writing each scene's prompt
 
@@ -75,7 +88,7 @@ When the user wants keywords / prompts / tags instead of images (「只要關鍵
 
 ## Step 3 — Wrap up
 
-After the last scene: one or two sentences that close the story, then the cast-sheet blocks again in a code block so the user can reuse them for a sequel or as character cards in Comic Studio. Offer to redo a single scene or to continue the story.
+After the last scene is confirmed: one or two sentences that close the story, then the cast-sheet blocks again in a code block so the user can reuse them for a sequel or as character cards in Comic Studio. Offer to redo a single scene or to continue the story.
 
 ## Notes
 

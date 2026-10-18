@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useChat } from "../store/chat";
+import { imageNumbers, useChat } from "../store/chat";
 import { useT } from "../i18n";
 import Message from "./Message";
 import Composer from "./Composer";
@@ -27,7 +27,11 @@ export default function ChatView() {
           ) : messages.length === 0 ? (
             <EmptyState />
           ) : (
-            messages.map((m) => <Message key={m.id} msg={m} />)
+            (() => {
+              // 圖上的編號（#1 最舊），可以跟 AI 說「把 #3 加到範例圖」
+              const numbers = imageNumbers(messages);
+              return messages.map((m) => <Message key={m.id} msg={m} imageNo={numbers.get(m.id)} />);
+            })()
           )}
         </div>
       </div>

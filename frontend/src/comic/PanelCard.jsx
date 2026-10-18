@@ -13,8 +13,11 @@ import {
   Check,
   Sparkles,
   Undo2,
+  ShieldCheck,
+  EyeOff,
+  AlertTriangle,
 } from "lucide-react";
-import { useComic } from "../store/comic";
+import { cardFeatures, cardOutfit, isCheckBusy, isParsed, lookOf, useComic } from "../store/comic";
 import { hasName } from "./names";
 import { useChat } from "../store/chat";
 import { useCT } from "./comicI18n";
@@ -44,6 +47,42 @@ function CopyBtn({ text, ct }) {
 const inputCls =
   "w-full rounded-md border border-ink-600 bg-ink-850 px-2 py-1 text-xs outline-none focus:border-ink-500";
 
+// 看圖檢查的狀態 → 圖示、顏色、文字
+function checkView(check, ct) {
+  const n = check.attempts || 0;
+  switch (check.status) {
+    case "checking":
+      return { icon: <Loader2 size={11} className="animate-spin" />, cls: "text-sky-300", text: ct("checkChecking") };
+    case "fixing":
+      return { icon: <Loader2 size={11} className="animate-spin" />, cls: "text-amber-300", text: ct("checkFixing", { n }) };
+    case "pass":
+      return { icon: <ShieldCheck size={11} />, cls: "text-emerald-400", text: n ? ct("checkPassFixed", { n }) : ct("checkPass") };
+    case "gave_up":
+      return { icon: <AlertTriangle size={11} />, cls: "text-amber-400", text: ct("checkGaveUp") };
+    case "skipped":
+      return { icon: <EyeOff size={11} />, cls: "text-gray-500", text: ct("checkSkipped") };
+    default:
+      return { icon: <AlertCircle size={11} />, cls: "text-red-400", text: ct("checkError") };
+  }
+}
+
+function CheckBadge({ check, ct }) {
+  if (!check) return null;
+  const v = checkView(check, ct);
+  const detail = [...(check.problems || []), check.reason || ""].filter(Boolean).join("\n");
+  return (
+    <span
+      data-testid="panel-check"
+      data-status={check.status}
+      title={detail || v.text}
+      className={`flex min-w-0 items-center gap-1 truncate text-[10px] ${v.cls}`}
+    >
+      {v.icon}
+      <span className="truncate">{v.text}</span>
+    </span>
+  );
+}
+
 export default function PanelCard({ panel, index }) {
   const ct = useCT();
   const characters = useComic((s) => s.characters);
@@ -54,6 +93,7 @@ export default function PanelCard({ panel, index }) {
   const setPanel = useComic((s) => s.setPanel);
   const removePanel = useComic((s) => s.removePanel);
   const toggleCharacterInPanel = useComic((s) => s.toggleCharacterInPanel);
+  const setLook = useComic((s) => s.setLook);
   const generatePanel = useComic((s) => s.generatePanel);
   const addBubble = useComic((s) => s.addBubble);
   const updateBubble = useComic((s) => s.updateBubble);
@@ -80,7 +120,20 @@ export default function PanelCard({ panel, index }) {
     });
 
   const gen = panel.status === "generating";
+  const checking = isCheckBusy(panel.check);
+  // 檢查結果要說明的（不符合、未檢查的原因）；通過就不佔版面
+  const checkNotes =
+    panel.check && panel.check.status !== "pass" && !checking
+      ? [...(panel.check.problems || []), panel.check.reason || ""].filter(Boolean)
+      : [];
   const namedCast = characters.filter((c) => c.name.trim());
+  // 這格各角色的姿勢 / 服裝 / 特徵：出場角色裡角色卡解析過（或這格已經寫了）的才顯示；
+  // 服裝、特徵空白＝用角色卡的，姿勢只看這格
+  const lookCast = namedCast.filter(
+    (c) => hasName(panel.characters, c.name) && (isParsed(c) || Object.keys(lookOf(panel, c.name)).length)
+  );
+  const lookDefault = { features: cardFeatures, outfit: cardOutfit, pose: () => "" };
+  const lookLabel = { features: "lookFeatures", pose: "lookPose", outfit: "lookOutfit" };
   // 實際會送給 A1111 的完整正向提示詞（畫風＋角色外觀/LoRA＋場景）
   // 依賴 style/characters/negative 訂閱，編輯時即時更新
   const fullPrompt = composePrompt(panel);
@@ -100,6 +153,7 @@ export default function PanelCard({ panel, index }) {
             seed {panel.seed}
           </span>
         )}
+        <CheckBadge check={panel.check} ct={ct} />
         <div className="flex-1" />
         <button
           onClick={() => setShowFull((v) => !v)}
@@ -114,7 +168,7 @@ export default function PanelCard({ panel, index }) {
         </button>
         <button
           onClick={() => generatePanel(panel.id)}
-          disabled={gen || !health.a1111}
+          disabled={gen || checking || !health.a1111}
           title={panel.image ? ct("regenerate") : ct("generatePanel")}
           className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-ink-700 disabled:text-gray-500"
         >
@@ -160,6 +214,29 @@ export default function PanelCard({ panel, index }) {
 
       {/* 編輯 */}
       <div className="space-y-2 p-2.5">
+        {/* 故事段落：這格演的是故事的哪一段（看圖檢查拿它比對） */}
+        <textarea
+          value={panel.beat || ""}
+          onChange={(e) => setPanel(panel.id, { beat: e.target.value })}
+          placeholder={ct("beatPh")}
+          title={ct("beatHint")}
+          data-testid="panel-beat"
+          rows={2}
+          className={`${inputCls} resize-y leading-relaxed`}
+        />
+        {checkNotes.length > 0 && (
+          <div
+            data-testid="panel-check-notes"
+            className="space-y-0.5 rounded-md border border-amber-700/50 bg-amber-900/15 px-2 py-1.5 text-[11px] leading-relaxed text-amber-200"
+          >
+            <div className="font-medium">{checkView(panel.check, ct).text}</div>
+            {checkNotes.map((n, i) => (
+              <div key={i} className="break-words text-amber-200/80">
+                · {n}
+              </div>
+            ))}
+          </div>
+        )}
         {/* 完整提示詞（送給 A1111）— 場景＋畫風＋角色外觀/LoRA */}
         {showFull && (
           <div className="space-y-1.5 rounded-lg border border-ink-700 bg-ink-900 p-2">
@@ -298,6 +375,31 @@ export default function PanelCard({ panel, index }) {
             })}
           </div>
         )}
+
+        {/* 各角色這格的姿勢、服裝、特徵（依故事調整，例如睡衣、濕頭髮）；服裝、特徵空白＝角色卡的 */}
+        {lookCast.map((c) => {
+          const look = lookOf(panel, c.name);
+          return (
+            <div key={c.id} className="space-y-1 rounded-md border border-ink-700 bg-ink-850/40 p-1.5" data-testid="panel-look">
+              <div className="truncate text-[11px] text-gray-400" title={ct("lookHint")}>
+                {ct("lookFor", { name: c.name })}
+              </div>
+              {["pose", "outfit", "features"].map((f) => (
+                <div key={f} className="flex items-center gap-1.5">
+                  <span className="w-10 shrink-0 text-[10px] text-gray-500">{ct(lookLabel[f])}</span>
+                  <input
+                    value={look[f] || ""}
+                    onChange={(e) => setLook(panel.id, c.name, f, e.target.value)}
+                    placeholder={lookDefault[f](c) || (f === "pose" ? ct("lookPosePh") : "")}
+                    title={ct(f === "pose" ? "lookPoseHint" : "lookKeepHint")}
+                    data-testid={`panel-${f}`}
+                    className={`${inputCls} font-mono`}
+                  />
+                </div>
+              ))}
+            </div>
+          );
+        })}
 
         {/* 對白 / 旁白氣泡 */}
         <div className="space-y-1.5">

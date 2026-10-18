@@ -151,6 +151,33 @@ async def _ensure(force: bool = False) -> list[dict[str, Any]]:
     return _items
 
 
+async def names_and_aliases() -> tuple[set[str], dict[str, str]]:
+    """現有 LoRA 的名稱，與 {別名: 名稱}（別名跟名稱不同的才列）。"""
+    items = await _ensure()
+    names = {it["name"] for it in items if it.get("name")}
+    aliases = {it["alias"]: it["name"] for it in items if it.get("alias") and it.get("alias") != it.get("name")}
+    return names, aliases
+
+
+async def after_change(names: list[str] | tuple[str, ...] = (), clear_example_thumbs: bool = False) -> None:
+    """LoRA 下載 / 改名 / 合併 / 刪除之後：清掉這些名稱的縮圖快取（改名後同一個名稱可能是別的檔案），
+    範例圖縮圖快取（clear_example_thumbs：檔案搬過名字，舊路徑的快取不能再用），再請 A1111 重掃清單、
+    重建快取。失敗不影響呼叫端。"""
+    import shutil
+
+    for name in names:
+        key = hashlib.sha1(name.encode("utf-8")).hexdigest()[:16]
+        for f in _THUMB_DIR.glob(f"{key}_*.jpg"):
+            f.unlink(missing_ok=True)
+        _no_preview.discard(name)
+    if clear_example_thumbs:
+        shutil.rmtree(DATA_DIR / "a1111_thumbs", ignore_errors=True)
+    try:
+        await refresh()
+    except Exception:  # noqa: BLE001 — A1111 暫時連不上：下次開 LoRA 管理時快取過期會再抓
+        pass
+
+
 async def _attach_sources(items: list[dict[str, Any]]) -> None:
     """合併 Civitai Helper 的來源資料（底模以 Civitai 標的為準）。分類標籤不在這裡抓（只手動更新）。"""
     global _sources

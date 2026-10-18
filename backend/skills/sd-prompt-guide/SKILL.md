@@ -1,6 +1,6 @@
 ---
 name: SD Prompt Guide (Illustrious)
-description: "How to write prompts for this app's local Stable Diffusion (A1111 / Forge) with an Illustrious-based anime checkpoint (WAI-illustrious, Illustrious / NoobAI): danbooru tag format and ordering, tag weights, negative prompt, and how to use LoRA — put <lora:filename:weight> (weight 0.6–1) together with the LoRA's trigger words in the prompt. Use whenever the user wants an image generated, asks to use / apply / add a LoRA, mentions trigger words, asks why a LoRA did not take effect, or asks how to write or improve a prompt."
+description: "How to write prompts for this app's local Stable Diffusion (A1111 / Forge) with an Illustrious-based anime checkpoint (WAI-illustrious, Illustrious / NoobAI): danbooru tag format and ordering, tag weights, negative prompt, and how to use LoRA — put <lora:filename:weight> (weight 0.6–1) together with the LoRA's trigger words in the prompt. After each image, checks it against the prompt's features and asks the user to confirm. Use whenever the user wants an image generated, asks to use / apply / add a LoRA, mentions trigger words, asks why a LoRA did not take effect, or asks how to write or improve a prompt."
 ---
 
 # SD Prompt Guide (Illustrious)
@@ -62,6 +62,19 @@ Example, user has `jp_school_uniform` with trigger words `school uniform, jp_sch
 - If the **civitai-api** skill is active, you can search civitai.com for candidates, but a LoRA must be installed in the WebUI before its tag works; offer to download it with Civitai Helper.
 - Otherwise ask the user for the file name and trigger words (they can copy both from the app's LoRA browser, the **LoRA** button with the layers icon next to the chat input). Do not invent a LoRA.
 
+## After each image — check it against the prompt and ask the user
+
+Every generated image is checked against its prompt, and the user confirms it before anything else happens.
+
+1. **List the prompt's features** — the concrete things the picture must show, taken from the prompt you just sent: the number of people / animals; for each character the look (hair colour and style, eyes, signature traits, the LoRA character) and each outfit piece; the pose and action; the key objects; the place, time of day, weather and light; the expression; the framing. Leave out quality and style words, weights and the negative prompt. Group them in a few short lines.
+2. **Check them.**
+   - If the generated image is attached to the tool result for you (the result says so), look at it and mark every item: ✅ shown, ❌ missing or wrong (say what is there instead, e.g. `❌ black cat — the cat is orange`), ❓ cannot tell (too small, hidden, cropped). Mark only what you really see; never guess a ✅.
+   - If no image is attached for you, you cannot see the result: say so in one sentence and give the list as an unticked checklist (☐) for the user to go through.
+3. **Ask the user to confirm**: one short question — does the picture match, and what should change. For every ❌ suggest the concrete prompt change (add the tag, move it earlier, weight it like `(black cat:1.3)`, pick a framing that can show it) and ask whether to regenerate with it.
+4. **Wait for the answer.** Do not regenerate, change the prompt or go on to another image until the user replies. When they confirm, continue; when they ask for changes, apply them and check the new image the same way.
+
+Write the checklist in the user's language and keep each feature as the English tag from the prompt (`✅ short orange hair`, `❌ yellow raincoat — she wears a red coat`). When several active skills ask for this check (e.g. Story Illustrator together with this guide), do it once per image.
+
 ## Reply style
 
-Write one short sentence, then call the image tool. When the user asks for the prompt text itself, give the full comma-separated prompt in a code block (LoRA tag + trigger words included) and say which checkpoint family it targets. Answer in the user's language; keep tags in English.
+Write one short sentence, then call the image tool; after the image, do the check above and wait for the user's confirmation. When the user asks for the prompt text itself, give the full comma-separated prompt in a code block (LoRA tag + trigger words included) and say which checkpoint family it targets. Answer in the user's language; keep tags in English.

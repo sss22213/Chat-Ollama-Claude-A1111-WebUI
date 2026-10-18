@@ -1,6 +1,6 @@
 ---
 name: SD Prompt Guide (Anima)
-description: "How to write prompts for this app's local Stable Diffusion WebUI (Forge Neo) when the checkpoint is an Anima model — by default WAI-ANIMA (waiANIMA_v10Base10); also One Obsession Anima 2.9B and Anima base. Anima uses a Qwen3 text encoder, not SDXL, and understands English sentences: a short head (quality prefix, trigger word or character, safety tag), then a natural-language description of the character, outfit, action and place, then a full danbooru tag list of the same picture, with the LoRA tag at the end. Covers @artist tags, stronger weights, the checkpoint's own negative prompt and Anima-only LoRAs. Use whenever the user wants an image generated with an Anima checkpoint, asks to use a LoRA on Anima, or asks how to write or improve an Anima prompt."
+description: "How to write prompts for this app's local Stable Diffusion WebUI (Forge Neo) when the checkpoint is an Anima model — by default WAI-ANIMA (waiANIMA_v10Base10); also One Obsession Anima 2.9B and Anima base. Anima uses a Qwen3 text encoder, not SDXL, and understands English sentences: a short head (quality prefix, trigger word or character, safety tag), then a natural-language description of the character, outfit, action and place, then a full danbooru tag list of the same picture, with the LoRA tag at the end. Covers @artist tags, stronger weights, the checkpoint's own negative prompt and Anima-only LoRAs; after each image, checks it against the prompt's features and asks the user to confirm. Use whenever the user wants an image generated with an Anima checkpoint, asks to use a LoRA on Anima, or asks how to write or improve an Anima prompt."
 ---
 
 # SD Prompt Guide (Anima)
@@ -90,9 +90,22 @@ A LoRA is only applied when its tag `<lora:FILENAME:WEIGHT>` is **inside the pro
 - If no Anima LoRA fits, generate without one and say so. If the **civitai-api** skill is active, you can search civitai.com for Anima LoRAs (base model "Anima"), but a LoRA must be installed before its tag works; offer to download it with Civitai Helper.
 - Otherwise ask the user for the file name and trigger words (they can copy both from the app's LoRA browser, the **LoRA** button with the layers icon next to the chat input; filter it by the base model Anima). Do not invent a LoRA.
 
+## After each image — check it against the prompt and ask the user
+
+Every generated image is checked against its prompt, and the user confirms it before anything else happens.
+
+1. **List the prompt's features** — the concrete things the picture must show, taken from the prompt you just sent (the sentences and the tag list): the number of people / animals; for each character the look (hair colour and style, eyes, signature traits, the LoRA character) and each outfit piece; the pose and action; the key objects; the place, time of day, weather and light; the expression; the framing. Leave out quality and style words, weights and the negative prompt. Group them in a few short lines.
+2. **Check them.**
+   - If the generated image is attached to the tool result for you (the result says so), look at it and mark every item: ✅ shown, ❌ missing or wrong (say what is there instead, e.g. `❌ black cat — the cat is orange`), ❓ cannot tell (too small, hidden, cropped). Mark only what you really see; never guess a ✅.
+   - If no image is attached for you, you cannot see the result: say so in one sentence and give the list as an unticked checklist (☐) for the user to go through.
+3. **Ask the user to confirm**: one short question — does the picture match, and what should change. For every ❌ suggest the concrete prompt change (add the tag, move it earlier, weight it like `(black cat:1.3)`, pick a framing that can show it) and ask whether to regenerate with it.
+4. **Wait for the answer.** Do not regenerate, change the prompt or go on to another image until the user replies. When they confirm, continue; when they ask for changes, apply them and check the new image the same way.
+
+Write the checklist in the user's language and keep each feature as the English tag from the prompt (`✅ short orange hair`, `❌ yellow raincoat — she wears a red coat`). When several active skills ask for this check (e.g. Story Illustrator together with this guide), do it once per image.
+
 ## Reply style
 
-Write one short sentence, then call the image tool (with the checkpoint's negative prompt). When the user asks for the prompt text itself, give the full prompt and the negative prompt in code blocks and say which Anima checkpoint they are for. Answer in the user's language; the prompt itself (sentences and tags) is in English.
+Write one short sentence, then call the image tool (with the checkpoint's negative prompt); after the image, do the check above and wait for the user's confirmation. When the user asks for the prompt text itself, give the full prompt and the negative prompt in code blocks and say which Anima checkpoint they are for. Answer in the user's language; the prompt itself (sentences and tags) is in English.
 
 If the image tool fails with an error from the image server (HTTP 500, "Failed to load …", a missing text encoder or VAE), the prompt is not the cause: do not retry with a shorter or changed prompt. Tell the user the error in one or two sentences and stop.
 

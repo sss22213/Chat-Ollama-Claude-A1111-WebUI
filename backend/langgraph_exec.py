@@ -226,6 +226,14 @@ def _engine_model(args: dict[str, Any], opts: dict[str, Any]) -> tuple[str, str]
     return engine, model
 
 
+# 技能是寫給聊天的：在工作流的步驟裡沒有人能中途回答，「等使用者確認」的步驟要照做但不停下
+_WORKFLOW_SKILL_NOTE = (
+    "\n\n(This runs as one step of an automated workflow: nobody can answer in between. When a skill "
+    "says to ask the user to confirm and wait — e.g. after checking a generated image against its "
+    "prompt — still do the check, put its result in your answer, and go on without waiting.)"
+)
+
+
 def _with_skill(system: str | None, skill: str | None) -> str | None:
     """skill（技能 slug、逗號分隔或 "__auto__"）的 SKILL.md 接在 system 前面，跟聊天選技能一樣。"""
     if not skill:
@@ -235,6 +243,8 @@ def _with_skill(system: str | None, skill: str | None) -> str | None:
         if missing:
             raise ValueError(f"找不到技能：{'、'.join(missing)}")
     text = skills_store.build_auto_prompt() if skill == skills_store.AUTO else skills_store.build_prompt(skill)
+    if text:
+        text += _WORKFLOW_SKILL_NOTE
     return "\n\n".join(s for s in (text, system) if s) or None
 
 

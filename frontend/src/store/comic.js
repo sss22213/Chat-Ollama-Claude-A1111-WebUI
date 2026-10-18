@@ -1,5 +1,7 @@
-// 漫畫工作室狀態：劇本、角色卡、分鏡格、出圖設定、對白氣泡。
-// 出圖重用 lib/api.js 的 generateImage（txt2img）；分鏡用 lib/comicApi.js。
+// 漫畫工作室狀態：劇本、故事、角色卡、分鏡格、出圖設定、對白氣泡。
+// 流程：劇情大綱 → AI 撰寫故事（可改）→ 依故事分鏡（每格一個 beat）→ 出圖 → 看圖檢查，
+// 不符合就依檢查意見重寫這格關鍵字再畫（最多 MAX_AUTO_FIX 次）。
+// 出圖重用 lib/api.js 的 generateImage（txt2img）；故事、分鏡、看圖檢查用 lib/comicApi.js。
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import {
@@ -14,15 +16,24 @@ import {
   putComic,
   saveComicPage,
 } from "../lib/api";
-import { generateStoryboard, regeneratePanelPrompt } from "../lib/comicApi";
+import {
+  checkComicPanel,
+  generateStoryboard,
+  parseComicCharacters,
+  regeneratePanelPrompt,
+  writeComicStory,
+} from "../lib/comicApi";
+import { useChat } from "./chat";
 import { isExpressionTag, splitTags, tagKey } from "../comic/expressionTags";
 import { defaultTail } from "../comic/bubbleShape";
 import { autoName, findCard, hasName, sameName } from "../comic/names";
+import { deepRenameLoraTags } from "../lib/loraTags";
 
 // 作品內容（會存到伺服器的欄位）；這些欄位任一變動就 debounce 自動儲存
 const PROJECT_KEYS = [
   "title",
   "premise",
+  "story",
   "systemPrompt",
   "systemBase",
   "skills",
@@ -46,11 +57,20 @@ const versionSummary = ({ panels, pending, ...rest }) => rest;
 
 const pickProject = (st) => Object.fromEntries(PROJECT_KEYS.map((k) => [k, st[k]]));
 const projectIsEmpty = (st) =>
-  !st.panels.length && !st.premise.trim() && !st.title.trim() && !st.characters.length;
+  !st.panels.length &&
+  !st.premise.trim() &&
+  !(st.story || "").trim() &&
+  !st.title.trim() &&
+  !st.characters.length;
 
 // 每格「表情」在提示詞裡的強調權重：放在畫風之後、角色固定 tag 之前，
 // 並用 (…:1.2) 加權，否則會被角色卡 20 幾個固定 tag 與 LoRA 壓過去而每格同一張臉。
 const EXPRESSION_WEIGHT = 1.2;
+
+// 看圖檢查不符合時，依檢查意見重寫關鍵字再畫的次數上限（每格每次出圖）
+const MAX_AUTO_FIX = 2;
+const CHECK_BUSY = ["checking", "fixing"];
+export const isCheckBusy = (check) => !!check && CHECK_BUSY.includes(check.status);
 
 const uid = () =>
   (crypto.randomUUID && crypto.randomUUID()) ||
@@ -66,26 +86,125 @@ const DEFAULT_SETTINGS = {
   sampler_name: "Euler a",
   sd_model_checkpoint: "",
   lockSeed: true,
-  seed: -1, // -1＝首次生成時抽一個固定下來（鎖定時跨格共用）
+  seed: -1, // -1＝首次生成時抽一個固定下來（鎖定時跨格共用）；不鎖定時每格每次隨機
+  checkModel: "", // 看圖檢查用的模型；空＝自動（頂列的模型能看圖就用它，否則挑第一個能看圖的）
 };
 
 const DEFAULT_LAYOUT = { columns: 2, gutter: 14, bg: "#f5f5f4" };
 
-const newCharacter = () => ({ id: uid(), name: "", appearance: "", lora: "" });
+// 角色卡：角色關鍵字（使用者貼的範例 prompt）由 LLM 拆成人物特徵、預設服裝、範例姿勢、範例場景。
+// 人物特徵、服裝是每格的預設；姿勢、場景只是範例，分鏡時 AI 依故事寫在各格。
+// parsed_from＝上次解析的關鍵字，跟目前的不同就是「還沒解析」，寫故事 / 分鏡前會自動解析。
+// 舊卡只有 appearance：當成角色關鍵字；還沒解析時整段當固定外觀（跟以前一樣）。
+const newCharacter = () => ({
+  id: uid(),
+  name: "",
+  keywords: "",
+  lora: "",
+  features: "",
+  outfit: "",
+  pose: "",
+  scene: "",
+  parsed_from: "",
+});
+export const cardKeywords = (c) => (c.keywords ?? c.appearance ?? "").trim();
+export const isParsed = (c) => !!c.parsed_from && c.parsed_from === cardKeywords(c);
+export const cardFeatures = (c) => (isParsed(c) ? c.features || "" : cardKeywords(c));
+export const cardOutfit = (c) => (isParsed(c) ? c.outfit || "" : "");
+const parsedField = (c, field) => (isParsed(c) ? c[field] || "" : "");
+// 給後端的角色卡：appearance＝人物特徵＋預設服裝（圖片說故事等舊流程也看得懂）
+const castPayload = (cards) =>
+  cards
+    .filter((c) => c.name.trim())
+    .map((c) => ({
+      name: c.name.trim(),
+      appearance: [cardFeatures(c), cardOutfit(c)].filter((x) => x.trim()).join(", "),
+      features: parsedField(c, "features"),
+      outfit: cardOutfit(c),
+      pose: parsedField(c, "pose"),
+      scene: parsedField(c, "scene"),
+    }));
+// 一格裡各角色的 {features, pose, outfit}（這格寫了或換掉的部分；空的用角色卡）。
+// 舊格子只有 outfits {名字: 服裝}：讀的時候併進來，寫回時一律寫 looks 並清掉 outfits。
+export const LOOK_FIELDS = ["features", "pose", "outfit"];
+export const panelLooks = (p) => {
+  const out = {};
+  for (const [k, v] of Object.entries(p?.outfits || {})) if ((v || "").trim()) out[k] = { outfit: v };
+  for (const [k, v] of Object.entries(p?.looks || {})) {
+    if (!v || typeof v !== "object") continue;
+    const got = Object.fromEntries(LOOK_FIELDS.filter((f) => (v[f] || "").trim()).map((f) => [f, v[f]]));
+    out[k] = { ...out[k], ...got };
+  }
+  return Object.fromEntries(Object.entries(out).filter(([, v]) => Object.keys(v).length));
+};
+export const lookOf = (p, name) =>
+  Object.entries(panelLooks(p)).find(([k]) => sameName(k, name))?.[1] || {};
+// 改某格某角色的一欄（空白＝刪掉，回到角色卡的）
+const withLook = (p, name, field, value) => {
+  const looks = panelLooks(p);
+  const key = Object.keys(looks).find((k) => sameName(k, name)) ?? name;
+  const entry = { ...(looks[key] || {}) };
+  if ((value || "").trim()) entry[field] = value;
+  else delete entry[field];
+  const rest = Object.fromEntries(Object.entries(looks).filter(([k]) => k !== key));
+  return { looks: Object.keys(entry).length ? { ...rest, [key]: entry } : rest, outfits: undefined };
+};
+// 換名字 / 刪角色時，分鏡格的 looks 跟著改
+const renameKey = (obj, from, to) =>
+  Object.fromEntries(
+    Object.entries(obj || {})
+      .filter(([k]) => to || !sameName(k, from))
+      .map(([k, v]) => [sameName(k, from) ? to : k, v])
+  );
 
 const newPanel = (patch = {}) => ({
   id: uid(),
+  beat: "", // 這格演的是哪一段故事（依故事分鏡時由 AI 寫，可改）；看圖檢查拿它比對
   prompt: "",
   description: "", // 英文句子（Anima 等讀得懂自然語言的 checkpoint）；出圖時整段放在標籤前
   expression: "", // 該格表情（danbooru tag，逗號分隔）；獨立於場景 prompt
   characters: [],
+  looks: {}, // 各角色這格的 {features, pose, outfit}；沒寫的欄位用角色卡的（姿勢沒有預設）
   bubbles: [],
   image: null, // {url, params, info}
   status: "idle", // idle | generating | done | error
   error: "",
   seed: null, // 實際用到的 seed（出圖後回填）
+  // 看圖檢查：{status: checking | fixing | pass | gave_up | skipped | error, attempts, problems, fix, reason}
+  check: null,
   ...patch,
 });
+
+// 給後端的一格劇本（分鏡、單格重寫、看圖檢查共用）
+const panelScript = (p) => ({
+  beat: p.beat || "",
+  prompt: p.prompt,
+  description: p.description || "",
+  expression: p.expression,
+  characters: p.characters,
+  looks: panelLooks(p),
+  dialogue: (p.bubbles || [])
+    .filter((b) => b.type !== "caption" && (b.text || "").trim())
+    .map((b) => ({ speaker: b.speaker || "", text: b.text })),
+  caption: (p.bubbles || []).find((b) => b.type === "caption")?.text || "",
+});
+
+// 頂列選的引擎／模型（跟聊天頁共用），以及看圖檢查要用的模型
+function aiOptions(settings) {
+  const chat = useChat.getState();
+  const engine = chat.settings.engine;
+  const model = chat.settings.chatModel;
+  const models = chat.models || [];
+  const canSee = (name) =>
+    engine === "claude_cli" ||
+    engine === "codex" ||
+    !!models.find((m) => m.name === name)?.supports_vision;
+  let checkModel = settings.checkModel || "";
+  if (!checkModel || !models.some((m) => m.name === checkModel)) {
+    checkModel = canSee(model) ? model : models.find((m) => m.supports_vision)?.name || model;
+  }
+  return { engine, model, lang: chat.settings.lang, numCtx: chat.settings.numCtx, checkModel };
+}
 
 // 由分鏡 API 的 dialogue/caption 推出預設氣泡位置（相對 0..1）。
 function bubblesFromScript(dialogue, caption) {
@@ -123,7 +242,8 @@ export const useComic = create(
       // ---- 劇本 ----
       title: "",
       premise: "",
-      systemPrompt: "", // 額外指示，接在 system 範本之後（指引 AI 分鏡）
+      story: "", // AI 寫的（或使用者自己寫的）故事；分鏡依它切格
+      systemPrompt: "", // 額外指示，接在 system 範本之後（指引 AI 寫故事與分鏡）
       systemBase: "", // 覆寫內建分鏡 system 範本；空＝用預設
       skills: [], // 分鏡時帶入的技能（slug）；說明接在 system 範本後面
       promptMode: "auto", // auto（checkpoint 是 Anima 才寫英文句子）| tags | sentences
@@ -148,6 +268,8 @@ export const useComic = create(
 
       // ---- 執行期（不持久化）----
       storyboarding: false,
+      storyWriting: false,
+      parsingCast: false,
       notices: [], // 上次生成分鏡時後端的提醒（例如自動改用不思考），顯示在按鈕下方
       promptBusy: {}, // {panelId: true} 該格正在重新生成關鍵字
       promptError: {}, // {panelId: message}
@@ -189,6 +311,8 @@ export const useComic = create(
             panels: st.panels.map((p) => ({
               ...p,
               characters: p.characters.map((n) => (sameName(n, from) ? to : n)),
+              looks: renameKey(panelLooks(p), from, to),
+              outfits: undefined,
             })),
           }));
         }
@@ -202,6 +326,8 @@ export const useComic = create(
             panels: st.panels.map((p) => ({
               ...p,
               characters: p.characters.filter((n) => !sameName(n, removed.name)),
+              looks: renameKey(panelLooks(p), removed.name, ""),
+              outfits: undefined,
             })),
           }));
         }
@@ -222,6 +348,22 @@ export const useComic = create(
       },
       removePanel(id) {
         set((st) => ({ panels: st.panels.filter((p) => p.id !== id) }));
+      },
+      // LoRA 改名後（聊天裡的工具或 LoRA 管理的「檢查失效引用」）：目前作品裡的 <lora:舊名:…> 換成新名。
+      // 伺服器上存的作品由後端換；這裡換開著的這份，免得自動儲存把舊名寫回去。
+      replaceLoraNames(mapping) {
+        if (!mapping || !Object.keys(mapping).length) return 0;
+        const st = get();
+        const patch = {};
+        for (const k of PROJECT_KEYS) {
+          const v = deepRenameLoraTags(st[k], mapping);
+          if (v !== st[k]) patch[k] = v;
+        }
+        if (Object.keys(patch).length) set(patch);
+        return Object.keys(patch).length;
+      },
+      setLook(panelId, name, field, value) {
+        get().setPanel(panelId, (p) => withLook(p, name, field, value));
       },
       toggleCharacterInPanel(panelId, name) {
         get().setPanel(panelId, (p) => ({
@@ -263,7 +405,8 @@ export const useComic = create(
       },
 
       // ---- 出圖提示詞 / 設定組裝 ----
-      // 順序：畫風 → 英文句子（有的話）→ (表情:1.2) → 角色外觀 / LoRA（濾掉表情類 tag）→ 場景。
+      // 順序：畫風 → 英文句子（有的話）→ (表情:1.2) → 各角色的特徵、服裝、姿勢 / LoRA（濾掉表情類 tag）→ 場景。
+      // 特徵、服裝：這格有寫就用這格的，沒寫用角色卡的；姿勢只用這格的（角色卡的姿勢只是範例）。
       // 全程依 tag 去重（外觀與 LoRA 觸發詞常重複；場景若又寫了畫風詞也會被吃掉）；
       // 句子整段放、不拆不去重（裡面的逗號是句子的一部分）。「只有標籤」模式不帶句子。
       composePrompt(panel) {
@@ -292,11 +435,11 @@ export const useComic = create(
           const card = findCard(characters, n);
           if (card && !present.includes(card)) present.push(card);
         }
-        const charTags = present.flatMap((c) =>
-          take(splitTags(`${c.appearance || ""}, ${c.lora || ""}`), {
-            dropExpression: true,
-          })
-        );
+        const charTags = present.flatMap((c) => {
+          const look = lookOf(panel, c.name);
+          const tags = [look.features || cardFeatures(c), look.outfit || cardOutfit(c), look.pose, c.lora];
+          return take(splitTags(tags.filter(Boolean).join(", ")), { dropExpression: true });
+        });
         const sceneTags = take(splitTags(panel.prompt));
         const description =
           promptMode === "tags" ? "" : (panel.description || "").replace(/\s+/g, " ").trim();
@@ -370,29 +513,109 @@ export const useComic = create(
         if (neg != null) set({ negative: neg });
       },
 
-      // ---- AI 生成分鏡 ----
-      async generateStoryboard({ engine, model, lang, numCtx }) {
-        const { premise, panelCount, style, systemPrompt, systemBase, think, skills, promptMode } =
-          get();
-        if (!premise.trim() || get().storyboarding) return;
-        // 沒填名字但有外觀 / LoRA 的角色卡：自動命名，分鏡才引用得到、出圖才帶得進去
-        let characters = get().characters;
+      // 沒填名字但有外觀 / LoRA 的角色卡：自動命名，故事和分鏡才引用得到、出圖才帶得進去。
+      // 回有名字的角色卡（給後端的 cast）。
+      _namedCast(lang) {
+        const characters = get().characters;
         let counter = 0;
         const named = characters.map((c) => {
-          if (c.name.trim() || !((c.appearance || "").trim() || (c.lora || "").trim())) return c;
+          if (c.name.trim() || !(cardKeywords(c) || (c.lora || "").trim())) return c;
           let name;
           do {
             name = autoName(++counter, lang);
           } while (characters.some((o) => sameName(o.name, name)));
           return { ...c, name };
         });
-        if (named.some((c, i) => c !== characters[i])) {
-          characters = named;
-          set({ characters });
+        if (named.some((c, i) => c !== characters[i])) set({ characters: named });
+        return named.filter((c) => c.name.trim());
+      },
+
+      // ---- 解析角色關鍵字：拆成人物特徵、預設服裝、範例姿勢、範例場景 ----
+      // ids：只解析這些卡（不管有沒有解析過）；不給＝所有還沒解析的有名字的卡。
+      // 關鍵字裡的 <lora:…> 不交給模型，角色卡還沒設 LoRA 時放進去。
+      async parseCharacters(opts = {}) {
+        const ai = { ...aiOptions(get().settings), ...opts };
+        const todo = get().characters.filter(
+          (c) =>
+            c.name.trim() &&
+            cardKeywords(c) &&
+            (opts.ids ? opts.ids.includes(c.id) : !isParsed(c))
+        );
+        if (!todo.length || get().parsingCast) return;
+        set({ parsingCast: true });
+        try {
+          const data = await parseComicCharacters({
+            engine: ai.engine,
+            model: ai.model,
+            cards: todo.map((c) => ({ name: c.name.trim(), keywords: cardKeywords(c) })),
+            num_ctx: ai.numCtx,
+            // 只是分類 tag：不開思考
+            think: ai.engine === "ollama" || ai.engine === "strata" ? false : undefined,
+          });
+          const ids = new Set(todo.map((c) => c.id));
+          set((st) => ({
+            characters: st.characters.map((c) => {
+              const r = ids.has(c.id) && (data.cards || []).find((x) => sameName(x.name, c.name));
+              if (!r) return c;
+              return {
+                ...c,
+                keywords: cardKeywords(c),
+                features: r.features || "",
+                outfit: r.outfit || "",
+                pose: r.pose || "",
+                scene: r.scene || "",
+                parsed_from: cardKeywords(c),
+                lora: c.lora || (r.loras || []).join(", "),
+              };
+            }),
+          }));
+        } finally {
+          set({ parsingCast: false });
         }
-        const cast = characters.filter((c) => c.name.trim());
+      },
+
+      // ---- AI 撰寫故事（分鏡的依據）----
+      // 已有故事時是改寫：照 instruction 改；沒給意見就重寫一個不同的版本。標題空的話順便帶入。
+      async writeStory({ engine, model, lang, numCtx, instruction = "" }) {
+        const st = get();
+        if (st.storyWriting || (!st.premise.trim() && !st.story.trim())) return;
+        get()._namedCast(lang);
+        set({ storyWriting: true, notices: [] });
+        try {
+          await get().parseCharacters({ engine, model, lang, numCtx });
+          const cast = get().characters;
+          const data = await writeComicStory({
+            engine,
+            model,
+            premise: st.premise,
+            panel_count: st.panelCount,
+            characters: castPayload(cast),
+            lang,
+            system: st.systemPrompt,
+            story: st.story,
+            instruction,
+            num_ctx: numCtx,
+            think: engine === "ollama" || engine === "strata" ? st.think : undefined,
+          });
+          set({
+            story: data.story || "",
+            notices: Array.isArray(data.notices) ? data.notices : [],
+            ...(!get().title.trim() && data.title ? { title: data.title } : {}),
+          });
+        } finally {
+          set({ storyWriting: false });
+        }
+      },
+
+      // ---- 依故事生成分鏡 ----
+      async generateStoryboard({ engine, model, lang, numCtx }) {
+        const { premise, story, panelCount, style, systemPrompt, systemBase, think, skills, promptMode } =
+          get();
+        if (!story.trim() || get().storyboarding) return;
+        get()._namedCast(lang);
         // 模型回的名字對回卡片上的寫法（後端已做過一次；這裡再保險，對不上的原樣保留）
         const canon = (names) => {
+          const cast = get().characters.filter((c) => c.name.trim());
           const out = [];
           for (const n of Array.isArray(names) ? names : []) {
             const v = findCard(cast, n)?.name ?? n;
@@ -402,12 +625,15 @@ export const useComic = create(
         };
         set({ storyboarding: true, notices: [] });
         try {
+          await get().parseCharacters({ engine, model, lang, numCtx });
+          const cast = get().characters.filter((c) => c.name.trim());
           const data = await generateStoryboard({
             engine,
             model,
             premise,
+            story,
             panel_count: panelCount,
-            characters: cast.map((c) => ({ name: c.name.trim(), appearance: c.appearance })),
+            characters: castPayload(cast),
             style,
             lang,
             num_ctx: numCtx,
@@ -420,10 +646,12 @@ export const useComic = create(
           });
           const panels = (data.panels || []).map((p) =>
             newPanel({
+              beat: p.beat || "",
               prompt: p.prompt || "",
               description: p.description || "",
               expression: p.expression || "",
               characters: canon(p.characters),
+              looks: panelLooks(p),
               bubbles: bubblesFromScript(p.dialogue, p.caption),
             })
           );
@@ -451,20 +679,10 @@ export const useComic = create(
             model,
             index,
             instruction: instruction || "",
-            panels: st.panels.map((p) => ({
-              prompt: p.prompt,
-              description: p.description || "",
-              expression: p.expression,
-              characters: p.characters,
-              dialogue: (p.bubbles || [])
-                .filter((b) => b.type !== "caption" && (b.text || "").trim())
-                .map((b) => ({ speaker: b.speaker || "", text: b.text })),
-              caption: (p.bubbles || []).find((b) => b.type === "caption")?.text || "",
-            })),
+            panels: st.panels.map(panelScript),
             premise: st.premise,
-            characters: st.characters
-              .filter((c) => c.name.trim())
-              .map((c) => ({ name: c.name.trim(), appearance: c.appearance })),
+            story: st.story,
+            characters: castPayload(st.characters),
             style: st.style,
             lang,
             num_ctx: numCtx,
@@ -483,6 +701,7 @@ export const useComic = create(
                 prompt: cur.prompt,
                 expression: cur.expression,
                 description: cur.description || "",
+                looks: panelLooks(cur),
               },
             },
           });
@@ -491,6 +710,8 @@ export const useComic = create(
             expression: data.expression || cur.expression,
             // 這次判定只寫標籤（非 Anima）就清掉舊句子，讓這格和新的標籤一致；復原可換回
             description: data.sentences ? data.description || cur.description || "" : "",
+            // 角色卡解析過時，重寫也會調整各角色這格的姿勢、服裝、特徵
+            ...(data.looks && typeof data.looks === "object" ? { looks: data.looks, outfits: undefined } : {}),
           });
           if (Array.isArray(data.notices) && data.notices.length) set({ notices: data.notices });
         } catch (e) {
@@ -506,13 +727,20 @@ export const useComic = create(
         set({
           promptUndo: {
             ...get().promptUndo,
-            [id]: { prompt: cur.prompt, expression: cur.expression, description: cur.description || "" },
+            [id]: {
+              prompt: cur.prompt,
+              expression: cur.expression,
+              description: cur.description || "",
+              looks: panelLooks(cur),
+            },
           },
         });
         get().setPanel(id, {
           prompt: u.prompt,
           expression: u.expression,
           description: u.description || "",
+          looks: panelLooks(u),
+          outfits: undefined,
         });
       },
 
@@ -530,6 +758,7 @@ export const useComic = create(
           at: Date.now(),
           label,
           premise: st.premise,
+          story: st.story,
           count: st.panels.length,
           images: st.panels.filter((p) => p.image?.url).length,
           cover: st.panels.find((p) => p.image?.url)?.image.url || "",
@@ -581,7 +810,10 @@ export const useComic = create(
             ...p,
             status: p.image?.url ? "done" : "idle",
             error: "",
+            check: isCheckBusy(p.check) ? null : p.check || null,
           })),
+          // 那一版當時的故事（舊版本沒有就保留目前的）
+          ...(typeof v.story === "string" && v.story.trim() ? { story: v.story } : {}),
           view: "grid",
         });
       },
@@ -591,13 +823,54 @@ export const useComic = create(
       },
 
       // ---- 出圖 ----
+      // 出圖 → 看圖檢查；不符合就依檢查意見重寫這格關鍵字再畫，最多 MAX_AUTO_FIX 次，
+      // 還不符合就標「待人工確認」。種子照「鎖定種子」：鎖定時同一個，不鎖定時每次隨機。
       async generatePanel(id) {
+        const ai = aiOptions(get().settings);
+        get().setPanel(id, { check: null });
+        for (let attempts = 0; ; ) {
+          if (!(await get()._renderPanel(id))) return;
+          get().setPanel(id, { check: { status: "checking", attempts, problems: [] } });
+          let res;
+          try {
+            res = await get().checkPanel(id, ai);
+          } catch (e) {
+            get().setPanel(id, {
+              check: { status: "error", attempts, problems: [e.message || "failed"] },
+            });
+            return;
+          }
+          if (Array.isArray(res.notices) && res.notices.length) set({ notices: res.notices });
+          const problems = res.problems || [];
+          if (res.status !== "fail") {
+            get().setPanel(id, {
+              check: { status: res.status, attempts, problems, reason: res.reason || "" },
+            });
+            return;
+          }
+          if (attempts >= MAX_AUTO_FIX) {
+            get().setPanel(id, { check: { status: "gave_up", attempts, problems, fix: res.fix || "" } });
+            return;
+          }
+          attempts += 1;
+          get().setPanel(id, { check: { status: "fixing", attempts, problems, fix: res.fix || "" } });
+          await get().regeneratePrompt(id, res.fix, ai);
+          const err = get().promptError[id];
+          if (err) {
+            get().setPanel(id, { check: { status: "gave_up", attempts, problems: [...problems, err] } });
+            return;
+          }
+        }
+      },
+
+      // 只出圖（不檢查）；成功回 true
+      async _renderPanel(id) {
         const panel = get().panels.find((p) => p.id === id);
-        if (!panel) return;
+        if (!panel) return false;
         const prompt = get().composePrompt(panel);
         if (!prompt.trim()) {
           get().setPanel(id, { status: "error", error: "empty prompt" });
-          return;
+          return false;
         }
         get().setPanel(id, { status: "generating", error: "" });
         try {
@@ -606,11 +879,35 @@ export const useComic = create(
             status: "done",
             error: "",
             image: { url: r.url, params: r.params, info: r.info || "" },
-            seed: r.params?.seed,
+            seed: r.seed ?? r.params?.seed, // 實際用到的（不鎖定時送 -1，A1111 抽的那個）
           });
+          return true;
         } catch (e) {
           get().setPanel(id, { status: "error", error: e.message || "failed" });
+          return false;
         }
+      },
+
+      // 讓視覺模型看這格的圖，對照 beat（沒有就用格子內容加劇情大綱）判斷有沒有演對故事
+      async checkPanel(id, ai = aiOptions(get().settings)) {
+        const st = get();
+        const index = st.panels.findIndex((p) => p.id === id);
+        const panel = st.panels[index];
+        if (!panel?.image?.url) return { status: "skipped", problems: [], reason: "no image" };
+        return checkComicPanel({
+          engine: ai.engine,
+          model: ai.checkModel,
+          panels: st.panels.map(panelScript),
+          index,
+          image: panel.image.url,
+          story: st.story,
+          premise: st.premise,
+          characters: castPayload(st.characters),
+          lang: ai.lang,
+          num_ctx: ai.numCtx,
+          // 只是判斷符不符合：不開思考，免得每格都要等很久
+          think: ai.engine === "ollama" || ai.engine === "strata" ? false : undefined,
+        });
       },
 
       // 逐格生成（A1111 一次只能跑一張，序列化避免互相排隊卡住 UI 進度）
@@ -633,27 +930,28 @@ export const useComic = create(
       // 頁面重新載入 / 從伺服器開啟作品時，「生成中」只是上次關頁前存下的瞬間狀態，
       // 沒有任何工作在跑：改回 idle（有圖的是 done），格子的生成鈕才按得下去
       settlePanels() {
-        if (!get().panels.some((p) => p.status === "generating")) return;
+        if (!get().panels.some((p) => p.status === "generating" || isCheckBusy(p.check))) return;
         set((st) => ({
-          panels: st.panels.map((p) =>
-            p.status === "generating"
-              ? { ...p, status: p.image?.url ? "done" : "idle", error: "" }
-              : p
-          ),
+          panels: st.panels.map((p) => ({
+            ...p,
+            ...(p.status === "generating"
+              ? { status: p.image?.url ? "done" : "idle", error: "" }
+              : {}),
+            ...(isCheckBusy(p.check) ? { check: null } : {}),
+          })),
         }));
       },
 
       // 由「圖片說故事」等外部來源匯入整份腳本（角色卡 + 分鏡格），覆蓋目前的角色與分鏡。
       // panels 為空時只帶入標題與劇情（例如把生成的故事當作劇情大綱，之後再按「AI 生成分鏡」）。
-      importScript({ title = "", premise = "", style = "", characters = [], panels = [] }) {
+      importScript({ title = "", premise = "", story = "", style = "", characters = [], panels = [] }) {
         get().snapshotPanels("import");
         const cast = (characters || [])
           .filter((c) => (c?.name || "").trim())
           .map((c) => ({
-            id: uid(),
+            ...newCharacter(),
             name: c.name.trim(),
-            appearance: c.appearance || "",
-            lora: "",
+            keywords: c.appearance || "", // 圖片說故事推得的外觀 tag 當角色關鍵字，下次寫故事 / 分鏡時解析
           }));
         const names = cast.map((c) => c.name);
         // 畫風：保留既有的品質詞，把推得的畫風接在後面（重複 tag 由 composePrompt 去重）
@@ -668,10 +966,12 @@ export const useComic = create(
         set({
           title: title || "",
           premise: premise || "",
+          story: story || "",
           style: mergedStyle,
           characters: cast,
           panels: (panels || []).map((p) =>
             newPanel({
+              beat: p.beat || "",
               prompt: p.prompt || "",
               description: p.description || "",
               expression: p.expression || "",
@@ -692,6 +992,7 @@ export const useComic = create(
         set({
           title: "",
           premise: "",
+          story: "",
           systemPrompt: "",
           systemBase: "",
           skills: [],
@@ -788,6 +1089,7 @@ export const useComic = create(
       partialize: (st) => ({
         title: st.title,
         premise: st.premise,
+        story: st.story,
         systemPrompt: st.systemPrompt,
         systemBase: st.systemBase,
         skills: st.skills,
