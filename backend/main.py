@@ -30,6 +30,7 @@ import comics_store
 import config
 import conversations_store
 import docker_probe
+import image_library
 import langgraph_exec
 import langgraph_history
 import langgraph_store
@@ -472,6 +473,105 @@ async def png_info(req: PngInfoRequest) -> dict[str, Any]:
         return await a1111_client.png_info(req.image)
     except Exception as e:
         raise HTTPException(502, f"讀取 PNG 參數失敗：{describe(e)}")
+
+
+# ---- 圖片庫（瀏覽、詳細資訊、刪除到垃圾桶 / 還原）----
+def _gallery_errors(e: Exception) -> HTTPException:
+    if isinstance(e, FileNotFoundError):
+        return HTTPException(404, str(e))
+    if isinstance(e, PermissionError):
+        return HTTPException(403, str(e))
+    if isinstance(e, ValueError):
+        return HTTPException(400, str(e))
+    log.exception("圖片庫失敗")
+    return HTTPException(500, describe(e))
+
+
+@app.get("/api/gallery")
+def gallery_list(folder: str = "", q: str = "", kind: str = "", usage: str = "", sort: str = "new",
+                 offset: int = 0, limit: int = 60) -> dict[str, Any]:
+    try:
+        return image_library.list_images(folder or None, q=q, kind=kind, usage=usage, sort=sort,
+                                         offset=offset, limit=limit)
+    except Exception as e:
+        raise _gallery_errors(e)
+
+
+@app.get("/api/gallery/names")
+def gallery_names(folder: str = "", q: str = "", kind: str = "", usage: str = "") -> dict[str, Any]:
+    """符合篩選的所有圖（多選「全選符合條件」用）。"""
+    try:
+        return image_library.list_names(folder or None, q=q, kind=kind, usage=usage)
+    except Exception as e:
+        raise _gallery_errors(e)
+
+
+@app.get("/api/gallery/thumb")
+def gallery_thumb(name: str, folder: str = "", size: int = 384):
+    try:
+        fp = image_library.thumb(folder or None, name, size)
+    except Exception as e:
+        raise _gallery_errors(e)
+    # 網址帶了 mtime（?v=），圖改了網址就會變，可以放心快取
+    return FileResponse(fp, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=604800"})
+
+
+@app.get("/api/gallery/info")
+def gallery_info(name: str, folder: str = "") -> dict[str, Any]:
+    try:
+        return image_library.info(folder or None, name)
+    except Exception as e:
+        raise _gallery_errors(e)
+
+
+class GalleryDeleteRequest(BaseModel):
+    folder: str = ""
+    names: list[str]
+
+
+@app.post("/api/gallery/delete")
+def gallery_delete(req: GalleryDeleteRequest) -> dict[str, Any]:
+    """移到垃圾桶（可還原）。"""
+    try:
+        return image_library.delete(req.folder or None, req.names)
+    except Exception as e:
+        raise _gallery_errors(e)
+
+
+@app.get("/api/gallery/trash")
+def gallery_trash() -> dict[str, Any]:
+    return image_library.list_trash()
+
+
+@app.get("/api/gallery/trash/thumb")
+def gallery_trash_thumb(id: str, size: int = 384):
+    try:
+        fp = image_library.trash_thumb(id, size)
+    except Exception as e:
+        raise _gallery_errors(e)
+    return FileResponse(fp, media_type="image/jpeg")
+
+
+class GalleryTrashRequest(BaseModel):
+    ids: list[str] = []
+    all: bool = False
+
+
+@app.post("/api/gallery/trash/restore")
+def gallery_restore(req: GalleryTrashRequest) -> dict[str, Any]:
+    try:
+        return image_library.restore(req.ids)
+    except Exception as e:
+        raise _gallery_errors(e)
+
+
+@app.post("/api/gallery/trash/purge")
+def gallery_purge(req: GalleryTrashRequest) -> dict[str, Any]:
+    """永久刪除（all＝清空垃圾桶）。"""
+    try:
+        return image_library.purge(None if req.all else req.ids)
+    except Exception as e:
+        raise _gallery_errors(e)
 
 
 # ---- 提示詞歷史（讀取 sd-webui-prompt-history 擴充的紀錄）----

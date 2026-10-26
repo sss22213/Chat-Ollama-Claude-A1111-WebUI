@@ -200,6 +200,11 @@ def set_image_dir(path: str) -> Path:
     return get_image_dir()
 
 
+def known_image_dirs() -> list[str]:
+    """用過的自訂圖片目錄（切換後舊圖仍在那裡）。"""
+    return list(_settings.get("known_dirs") or [])
+
+
 def find_image(filename: str) -> Path | None:
     """在目前、預設與歷來目錄中尋找圖片檔（供 /images 服務，避免切換後舊圖失聯）。"""
     name = Path(filename).name  # 防止路徑穿越

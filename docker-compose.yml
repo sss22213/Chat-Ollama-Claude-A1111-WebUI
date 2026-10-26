@@ -42,6 +42,9 @@ services:
       # 另一個做法：把 KEY=VALUE 寫在 backend/data/skill-work/<技能>/.env（volume 內，免重啟）。
       SKILL_SCRIPT_ENV: ${SKILL_SCRIPT_ENV:-}
       CIVITAI_API_KEY: ${CIVITAI_API_KEY:-}
+      # 圖片庫：縮圖 / 搜尋索引快取與垃圾桶（刪除的圖），容器內固定位置；主機目錄由下方 volumes 決定
+      IMAGE_CACHE_DIR: /data/image-cache
+      IMAGE_TRASH_DIR: /data/image-trash
       # LangGraph 工作流：容器內固定的資料夾位置；實際主機目錄由下方 volumes 決定
       LANGGRAPH_DIR: /data/langgraph
       LANGGRAPH_ENV_DIR: /data/langgraph-envs
@@ -73,6 +76,13 @@ services:
       # 在 .env 設 PROMPT_HISTORY_DIR=/home/<你>/.../extensions/sd-webui-prompt-history/data 啟用；
       # 未設則掛空目錄、頂欄不顯示「歷史」按鈕。用「絕對路徑」。
       - ${PROMPT_HISTORY_DIR:-./backend/.history-empty}:/data/prompt-history:ro
+      # 圖片庫的資料夾（預設在主機 backend/data/ 底下）：
+      #   image-cache  縮圖與搜尋索引（可以整個刪掉，打開圖片庫時會重建）
+      #   image-trash  在圖片庫刪除的圖先移到這裡，可以還原；「清空垃圾桶」才真的刪掉。
+      #                想放到別顆硬碟就在 .env 設 IMAGE_TRASH_HOST_DIR（用「絕對路徑」）。
+      # 圖片本身在設定頁的「圖片儲存位置」；選容器外的主機資料夾一樣要先在這裡掛進來。
+      - ./backend/data/image-cache:/data/image-cache
+      - ${IMAGE_TRASH_HOST_DIR:-./backend/data/image-trash}:/data/image-trash
       # LangGraph 工作流的資料夾（預設都在主機 backend/data/ 底下，不設定也能用）：
       #   langgraph       工作流專案（每個子資料夾一個含 langgraph.json 的專案）。想放在主機別處
       #                   （例如用 git 管理的資料夾）就在 .env 設 LANGGRAPH_HOST_DIR=/home/<你>/langgraph-projects，

@@ -66,6 +66,12 @@ def list_summaries() -> list[dict[str, Any]]:
     ]
 
 
+def scan_texts() -> list[tuple[str, str, str]]:
+    """(id, 標題, 完整 JSON) — 圖片庫找「哪些對話用了這張圖」用。"""
+    with _lock:
+        return _connect().execute("SELECT id, title, data FROM conversations").fetchall()
+
+
 def get(conv_id: str) -> dict[str, Any] | None:
     """完整對話（含 messages）。"""
     with _lock:

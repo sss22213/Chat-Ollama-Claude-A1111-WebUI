@@ -142,6 +142,12 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   image, with one-click **"apply to settings"** to reproduce it. The model can also call
   `read_png_info` to answer "how was this image made?". *(Only works on images that still
   carry A1111/ComfyUI metadata — screenshots or recompressed images won't have any.)*
+- 🗂️ **Image library** — every image the app has saved, in one page: a thumbnail grid by day
+  with search (prompt / model / seed / file name), filters (generated / comic page / upload, in use
+  / unused) and sorting; a detail view with the full picture, the parsed generation parameters,
+  **every PNG text tag** (A1111 `parameters`, ComfyUI `prompt` / `workflow` JSON …), EXIF, file
+  info and which chats / comics / workflow runs use the image; and delete (one or many) to a
+  **trash** you can restore from. *(See [Image library](#image-library).)*
 - 🕘 **Prompt history** — if you run the A1111 `sd-webui-prompt-history` extension, browse
   its recorded generations right here: a searchable, paginated thumbnail grid (read straight
   from the extension's `data.json`), and one click to **apply to settings** or **generate
@@ -338,20 +344,22 @@ npm run dev
    ask the model "what prompt made this?".
 7. Generation shows a **progress bar** with a live preview; click an image to zoom, or use
    the top-right buttons to download / view parameters.
-8. The ⚙️ gear opens settings: SD model & parameters, denoising strength, system prompt,
+8. **Image library:** the 🗂️ button in the top bar opens every saved image — search, filter,
+   open one for its parameters and PNG tags, or select several and delete them (to the trash).
+9. The ⚙️ gear opens settings: SD model & parameters, denoising strength, system prompt,
    image storage location, service sources, web provider, and language.
-9. You can also type `/image 1girl, solar punk city, masterpiece` to generate directly.
-10. **Prompt history:** if enabled, the 🕘 button (top bar, left of ⚙️) opens a searchable
+10. You can also type `/image 1girl, solar punk city, masterpiece` to generate directly.
+11. **Prompt history:** if enabled, the 🕘 button (top bar, left of ⚙️) opens a searchable
     grid of your past A1111 generations — click one to apply it to settings or re-generate.
-11. **Character search:** the 👥 button (composer) opens a searchable list of 20k+ anime
+12. **Character search:** the 👥 button (composer) opens a searchable list of 20k+ anime
     characters — **insert** one into your prompt or **generate** it directly. See
     [Character search](#character-search-wai--illustrious).
-12. **Reload model (Ollama):** the ⟳ button next to the model dropdown refreshes the model
+13. **Reload model (Ollama):** the ⟳ button next to the model dropdown refreshes the model
     list (models added with `ollama pull` / `ollama create` appear without reloading the
     page), then unloads the selected model and loads it again with the chat's `num_ctx`,
     so the next message does not trigger another load. Use it after overwriting a model
     with `ollama create`, or when a model starts behaving oddly.
-13. **Comic Studio:** the 📖 button opens `#/comic`. Write a premise, add character cards
+14. **Comic Studio:** the 📖 button opens `#/comic`. Write a premise, add character cards
     (a sample prompt as the character's keywords + optional LoRA; **AI parse** splits the keywords
     into features / outfit / example pose / example scene, also done automatically before the
     story or the storyboard, and the result is editable; unnamed cards are auto-named; each panel
@@ -370,19 +378,19 @@ npm run dev
     to the server as you work: 📂 **Library** reopens earlier comics, and **Storyboard
     versions** (script panel) keeps every storyboard that was replaced, with preview and
     restore.
-14. **Image Story:** the 🖼️ button opens `#/story`. Upload / paste as many images as you
+15. **Image Story:** the 🖼️ button opens `#/story`. Upload / paste as many images as you
     like (the page shows an estimated token count against the context window), pick
     **Story**, **Comic script** or **Image panels** (your images are the panels; reorder
     them with ◀ ▶), optionally add direction ("heartwarming, twist ending"),
     and press **Generate**. A story can be sent to Comic Studio as its story; a comic
     script can be opened there directly — **Open & render all** imports the cast and
     panels and starts rendering. Needs a vision-capable model (👁 in the dropdown).
-15. **Illustrated story in chat:** enable **Story Illustrator** (and **SD Prompt Guide (Illustrious)**)
+16. **Illustrated story in chat:** enable **Story Illustrator** (and **SD Prompt Guide (Illustrious)**)
     with the ✨ button, then ask e.g. *"tell a story in 8 pictures: a little fox lost in a
     snowstorm finds its way home by the stars"*. The model writes the outline, then each
     scene's text followed by its image; say *"keywords only"* to get the prompts without
     rendering. Put a LoRA and its trigger words in your request to use it for the heroine.
-16. **LangGraph workflows:** the 🕸️ button opens `#/workflows`. Press **Allow running** once,
+17. **LangGraph workflows:** the 🕸️ button opens `#/workflows`. Press **Allow running** once,
     create the **example** project (or upload your own folder / zip, or drop a project folder
     into the workflows folder and press **Rescan**), press **Install dependencies**, pick a
     graph, type the input (JSON or plain text) and **Run**. **Runs** keeps every run; open one
@@ -856,6 +864,50 @@ installed LoRA for the named character made for that base model, reads its trigg
 prompts, and adds `<lora:file:0.8>` — and the review form lists what it looked up. Every
 "doesn't match" goes back to the splitting step with the feedback. Pick it under **New project**.
 
+## Image library
+
+The 🗂️ button in the top bar (`#/gallery`) manages the images the app has saved: generated
+images, Comic Studio pages (`comic_*.png`) and pictures uploaded in Comic Studio / Image Story
+(`panel_*`).
+
+- **Browse.** A thumbnail grid grouped by day, newest first (or oldest / largest), in three tile
+  sizes, loading more as you scroll. Search matches the prompt, model, seed and file name;
+  chips filter by kind and a menu by use (*in use* / *unused*). Tiles show a badge when a chat,
+  comic or workflow run uses the image. When you have switched the image folder in ⚙️ Settings,
+  a folder menu lets you browse the earlier folders too.
+- **Details.** Click a tile for the full image (← / → for the previous / next one, Esc to
+  close) and a panel with:
+  - **Generation parameters** — prompt, negative prompt and the settings line parsed from A1111's
+    `parameters` tag (or the EXIF `UserComment` of a JPEG / WebP), with copy buttons and
+    **Use these settings**, which loads them into the image settings like PNG Info.
+  - **PNG tags / metadata** — every text chunk in the file (`tEXt`, `zTXt`, `iTXt`, including
+    ones after the image data), JSON pretty-printed, each with its length and a copy button.
+  - **EXIF**, file name / folder / size / format / date, and other image info (DPI, ICC profile).
+  - **Used in** — the chats, comics (including storyboard versions) and workflow runs that
+    reference the image, with a button to open each.
+  - Open the original, download, or delete.
+- **Delete one.** From the detail view, or press Delete there.
+- **Delete many (multi-select).** Hover a tile and tick its box, Ctrl / ⌘-click it, or long-press
+  it on a phone (the **Multi-select** button in the header works too); after that every click
+  adds or removes a tile. Shift-click selects a range, the box next to a day's heading selects
+  that whole day, and **Select all N matching** selects every image that matches the current
+  search and filters — including the ones not scrolled into view yet — so e.g. *Unused* → select
+  all → delete clears out everything no chat uses. The bar at the bottom shows how many are
+  selected, their total size and how many are in use; **Delete N** (or the Delete key) moves them
+  to the trash, Esc clears the selection, Ctrl+A selects everything loaded.
+- If any of the images being deleted are in use the confirmation says so, because those chats /
+  comics will show a missing image. Right after a delete an **Undo** button puts that whole batch
+  back.
+- **Trash.** Deleted images move to `backend/data/image-trash/` instead of disappearing. The trash
+  view lists them with when they were deleted; **Restore** puts them back in their folder (the
+  current image folder if that one is gone), **Delete permanently** / **Empty trash** removes them
+  for good. A restore never overwrites a file with the same name.
+
+Metadata for search is indexed once per folder in `backend/data/image-cache/` (about 0.3 s for
+2,000 images, then only new or changed files are read) together with the thumbnails; the cache can
+be deleted at any time. Only files directly in the image folders (current, default and earlier
+ones) can be listed or deleted, by plain file name.
+
 ## Prompt history (sd-webui-prompt-history)
 
 If you use the A1111 **`sd-webui-prompt-history`** extension, the WebUI can browse and reuse
@@ -980,6 +1032,8 @@ that paragraph; older messages without `at` show their images at the end as befo
 | `backend/langgraph_examples/example/` | Bundled example project (`illustrate` with a visual check loop, `chat`) |
 | `frontend/src/workflow/` | LangGraph workflows page (projects, upload, install log, graph inspect, input, live run view, file editor); state in `frontend/src/store/workflow.js`, API in `frontend/src/lib/workflowApi.js` |
 | `backend/settings_store.py` | persisted settings: image dir (default stored as empty so the host and the container resolve their own path) + service sources + web provider + prompt-history dir + skill prompt length limit + the LangGraph "Allow running" switch and workflows folder |
+| `backend/image_library.py` | Image library: folders (current / default / earlier), metadata index for search, thumbnails, PNG text chunks + EXIF + parsed parameters, which chats / comics / workflow runs use an image, delete to trash / restore / purge |
+| `frontend/src/gallery/` | Image library page (grid, filters, selection, trash) and detail view (`ImageDetail.jsx`); state in `frontend/src/store/gallery.js`, API in `frontend/src/lib/galleryApi.js` |
 | `backend/prompt_history_store.py` | reads the `sd-webui-prompt-history` extension's `data.json` + thumbnails (cached, paginated, searchable) |
 | `backend/booru_characters.py` | character keyword search (Drawing Spells + danbooru + seed; fuzzy/alias matching) |
 | `backend/docker_probe.py` | best-effort container listing via the docker socket |
@@ -1007,7 +1061,8 @@ prompt-history folder, skills folder and script settings `SKILLS_DIR` / `SKILL_M
 `SKILL_SCRIPT_ENV` / `SKILL_SCRIPT_TIMEOUT`, LangGraph folders and limits `LANGGRAPH_DIR` /
 `LANGGRAPH_ENV_DIR` / `LANGGRAPH_RUNS_DIR` / `LANGGRAPH_WORK_DIR` / `LANGGRAPH_RUN_TIMEOUT` /
 `LANGGRAPH_INSTALL_TIMEOUT`, host mounts `LANGGRAPH_HOST_DIR` / `LANGGRAPH_ENVS_HOST_DIR`, pip
-source `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL`). In dev mode the frontend proxy target is in
+source `PIP_INDEX_URL` / `PIP_EXTRA_INDEX_URL`, image library cache / trash `IMAGE_CACHE_DIR` /
+`IMAGE_TRASH_DIR` and the trash host mount `IMAGE_TRASH_HOST_DIR`). In dev mode the frontend proxy target is in
 `frontend/vite.config.js` (`BACKEND_URL`, default `127.0.0.1:8000`); in Docker mode
 `frontend/nginx.conf` proxies `/api` and `/images` to `backend:8000`.
 

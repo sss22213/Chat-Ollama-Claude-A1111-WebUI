@@ -4,8 +4,10 @@ import App from "./App";
 import ComicStudio from "./comic/ComicStudio";
 import StoryStudio from "./story/StoryStudio";
 import WorkflowStudio from "./workflow/WorkflowStudio";
+import GalleryStudio from "./gallery/GalleryStudio";
 
-// 極簡 hash 路由：#/comic → 漫畫工作室、#/story → 圖片說故事、#/workflows → LangGraph 工作流，其餘 → 聊天。
+// 極簡 hash 路由：#/comic → 漫畫工作室、#/story → 圖片說故事、#/workflows → LangGraph 工作流、
+// #/gallery → 圖片庫，其餘 → 聊天。
 // 不引入 react-router，沿用既有單頁部署（nginx SPA fallback / vite）。
 function routeFromHash() {
   return (window.location.hash || "").replace(/^#\/?/, "").split(/[/?]/)[0];
@@ -33,5 +35,6 @@ export default function Root() {
   if (route === "comic") return <ComicStudio />;
   if (route === "story") return <StoryStudio />;
   if (route === "workflows") return <WorkflowStudio />;
+  if (route === "gallery") return <GalleryStudio />;
   return <App />;
 }

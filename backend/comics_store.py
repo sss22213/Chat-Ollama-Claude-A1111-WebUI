@@ -101,6 +101,18 @@ def list_summaries() -> list[dict[str, Any]]:
     ]
 
 
+def scan_texts() -> list[tuple[str, str, str]]:
+    """(作品 id, 標題, 作品與各版本的 JSON) — 圖片庫找「哪些作品用了這張圖」用。"""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute("SELECT id, title, COALESCE(cover, '') || ' ' || data FROM comics").fetchall()
+        titles = {r[0]: r[1] for r in rows}
+        versions = conn.execute(
+            "SELECT comic_id, COALESCE(cover, '') || ' ' || data FROM comic_versions"
+        ).fetchall()
+    return [*rows, *((cid, titles.get(cid) or "", text) for cid, text in versions)]
+
+
 def get(comic_id: str) -> dict[str, Any] | None:
     with _lock:
         row = _connect().execute("SELECT data FROM comics WHERE id = ?", (comic_id,)).fetchone()

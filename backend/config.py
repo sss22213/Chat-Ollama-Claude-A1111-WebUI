@@ -31,6 +31,9 @@ STRATA_API_KEY = os.getenv("STRATA_API_KEY", "").strip()
 DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).parent / "data"))
 IMAGE_DIR = DATA_DIR / "images"
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+# 圖片庫頁面：縮圖與搜尋索引的快取、刪除的圖先移到垃圾桶（可還原）。docker-compose.yml 各自掛載。
+IMAGE_CACHE_DIR = Path(os.getenv("IMAGE_CACHE_DIR", DATA_DIR / "image-cache"))
+IMAGE_TRASH_DIR = Path(os.getenv("IMAGE_TRASH_DIR", DATA_DIR / "image-trash"))
 
 # 預設聊天模型（前端可覆寫）
 DEFAULT_CHAT_MODEL = os.getenv("DEFAULT_CHAT_MODEL", "qwen3.5:35b")

@@ -12,6 +12,7 @@ import {
   Sparkles,
   Images,
   Workflow,
+  GalleryThumbnails,
   RotateCw,
   Check,
   AlertCircle,
@@ -262,6 +263,16 @@ export default function TopBar({
       >
         <Workflow size={16} />
         <span className="hidden xl:inline">{t("workflows")}</span>
+      </button>
+
+      <button
+        onClick={() => navigate("gallery")}
+        className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-2 py-1.5 text-sm text-gray-300 hover:bg-ink-750 sm:px-3"
+        title={t("gallery")}
+        data-testid="open-gallery"
+      >
+        <GalleryThumbnails size={16} />
+        <span className="hidden xl:inline">{t("gallery")}</span>
       </button>
 
       <button
