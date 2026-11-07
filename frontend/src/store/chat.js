@@ -9,6 +9,9 @@ import {
   fetchHealth,
   fetchEngines,
   streamChat,
+  followChatRun,
+  getChatRun,
+  cancelChatRun,
   generateImage,
   compactConversation,
   listConversations,
@@ -248,6 +251,8 @@ export const useChat = create(
       health: { ollama: true, a1111: true },
       streaming: false,
       _abort: null,
+      _run: null, // 正在看的後端回覆 {convId, msgId}（回覆在後端跑，這裡只是接著看）
+      _resuming: null, // 正在確認哪個對話的回覆還在不在跑
       _convosLoaded: false, // 已從後端載過對話清單（之後才做跨裝置刷新）
       _lastRefresh: 0,
       attachments: [], // 待送出的附件圖 [{id, dataUrl}]
@@ -462,7 +467,10 @@ export const useChat = create(
         }
         set({ conversations, currentId });
         if (conversations.length === 0) get().createConversation();
-        else if (currentId) get()._ensureLoaded(currentId);
+        else if (currentId) {
+          get()._ensureLoaded(currentId);
+          get()._resumeRun(currentId);
+        }
         return true;
       },
 
@@ -477,6 +485,7 @@ export const useChat = create(
               x.id === id ? { ...x, ...full, messages: full.messages || [] } : x
             ),
           }));
+          if (id === get().currentId) get()._resumeRun(id);
         } catch {
           // 載入失敗：標記為空陣列避免無限重試
           set((st) => ({
@@ -571,6 +580,7 @@ export const useChat = create(
       selectConversation(id) {
         set({ currentId: id });
         get()._ensureLoaded(id); // 懶載入該對話的訊息
+        get()._resumeRun(id); // 已載入過的對話：回覆可能還在跑
       },
       deleteConversation(id) {
         set((st) => {
@@ -615,6 +625,9 @@ export const useChat = create(
           ),
         }));
       },
+      _updateConversation(id, patch) {
+        set((st) => ({ conversations: st.conversations.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
+      },
       _patchMessage(msgId, patch) {
         get()._updateCurrent((c) => ({
           ...c,
@@ -626,8 +639,217 @@ export const useChat = create(
         }));
       },
 
+      // 改指定對話的訊息：回覆跑到一半切去別的對話，也要改到原本那則
+      _patchMessageIn(convId, msgId, patch) {
+        set((st) => ({
+          conversations: st.conversations.map((c) =>
+            c.id === convId && Array.isArray(c.messages)
+              ? {
+                  ...c,
+                  messages: c.messages.map((m) =>
+                    m.id === msgId ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) } : m
+                  ),
+                }
+              : c
+          ),
+        }));
+      },
+
       currentConversation() {
         return get().conversations.find((c) => c.id === get().currentId) || null;
+      },
+
+      // 一個事件 → 助理訊息。規則要跟後端 chat_runs.ChatRun.apply 一致（那邊負責存檔，這裡負責即時顯示）
+      _applyChatEvent(convId, msgId, e) {
+        const patch = (p) => get()._patchMessageIn(convId, msgId, p);
+        if (e.type === "thinking") {
+          patch((m) => ({
+            thinking: (m.thinking || "") + e.delta,
+          }));
+        } else if (e.type === "token") {
+          patch((m) => ({
+            content: (m.content || "") + e.delta,
+            toolRunning: false, // 開始輸出答案代表工具階段結束
+          }));
+        } else if (e.type === "tool_call") {
+          patch({
+            toolRunning: true,
+            toolName: e.name,
+            progress: null,
+          });
+        } else if (e.type === "lora_renamed") {
+          // LoRA 改名了：開著的漫畫作品裡的 <lora:舊名:…> 也換掉（伺服器上的作品後端已經換好）
+          import("./comic").then((m) => m.useComic.getState().replaceLoraNames(e.mapping || {}));
+        } else if (e.type === "gallery") {
+          // 技能工具回傳的圖庫（如 Civitai Helper 的本地範例圖＋提示詞）
+          patch((m) => ({
+            galleries: [
+              ...(m.galleries || []),
+              { title: e.title || "", trained_words: e.trained_words || [], items: e.items || [] },
+            ],
+          }));
+        } else if (e.type === "candidates") {
+          // 技能工具回傳的候選清單（如 civitai 搜尋結果卡片）
+          patch((m) => ({
+            candidates: [
+              ...(m.candidates || []),
+              { kind: e.kind, items: e.items || [], next_cursor: e.next_cursor || null },
+            ],
+          }));
+        } else if (e.type === "sources") {
+          patch((m) => {
+            const seen = new Set((m.sources || []).map((s) => s.url));
+            const add = (e.results || []).filter(
+              (s) => s.url && !seen.has(s.url)
+            );
+            return {
+              toolRunning: false,
+              sources: [...(m.sources || []), ...add],
+            };
+          });
+        } else if (e.type === "progress") {
+          patch({
+            progress: {
+              value: e.value || 0,
+              text: e.text || "",
+              step: e.step,
+              steps: e.steps,
+              preview: e.preview
+                ? `data:image/png;base64,${e.preview}`
+                : null,
+            },
+          });
+        } else if (e.type === "image") {
+          patch((m) => ({
+            toolRunning: false,
+            progress: null,
+            images: [
+              ...(m.images || []),
+              // at：圖出現時已輸出的文字長度；訊息依此把圖插在當時那段文字下面
+              { url: e.url, params: e.params, info: e.info || "", at: (m.content || "").length },
+            ],
+          }));
+        } else if (e.type === "usage") {
+          set({
+            usage: {
+              prompt_tokens: e.prompt_tokens,
+              num_ctx: e.num_ctx || get().settings.numCtx,
+            },
+          });
+        } else if (e.type === "error") {
+          patch((m) => ({
+            toolRunning: false,
+            error: e.message,
+          }));
+        }
+      },
+
+      // 看著一則後端回覆直到結束。open(onEvent, onDone, onError) 開始連線、回 AbortController
+      _followRun(convId, msgId, open) {
+        const run = { convId, msgId };
+        const mine = () => get()._run === run;
+        let done = null;
+        set({ streaming: true, _run: run });
+        const abort = open(
+          (e) => {
+            if (!mine()) return;
+            if (e.type === "done") done = e;
+            else if (e.type === "snapshot") get()._applySnapshot(convId, e);
+            else get()._applyChatEvent(convId, msgId, e);
+          },
+          () => {
+            if (!mine()) return;
+            if (done) get()._finishRun(convId, msgId, done);
+            else get()._lostRun(convId, msgId); // 連線先斷了，回覆可能還在跑
+          },
+          (err) => {
+            if (mine()) get()._lostRun(convId, msgId, err);
+          }
+        );
+        set({ _abort: abort });
+      },
+
+      // 中途接上：目前內容直接換上去（本機可能是舊的或還沒這則）
+      _applySnapshot(convId, e) {
+        set((st) => ({
+          conversations: st.conversations.map((c) => {
+            if (c.id !== convId || !Array.isArray(c.messages)) return c;
+            const has = c.messages.some((m) => m.id === e.id);
+            return {
+              ...c,
+              messages: has
+                ? c.messages.map((m) => (m.id === e.id ? { ...m, ...e.message } : m))
+                : [...c.messages, { id: e.id, role: "assistant", ...e.message }],
+            };
+          }),
+        }));
+        if (e.usage) set({ usage: { ...e.usage, num_ctx: e.usage.num_ctx || get().settings.numCtx } });
+      },
+
+      // 回覆結束：後端已經存好了，這裡不用（也不能）再存一次，以免舊內容蓋掉後端的
+      _finishRun(convId, msgId, done) {
+        get()._patchMessageIn(convId, msgId, (m) => ({
+          status: "done",
+          toolRunning: false,
+          progress: null,
+          content: stripEchoedNote(m.content),
+        }));
+        set({ streaming: false, _abort: null, _run: null });
+        if (done.updated_at) get()._updateConversation(convId, { updated_at: done.updated_at });
+        get()._maybeAutoCompact();
+      },
+
+      // 連線斷了但沒收到結束：回覆多半還在後端跑，接回去；後端連不上才顯示錯誤
+      async _lostRun(convId, msgId, err) {
+        set({ streaming: false, _abort: null, _run: null });
+        if (err?.status === 409) {
+          // 別的分頁正在這個對話回覆：這則不會跑，下次同步就看得到那邊的回覆
+          get()._patchMessageIn(convId, msgId, { status: "done", error: err.message, toolRunning: false });
+          get()._syncConversation(convId);
+          return;
+        }
+        for (const wait of [300, 1500, 3000, 5000]) {
+          await new Promise((r) => setTimeout(r, wait));
+          try {
+            await get()._resumeRun(convId, { strict: true, reason: err?.status ? err.message : undefined });
+            return;
+          } catch {
+            /* 後端還連不上：等一下再試 */
+          }
+        }
+        // 還是連不上：訊息留在回覆中，定期同步（refreshConversations）會再確認，連回來就接上或標成中斷
+        get()._patchMessageIn(convId, msgId, { error: err?.message || "連線中斷", toolRunning: false, progress: null });
+      },
+
+      // 對話停在「回覆中」：還在跑就接上；已經沒在跑就以後端存的為準。
+      // 順序不能換：先查 run 再讀對話，後端是存好才移除 run，讀到的才會是最後結果。
+      async _resumeRun(convId, { strict = false, reason } = {}) {
+        const last = () => get().conversations.find((c) => c.id === convId)?.messages?.at?.(-1);
+        const pending = (m) => m?.role === "assistant" && m.status === "streaming";
+        if (get().streaming || get()._resuming === convId || !pending(last())) return;
+        set({ _resuming: convId });
+        try {
+          const run = await getChatRun(convId);
+          const full = await getConversation(convId);
+          if (get().streaming) return;
+          get()._updateConversation(convId, { ...full, messages: full.messages || [] });
+          if (run.running) {
+            get()._followRun(convId, run.message_id, (...cb) => followChatRun(convId, ...cb));
+          } else if (pending(last())) {
+            // 沒在跑卻停在回覆中：後端中途重啟了（或一開始就沒跑起來）。已存的部分留著
+            get()._patchMessageIn(convId, last().id, {
+              status: "done",
+              toolRunning: false,
+              progress: null,
+              ...(reason ? { error: reason } : { interrupted: true }),
+            });
+            get()._syncConversation(convId);
+          }
+        } catch (e) {
+          if (strict) throw e; // 其他時候後端連不上就算了，下次同步再確認
+        } finally {
+          set({ _resuming: null });
+        }
       },
 
       // ---- 送出訊息（核心）----
@@ -748,126 +970,38 @@ export const useChat = create(
           }
         }
 
-        const abort = streamChat(
-          {
-            model,
-            messages: apiMessages,
-            toolsEnabled,
-            webEnabled,
-            imageSettings: settings.imageSettings,
-            think: settings.think,
-            numCtx: settings.numCtx,
-            imageSources,
-            engine: settings.engine,
-            effort,
-            skill: skillParam(settings),
-          },
-          (e) => {
-            if (e.type === "thinking") {
-              get()._patchMessage(assistantMsg.id, (m) => ({
-                thinking: (m.thinking || "") + e.delta,
-              }));
-            } else if (e.type === "token") {
-              get()._patchMessage(assistantMsg.id, (m) => ({
-                content: (m.content || "") + e.delta,
-                toolRunning: false, // 開始輸出答案代表工具階段結束
-              }));
-            } else if (e.type === "tool_call") {
-              get()._patchMessage(assistantMsg.id, {
-                toolRunning: true,
-                toolName: e.name,
-                progress: null,
-              });
-            } else if (e.type === "lora_renamed") {
-              // LoRA 改名了：開著的漫畫作品裡的 <lora:舊名:…> 也換掉（伺服器上的作品後端已經換好）
-              import("./comic").then((m) => m.useComic.getState().replaceLoraNames(e.mapping || {}));
-            } else if (e.type === "gallery") {
-              // 技能工具回傳的圖庫（如 Civitai Helper 的本地範例圖＋提示詞）
-              get()._patchMessage(assistantMsg.id, (m) => ({
-                galleries: [
-                  ...(m.galleries || []),
-                  { title: e.title || "", trained_words: e.trained_words || [], items: e.items || [] },
-                ],
-              }));
-            } else if (e.type === "candidates") {
-              // 技能工具回傳的候選清單（如 civitai 搜尋結果卡片）
-              get()._patchMessage(assistantMsg.id, (m) => ({
-                candidates: [
-                  ...(m.candidates || []),
-                  { kind: e.kind, items: e.items || [], next_cursor: e.next_cursor || null },
-                ],
-              }));
-            } else if (e.type === "sources") {
-              get()._patchMessage(assistantMsg.id, (m) => {
-                const seen = new Set((m.sources || []).map((s) => s.url));
-                const add = (e.results || []).filter(
-                  (s) => s.url && !seen.has(s.url)
-                );
-                return {
-                  toolRunning: false,
-                  sources: [...(m.sources || []), ...add],
-                };
-              });
-            } else if (e.type === "progress") {
-              get()._patchMessage(assistantMsg.id, {
-                progress: {
-                  value: e.value || 0,
-                  text: e.text || "",
-                  step: e.step,
-                  steps: e.steps,
-                  preview: e.preview
-                    ? `data:image/png;base64,${e.preview}`
-                    : null,
-                },
-              });
-            } else if (e.type === "image") {
-              get()._patchMessage(assistantMsg.id, (m) => ({
-                toolRunning: false,
-                progress: null,
-                images: [
-                  ...(m.images || []),
-                  // at：圖出現時已輸出的文字長度；訊息依此把圖插在當時那段文字下面
-                  { url: e.url, params: e.params, info: e.info || "", at: (m.content || "").length },
-                ],
-              }));
-            } else if (e.type === "usage") {
-              set({
-                usage: {
-                  prompt_tokens: e.prompt_tokens,
-                  num_ctx: e.num_ctx || get().settings.numCtx,
-                },
-              });
-            } else if (e.type === "error") {
-              get()._patchMessage(assistantMsg.id, (m) => ({
-                toolRunning: false,
-                error: e.message,
-              }));
-            }
-          },
-          () => {
-            get()._patchMessage(assistantMsg.id, (m) => ({
-              status: "done",
-              toolRunning: false,
-              progress: null,
-              content: stripEchoedNote(m.content),
-            }));
-            set({ streaming: false, _abort: null });
-            get()._syncConversation(convId); // 保存到後端（跨裝置）
-            get()._maybeAutoCompact();
-          },
-          (err) => {
-            get()._patchMessage(assistantMsg.id, {
-              status: "done",
-              error: err.message,
-              toolRunning: false,
-              progress: null,
-            });
-            set({ streaming: false, _abort: null });
-            get()._syncConversation(convId);
-          }
-        );
+        // 先把問題和空的回覆存好：回覆在後端跑，關掉網頁問題也不會不見，後端也才有地方寫
+        try {
+          const stored = await putConversation(get().conversations.find((c) => c.id === convId));
+          get()._updateConversation(convId, { created_at: stored.created_at, updated_at: stored.updated_at });
+        } catch (e) {
+          get()._patchMessageIn(convId, assistantMsg.id, { status: "done", error: e.message });
+          set({ streaming: false });
+          return;
+        }
 
-        set({ _abort: abort });
+        get()._followRun(convId, assistantMsg.id, (onEvent, onDone, onError) =>
+          streamChat(
+            {
+                model,
+                messages: apiMessages,
+                toolsEnabled,
+                webEnabled,
+                imageSettings: settings.imageSettings,
+                think: settings.think,
+                numCtx: settings.numCtx,
+                imageSources,
+                engine: settings.engine,
+                effort,
+                skill: skillParam(settings),
+              conversationId: convId,
+              messageId: assistantMsg.id,
+            },
+            onEvent,
+            onDone,
+            onError
+          )
+        );
       },
 
       // /workflow：執行 LangGraph 工作流。每一步寫進可收合的過程區塊，生成的圖照常顯示，
@@ -1123,9 +1257,18 @@ export const useChat = create(
         );
       },
 
-      stopStreaming() {
+      async stopStreaming() {
+        const run = get()._run;
+        if (run) {
+          try {
+            await cancelChatRun(run.convId); // 後端停好會送 done，_finishRun 收尾
+            return;
+          } catch {
+            /* 後端連不上：至少不再接收 */
+          }
+        }
         get()._abort?.abort();
-        set({ streaming: false, _abort: null });
+        set({ streaming: false, _abort: null, _run: null });
       },
 
       // 自動壓縮：設定開啟且上一輪用量達門檻（預設 80%）就壓縮；compact 本身會擋太短的對話

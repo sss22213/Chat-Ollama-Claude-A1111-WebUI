@@ -86,6 +86,32 @@ def get(conv_id: str) -> dict[str, Any] | None:
         return None
 
 
+def update_message(conv_id: str, msg_id: str, patch: dict[str, Any]) -> float | None:
+    """只改一則訊息（回覆在後端跑時用）：讀、改、寫在同一把鎖裡，不會蓋掉網頁同時存的標題等內容。
+    找不到訊息就接在最後（回覆不能丟）；對話已刪回 None，不會把它救回來。回 updated_at。"""
+    with _lock:
+        c = _connect()
+        row = c.execute("SELECT data FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+        if not row:
+            return None
+        conv = json.loads(row[0])
+        messages = conv.setdefault("messages", [])
+        for m in messages:
+            if m.get("id") == msg_id:
+                m.update(patch)
+                break
+        else:
+            messages.append({"id": msg_id, "role": "assistant", **patch})
+        now = time.time()
+        conv["updated_at"] = now
+        c.execute(
+            "UPDATE conversations SET updated_at = ?, data = ? WHERE id = ?",
+            (now, json.dumps(conv, ensure_ascii=False), conv_id),
+        )
+        c.commit()
+    return now
+
+
 def upsert(conv: dict[str, Any]) -> dict[str, Any]:
     """新增或更新整則對話。回傳含時間戳的對話。"""
     conv_id = conv.get("id")

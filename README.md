@@ -135,6 +135,12 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   live **usage meter** (used / limit) in the top bar, one-click **compact** that
   summarizes older messages while keeping the latest exchange, and an optional
   **auto compact** (Settings) that does it for you once usage crosses a threshold.
+- 🔁 **Replies run on the server** — close the page, reload, or lose the connection and the reply
+  keeps going and is saved in the conversation. Reopen it (on any device) to read it, or watch the
+  rest arrive if it is still running; **Stop** works from there too. *(See
+  [Replies keep running](#replies-keep-running).)*
+- 📋 **Code blocks** in replies show their language and a **copy** button; the bar stays at the
+  top while you scroll a long block. Workflow results and Image Story text have the same blocks.
 - 👁/🔧 The model dropdown marks which models can **see images** (vision) and **use tools**;
   the ⟳ button next to it refreshes the Ollama model list and reloads the selected model.
 - 📄 **PNG Info (generation parameters)** — read the embedded SD parameters
@@ -565,6 +571,27 @@ Catalog as of 2026-09-25 (codex 0.155.1; `gpt-6-sol` and `gpt-6-luna` are new):
 The effort selector in ⚙️ Settings only offers the levels the selected model declares. Set
 `CODEX_MODELS=gpt-6-astra,gpt-5.5` to pin the dropdown; the same list above is the built-in
 fallback when no cache exists yet.
+
+## Replies keep running
+
+A chat reply belongs to the backend, not to the browser tab (`backend/chat_runs.py`):
+
+- Sending first saves your question and an empty reply in the conversation, then the backend
+  starts the reply as a background job. The page only watches it.
+- The job builds the reply from the model's events and saves it into the conversation every few
+  seconds, and at once after a tool call, image, gallery or web sources. Closing the page,
+  reloading or dropping the connection does not stop it.
+- Opening a conversation with a reply in progress shows what exists so far and then follows the
+  rest live. Any device can do this, and several can watch at once.
+- **Stop** tells the backend to stop; what was written so far stays. Deleting the conversation
+  stops its reply too.
+- One reply at a time per conversation. `CHAT_RUN_TIMEOUT` (default 7200 s) stops a reply nobody
+  is around to stop.
+- Jobs live in the backend's memory: restarting or rebuilding the backend ends them. The saved
+  part stays and the reply is marked as cut off.
+
+This covers normal chat messages. `/image`, `/workflow` and the LLM steps of Comic Studio and Image
+Story still run only while the page is open.
 
 ## Tools and MCP
 
@@ -1009,6 +1036,7 @@ that paragraph; older messages without `at` show their images at the end as befo
 | `backend/errors.py` | turns httpx/engine exceptions into readable error messages (which host timed out, HTTP status + body) |
 | `backend/chat.py` | agentic tool loop (no round cap; stuck detection; "draw the scene you just wrote" and "you said it was done but called no tool" reminders; numbered conversation images for tools that pick images); Claude / Codex runs with the MCP gateway attached, merging the CLI stream with the gateway's UI events |
 | `backend/tools.py` | tool schemas: `generate_image` / `edit_image` / `read_png_info` / `web_search` / `fetch_url`; model-written tags are de-duplicated (no count or length cap) |
+| `backend/chat_runs.py` | Chat replies as background jobs: one per conversation, builds and saves the reply from its events, lets pages attach (current content, then live events), stop, time limit |
 | `backend/ollama_client.py` | Ollama engine (chat stream, models, capabilities, context length, thinking switch with automatic no-thinking retry + user notices, unload / reload a model with the chat's `num_ctx`) |
 | `backend/claude_client.py` | Claude CLI engine (subprocess `claude -p` stream-json; tools via native MCP: `--mcp-config` with the gateway session) |
 | `backend/codex_client.py` | OpenAI Codex CLI engine (subprocess `codex exec --json`; chat + vision via `-i`; tools via native MCP, built-in tools off) |
@@ -1050,13 +1078,13 @@ that paragraph; older messages without `at` show their images at the end as befo
 | `frontend/src/lib/api.js` | SSE parsing, storage/browse/sources/engine calls |
 | `frontend/src/lib/clipboard.js` | copy to clipboard with a fallback for plain-HTTP LAN pages |
 | `frontend/src/i18n.js` | 5-language dictionary + `useT()` hook |
-| `frontend/src/components/` | UI components (TopBar, Composer, Message, ImageBlock, PngInfoModal, HistoryModal, CandidateCards, ExampleGallery, pickers, panels) |
+| `frontend/src/components/` | UI components (TopBar, Composer, Message, CodeBlock, ImageBlock, PngInfoModal, HistoryModal, CandidateCards, ExampleGallery, pickers, panels) |
 
 ## Configuration
 
 Copy `.env.example` and override via environment variables (addresses incl. the optional
 `SDCPP_URL`, `MMD_URL` and `STRATA_URL`, the MCP tokens, default model,
-timeouts, Claude / Codex credentials and model lists (`CLAUDE_MODELS`, `CODEX_MODELS`),
+timeouts (including the reply limit `CHAT_RUN_TIMEOUT`), Claude / Codex credentials and model lists (`CLAUDE_MODELS`, `CODEX_MODELS`),
 prompt-history folder, skills folder and script settings `SKILLS_DIR` / `SKILL_MAX_CHARS` /
 `SKILL_SCRIPT_ENV` / `SKILL_SCRIPT_TIMEOUT`, LangGraph folders and limits `LANGGRAPH_DIR` /
 `LANGGRAPH_ENV_DIR` / `LANGGRAPH_RUNS_DIR` / `LANGGRAPH_WORK_DIR` / `LANGGRAPH_RUN_TIMEOUT` /

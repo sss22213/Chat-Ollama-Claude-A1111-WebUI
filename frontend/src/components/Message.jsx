@@ -28,10 +28,12 @@ import ImageBlock from "./ImageBlock";
 import ImageNo from "./ImageNo";
 import CandidateCards from "./CandidateCards";
 import ExampleGallery from "./ExampleGallery";
+import { markdownComponents } from "./CodeBlock";
 import { useT } from "../i18n";
 import { stripEchoedNote } from "../store/chat";
 
 export default function Message({ msg, imageNo }) {
+  const t = useT();
   const isUser = msg.role === "user";
 
   if (isUser) {
@@ -88,6 +90,7 @@ export default function Message({ msg, imageNo }) {
                   remarkPlugins={[remarkGfm]}
                   rehypePlugins={[rehypeHighlight]}
                   urlTransform={chatUrlTransform}
+                  components={markdownComponents}
                 >
                   {part.text}
                 </Markdown>
@@ -129,6 +132,16 @@ export default function Message({ msg, imageNo }) {
           <div className="flex items-start gap-2 rounded-lg border border-red-900/50 bg-red-950/40 px-3 py-2 text-sm text-red-300">
             <AlertTriangle size={15} className="mt-0.5 shrink-0" />
             <span>{msg.error}</span>
+          </div>
+        )}
+
+        {msg.interrupted && (
+          <div
+            data-testid="reply-interrupted"
+            className="flex items-start gap-2 rounded-lg border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-sm text-amber-200/90"
+          >
+            <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+            <span>{t("replyInterrupted")}</span>
           </div>
         )}
 

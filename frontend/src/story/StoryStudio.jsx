@@ -29,6 +29,7 @@ import { useT } from "../i18n";
 import { navigate } from "../Root";
 import { readAsDataUrl, imageFilesFrom } from "../lib/image";
 import SettingsModal from "../components/SettingsModal";
+import { markdownComponents } from "../components/CodeBlock";
 import { copyText } from "../lib/clipboard";
 
 const inputCls =
@@ -623,7 +624,7 @@ export default function StoryStudio() {
                 </button>
               </div>
               <div className="markdown rounded-xl border border-ink-700 bg-ink-850 p-4 text-[15px] leading-7">
-                <Markdown remarkPlugins={[remarkGfm]}>{r.story}</Markdown>
+                <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{r.story}</Markdown>
               </div>
             </article>
           ) : (

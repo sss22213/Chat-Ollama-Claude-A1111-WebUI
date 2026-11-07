@@ -23,6 +23,7 @@ from errors import describe
 import a1111_client
 import booru_characters
 import chat as chat_mod
+import chat_runs
 import claude_client
 import codex_client
 import comic as comic_mod
@@ -107,6 +108,9 @@ class ChatRequest(BaseModel):
     effort: str | None = None
     # 啟用的技能 slug（Agent Skill）；空＝不啟用
     skill: str | None = None
+    # 這則回覆屬於哪個對話的哪則訊息（前端先存好）。有帶就在後端跑完，不跟著連線斷
+    conversation_id: str | None = None
+    message_id: str | None = None
 
 
 @app.get("/api/health")
@@ -859,11 +863,43 @@ async def chat(req: ChatRequest) -> StreamingResponse:
         effort=req.effort,
         skill=req.skill,
     )
+    if not (req.conversation_id and req.message_id):
+        return _chat_stream(stream)  # 舊版前端（分頁還沒重新整理）：跟著連線走
+    try:
+        run = chat_runs.start(req.conversation_id, req.message_id, stream)
+    except chat_runs.Busy:
+        raise HTTPException(409, "這個對話還在回覆中")
+    return _chat_stream(chat_runs.follow(run))
+
+
+def _chat_stream(stream: Any) -> StreamingResponse:
     return StreamingResponse(
         stream,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/api/chat/runs/{conv_id}")
+def chat_run_status(conv_id: str) -> dict[str, Any]:
+    """這個對話有沒有回覆正在跑（查不到＝對話裡存的已經是最後結果）。"""
+    run = chat_runs.get(conv_id)
+    return {"running": bool(run), "message_id": run.msg_id if run else None}
+
+
+@app.get("/api/chat/runs/{conv_id}/stream")
+async def chat_run_stream(conv_id: str) -> StreamingResponse:
+    """接上進行中的回覆：先送目前內容（snapshot），再送之後的事件。"""
+    run = chat_runs.get(conv_id)
+    if not run:
+        raise HTTPException(404, "這個對話沒有進行中的回覆")
+    return _chat_stream(chat_runs.follow(run, snapshot=True))
+
+
+@app.post("/api/chat/runs/{conv_id}/cancel")
+def chat_run_cancel(conv_id: str) -> dict[str, bool]:
+    """停止回覆（已輸出的部分會留著）。"""
+    return {"ok": chat_runs.cancel(conv_id)}
 
 
 class CompactRequest(BaseModel):
@@ -1262,6 +1298,7 @@ def put_conversation(conv_id: str, body: dict[str, Any]) -> dict[str, Any]:
 
 @app.delete("/api/conversations/{conv_id}")
 def delete_conversation(conv_id: str) -> dict[str, bool]:
+    chat_runs.cancel(conv_id)
     conversations_store.delete(conv_id)
     return {"ok": True}
 

@@ -26,6 +26,8 @@ services:
       STRATA_URL: ${STRATA_URL:-http://host.docker.internal:8081}
       DATA_DIR: /data
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-600}
+      # 一則回覆最多跑幾秒（回覆在後端跑，關掉網頁也會跑完；這是防止失控的上限）
+      CHAT_RUN_TIMEOUT: ${CHAT_RUN_TIMEOUT:-7200}
       # Claude CLI 引擎（與 ollama 二選一）。binary 已裝在映像內；
       # 可選模型別名與 claude 路徑可覆寫。
       CLAUDE_BIN: ${CLAUDE_BIN:-claude}

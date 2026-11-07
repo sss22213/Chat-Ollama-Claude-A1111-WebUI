@@ -40,6 +40,7 @@ import GraphDiagram from "./GraphDiagram";
 import { navigate } from "../Root";
 import { copyText } from "../lib/clipboard";
 import DirectoryPicker from "../components/DirectoryPicker";
+import { markdownComponents } from "../components/CodeBlock";
 
 const inputCls =
   "w-full rounded-md border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm outline-none focus:border-ink-500";
@@ -776,7 +777,7 @@ function InterruptForm({ waiting, busy, error, onSubmit }) {
       </div>
       {form?.message && (
         <div className="markdown break-words text-sm text-gray-200">
-          <Markdown remarkPlugins={[remarkGfm]}>{form.message}</Markdown>
+          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{form.message}</Markdown>
         </div>
       )}
       {form?.images?.length > 0 && (
@@ -1052,7 +1053,7 @@ function RunView({ run }) {
           )}
           {text && (
             <div className="markdown break-words text-sm">
-              <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+              <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{text}</Markdown>
             </div>
           )}
           <details>

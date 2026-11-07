@@ -547,45 +547,90 @@ export function streamChat(
     engine,
     effort,
     skill,
+    conversationId,
+    messageId,
   },
   onEvent,
   onDone,
   onError
 ) {
+  return readChatEvents(
+    "/api/chat",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages,
+        tools_enabled: toolsEnabled,
+        web_enabled: webEnabled,
+        image_settings: imageSettings,
+        think,
+        num_ctx: numCtx,
+        image_sources: imageSources,
+        engine,
+        effort,
+        skill,
+        conversation_id: conversationId,
+        message_id: messageId,
+      }),
+    },
+    onEvent,
+    onDone,
+    onError
+  );
+}
+
+// 接上進行中的回覆：先收到 snapshot（目前內容），之後跟 streamChat 一樣收事件
+export const followChatRun = (convId, onEvent, onDone, onError) =>
+  readChatEvents(`/api/chat/runs/${encodeURIComponent(convId)}/stream`, {}, onEvent, onDone, onError);
+
+export async function getChatRun(convId) {
+  const r = await fetch(`/api/chat/runs/${encodeURIComponent(convId)}`);
+  if (!r.ok) throw new Error(`伺服器錯誤 (${r.status})`);
+  return r.json();
+}
+
+export async function cancelChatRun(convId) {
+  const r = await fetch(`/api/chat/runs/${encodeURIComponent(convId)}/cancel`, { method: "POST" });
+  if (!r.ok) throw new Error(`伺服器錯誤 (${r.status})`);
+  return r.json();
+}
+
+// 後端沒事件時每 10 秒送一次 ping；這麼久什麼都沒收到＝連線其實死了（瀏覽器不一定會發現）
+const STALL_MS = 30_000;
+
+function readChatEvents(url, init, onEvent, onDone, onError) {
   const controller = new AbortController();
+  let stalled = false;
+  let watchdog;
+  const alive = () => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => {
+      stalled = true;
+      controller.abort();
+    }, STALL_MS);
+  };
 
   (async () => {
     try {
-      const resp = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          messages,
-          tools_enabled: toolsEnabled,
-          web_enabled: webEnabled,
-          image_settings: imageSettings,
-          think,
-          num_ctx: numCtx,
-          image_sources: imageSources,
-          engine,
-          effort,
-          skill,
-        }),
-        signal: controller.signal,
-      });
+      const resp = await fetch(url, { ...init, signal: controller.signal });
 
       if (!resp.ok || !resp.body) {
-        throw new Error(`伺服器錯誤 (${resp.status})`);
+        const err = new Error(`伺服器錯誤 (${resp.status})`);
+        err.status = resp.status;
+        throw err;
       }
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      alive();
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        alive();
         buffer += decoder.decode(value, { stream: true });
 
         // SSE 事件以空行分隔
@@ -605,11 +650,13 @@ export function streamChat(
       }
       onDone?.();
     } catch (e) {
-      if (e.name === "AbortError") {
+      if (e.name === "AbortError" && !stalled) {
         onDone?.();
       } else {
-        onError?.(e);
+        onError?.(stalled ? new Error("連線中斷") : e);
       }
+    } finally {
+      clearTimeout(watchdog);
     }
   })();
 

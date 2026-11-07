@@ -115,6 +115,34 @@ body {
   overflow-x: auto;
   margin: 0.6em 0;
 }
+/* 有標題列的程式碼框（CodeBlock.jsx）：框線與底色改由外框負責 */
+.markdown .code-block {
+  background: #171717;
+  border: 1px solid #2e2e2e;
+  border-radius: 8px;
+  margin: 0.6em 0;
+}
+.markdown .code-block pre {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+}
+/* 捲過很長的程式碼時標題列留在上方，複製鈕一直按得到 */
+.code-block-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3em 0.5em 0.3em 1em;
+  font-size: 0.75rem;
+  background: #171717;
+  border-bottom: 1px solid #2e2e2e;
+  border-radius: 8px 8px 0 0;
+}
 .markdown pre code {
   background: transparent;
   padding: 0;

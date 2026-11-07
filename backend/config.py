@@ -55,6 +55,8 @@ DEFAULT_IMAGE_SETTINGS = {
 
 # HTTP 逾時（生成圖片可能很久）
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "600"))
+# 一則回覆最多跑幾秒（回覆在後端跑，網頁關了也不會停；這是防止失控一直跑的上限）
+CHAT_RUN_TIMEOUT = float(os.getenv("CHAT_RUN_TIMEOUT", "7200"))
 
 # ---- Claude CLI 引擎 ----
 # 後端可選用本地已登入的 `claude`（Claude Code）CLI 當 AI 引擎（與 ollama 二選一）。
