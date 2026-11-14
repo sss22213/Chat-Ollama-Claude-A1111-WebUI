@@ -28,11 +28,31 @@ export default function ComicLibrary({ onClose }) {
     reload();
   }, []);
 
+  // 換作品前會先把目前作品待存的修改存好；存不上去（code="unsaved"）就問要不要放棄那些修改再換
+  const switchTo = async (fn) => {
+    try {
+      await fn({});
+    } catch (e) {
+      if (e?.code !== "unsaved") throw e;
+      if (!window.confirm(ct(e.gone ? "goneSwitch" : "unsavedSwitch"))) return false;
+      await fn({ discard: true });
+    }
+    return true;
+  };
   const open = async (id) => {
     setBusy(id);
     try {
-      await openProject(id);
-      onClose();
+      if (await switchTo((opts) => openProject(id, opts))) onClose();
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const startNew = async () => {
+    setBusy("new");
+    try {
+      if (await switchTo((opts) => newProject(opts))) onClose();
     } catch (e) {
       setError(e.message || String(e));
     } finally {
@@ -70,13 +90,12 @@ export default function ComicLibrary({ onClose }) {
             <span className="truncate">{ct("library")}</span>
           </h2>
           <button
-            onClick={() => {
-              newProject();
-              onClose();
-            }}
+            onClick={startNew}
+            disabled={busy === "new"}
             className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-2.5 py-1.5 text-xs text-gray-200 hover:bg-ink-750"
           >
-            <FilePlus2 size={14} /> {ct("newProject")}
+            {busy === "new" ? <Loader2 size={14} className="animate-spin" /> : <FilePlus2 size={14} />}{" "}
+            {ct("newProject")}
           </button>
           <button
             onClick={onClose}

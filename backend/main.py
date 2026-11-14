@@ -344,11 +344,44 @@ class TestRequest(BaseModel):
     url: str | None = None
     container: str | None = None
     port: int | None = None
-    # Strata：測試尚未儲存的新 key；不送就用已儲存的
+    # Strata：測試尚未儲存的新 key；不送就用已儲存的（只送到已儲存的網址），空字串＝不帶
     api_key: str | None = None
-    # 測試尚未儲存的 MCP token（A1111 / Civitai Helper / sd.cpp / MMD 動畫）；不送就用已儲存的
+    # 測試尚未儲存的 MCP token（A1111 / Civitai Helper / sd.cpp / MMD 動畫）；規則同 api_key
     mcp_token: str | None = None
     ch_mcp_token: str | None = None
+
+
+_TOKEN_WITHHELD = "測試的網址跟已儲存的不同，已儲存的 token / API key 不會送過去（這次沒帶 token）：新網址請重新輸入 token 再測"
+_TOKEN_REENTER = "服務網址改過，原本的 token / API key 不會送到新網址（這次沒帶 token）：請重新輸入 token 再存"
+
+
+def _test_secret(service: str, field: str, url: str, given: str | None) -> tuple[str, str]:
+    """「測試連線」要帶的秘密。請求明確帶的照用（空字串＝不帶 token）；沒帶時，已存的秘密（設定頁或 .env）
+    只送到這個服務已儲存的網址（scheme + host + port 相同），別的網址一律不帶：秘密不會被送到請求指定的任意網址。
+    已儲存的網址也要是可信任網址（settings_store.secret_for）：網址改過、沒重新輸入的 token 不帶。
+    回 (要帶的秘密, 沒帶的原因："withheld"＝網址不是已儲存的、"reenter"＝網址改過要重新輸入、""＝沒有要說明的)。"""
+    if given is not None:
+        return given.strip(), ""
+    if settings_store.same_origin(url, settings_store.get_service_url(service)):
+        token = settings_store.secret_for(service, field)
+        return token, "reenter" if not token and field in settings_store.needs_reentry(service) else ""
+    return "", "withheld" if settings_store.has_secret(service, field) else ""
+
+
+def _note_withheld(res: dict[str, Any], why: str) -> dict[str, Any]:
+    """沒帶已存的秘密：結果裡說明（失敗的 detail 開頭就寫，網頁也會另外提示）。"""
+    if not why:
+        return res
+    note = _TOKEN_REENTER if why == "reenter" else _TOKEN_WITHHELD
+    res["token_reenter" if why == "reenter" else "token_withheld"] = True
+    if not res.get("ok"):
+        res["detail"] = f"{note}。{res.get('detail') or ''}"
+    ch = res.get("civitai_helper")
+    if isinstance(ch, dict) and not ch.get("ok"):
+        ch["detail"] = f"{note}。{ch.get('detail') or ''}"
+        if res.get("warning"):
+            res["warning"] = ch["detail"]
+    return res
 
 
 @app.post("/api/sources/test")
@@ -358,15 +391,20 @@ async def test_source(req: TestRequest) -> dict[str, Any]:
     if not url:
         return {"ok": False, "url": url, "detail": "URL 為空"}
     if req.service == "strata":
-        return await _test_strata(url, req.api_key)
+        key, withheld = _test_secret("strata", "api_key", url, req.api_key)
+        return _note_withheld(await _test_strata(url, key), withheld)
     if req.service == "a1111":
-        return await _test_a1111(url, req.mcp_token, req.ch_mcp_token)
+        token, w1 = _test_secret("a1111", "mcp_token", url, req.mcp_token)
+        ch_token, w2 = _test_secret("a1111", "ch_mcp_token", url, req.ch_mcp_token)
+        return _note_withheld(await _test_a1111(url, token, ch_token), w1 or w2)
     if req.service in ("sdcpp", "mmd"):  # 只提供 MCP 伺服器的服務
+        token, withheld = _test_secret(req.service, "mcp_token", url, req.mcp_token)
         t0 = time.monotonic()
-        res = await mcp_client.check(req.service, url, req.mcp_token or None)
+        res = await mcp_client.check(req.service, url, token)
         if not res["ok"]:
-            return {"ok": False, "url": url, "detail": res["detail"]}
-        return {"ok": True, "url": url, "latency_ms": int((time.monotonic() - t0) * 1000), "tools": res["tools"]}
+            return _note_withheld({"ok": False, "url": url, "detail": res["detail"]}, withheld)
+        return _note_withheld({"ok": True, "url": url, "latency_ms": int((time.monotonic() - t0) * 1000),
+                               "tools": res["tools"]}, withheld)
     path = "/api/version"
     t0 = time.monotonic()
     try:
@@ -379,11 +417,12 @@ async def test_source(req: TestRequest) -> dict[str, Any]:
         return {"ok": False, "url": url, "detail": str(e)}
 
 
-async def _test_a1111(url: str, token: str | None, ch_token: str | None) -> dict[str, Any]:
-    """A1111 的工具都走 MCP：兩個 MCP 端點（A1111、Civitai Helper）都要連得上、token 要對。"""
+async def _test_a1111(url: str, token: str, ch_token: str) -> dict[str, Any]:
+    """A1111 的工具都走 MCP：兩個 MCP 端點（A1111、Civitai Helper）都要連得上、token 要對。
+    token 由 _test_secret 決定（空字串＝不帶）。"""
     t0 = time.monotonic()
-    a1111 = await mcp_client.check("a1111", url, token or None)
-    ch = await mcp_client.check("civitai-helper", url, ch_token or None)
+    a1111 = await mcp_client.check("a1111", url, token)
+    ch = await mcp_client.check("civitai-helper", url, ch_token)
     latency = int((time.monotonic() - t0) * 1000)
     if not a1111["ok"]:
         return {"ok": False, "url": url, "detail": a1111["detail"], "civitai_helper": ch}
@@ -393,9 +432,8 @@ async def _test_a1111(url: str, token: str | None, ch_token: str | None) -> dict
     return out
 
 
-async def _test_strata(url: str, api_key: str | None) -> dict[str, Any]:
-    """Strata：/v1/models 要帶 API key；順便確認模型已載入。"""
-    key = settings_store.get_strata_key() if api_key is None else api_key.strip()
+async def _test_strata(url: str, key: str) -> dict[str, Any]:
+    """Strata：/v1/models 要帶 API key（由 _test_secret 決定，空字串＝不帶）；順便確認模型已載入。"""
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     t0 = time.monotonic()
     try:
@@ -967,6 +1005,8 @@ async def compact(req: CompactRequest) -> dict[str, Any]:
 
 # ---- LangGraph 工作流（官方 langgraph.json + Python 專案，每個專案一個 venv）----
 def _lg_errors(e: Exception) -> HTTPException:
+    if isinstance(e, langgraph_store.NotProject):  # 同名的資料夾不是專案：不刪、不覆寫
+        return HTTPException(409, str(e))
     if isinstance(e, FileNotFoundError):
         return HTTPException(404, str(e))
     if isinstance(e, PermissionError):
@@ -1288,10 +1328,23 @@ def get_conversation(conv_id: str) -> dict[str, Any]:
 
 @app.put("/api/conversations/{conv_id}")
 def put_conversation(conv_id: str, body: dict[str, Any]) -> dict[str, Any]:
-    """新增或更新整則對話（含 messages）。"""
+    """新增或更新整則對話（含 messages）。
+    base_updated_at：這份資料以哪個版本為基礎（上次從後端拿到的 updated_at；null＝從沒存過的新對話）。
+    伺服器上已經比較新、或對話已在別處刪除 → 409，附目前版本（已刪除是 null），網頁在最新版上重做這次的變更。
+    沒帶這個欄位（舊版前端、腳本）照舊整份覆蓋。"""
     body = {**body, "id": conv_id}
+    base = body.pop("base_updated_at", conversations_store.ANY)
+    if base is not conversations_store.ANY and base is not None and not isinstance(base, (int, float)):
+        raise HTTPException(400, "base_updated_at 要是數字或 null")
     try:
-        return conversations_store.upsert(body)
+        return conversations_store.upsert(body, base)
+    except conversations_store.Conflict as e:
+        gone = e.current is None
+        raise HTTPException(409, {
+            "reason": "deleted" if gone else "stale",
+            "message": "這則對話已在別處刪除" if gone else "這則對話在別處有更新",
+            "current": e.current,
+        })
     except ValueError as e:
         raise HTTPException(400, str(e))
 

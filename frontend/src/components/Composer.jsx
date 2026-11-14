@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Square, ImagePlus, X, FileText, Users, Layers } from "lucide-react";
+import { ArrowUp, Square, ImagePlus, X, FileText, Users, Layers, AlertTriangle } from "lucide-react";
 import { useChat } from "../store/chat";
 import { useT } from "../i18n";
 import PngInfoModal from "./PngInfoModal";
@@ -26,6 +26,7 @@ export default function Composer() {
   const insertComposer = useChat((s) => s.insertComposer);
   const generateCharacter = useChat((s) => s.generateCharacter);
   const generateLora = useChat((s) => s.generateLora);
+  const syncNotice = useChat((s) => s.syncNotice); // 存檔沒存成功（對話在別處刪了 / 一直衝突）
   const taRef = useRef(null);
   const fileRef = useRef(null);
   const [pngFor, setPngFor] = useState(null); // 正在看 PNG Info 的附件原圖
@@ -130,6 +131,28 @@ export default function Composer() {
   return (
     <div className="px-4 pb-4">
       <div className="mx-auto w-full max-w-3xl">
+        {syncNotice && (
+          <div
+            data-testid="sync-notice"
+            className="mb-2 flex items-start gap-2 rounded-lg border border-amber-600/40 bg-amber-600/10 px-3 py-2 text-xs text-amber-200"
+          >
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span className="flex-1">
+              {syncNotice.kind === "deleted"
+                ? t("syncDeleted", { title: syncNotice.title || t("newChat") })
+                : syncNotice.kind === "busy"
+                  ? t("syncBusy")
+                  : t("syncFailed")}
+            </span>
+            <button
+              onClick={() => useChat.setState({ syncNotice: null })}
+              title={t("syncDismiss")}
+              className="shrink-0 text-amber-300/80 hover:text-amber-100"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
         {/* 附件縮圖 */}
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">

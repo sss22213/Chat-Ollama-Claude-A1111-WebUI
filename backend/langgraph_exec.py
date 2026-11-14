@@ -50,13 +50,39 @@ PING_EVERY = 20  # 等回覆時多久送一次 ping，免得閒置的 SSE 被 pr
 _runs: dict[str, dict[str, Any]] = {}
 
 
+def _mask(text: str, secrets: list[str]) -> str:
+    """把秘密出現的範圍換成 ***。先找出所有秘密（含重疊、互為前綴 / 子字串的）出現的位置，
+    合併重疊的範圍再一次換掉：照順序 replace 的話，短的先換掉會讓長的那個剩下尾巴。"""
+    spans: list[list[int]] = []
+    for s in secrets:
+        i = text.find(s)
+        while i >= 0:
+            spans.append([i, i + len(s)])
+            i = text.find(s, i + 1)
+    if not spans:
+        return text
+    spans.sort()
+    merged = [spans[0]]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out, pos = [], 0
+    for a, b in merged:
+        out += [text[pos:a], "***"]
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _redact(value: Any, secrets: list[str]) -> Any:
+    """遮掉 env 的值（所有對外輸出都經過這裡：SSE 事件、執行紀錄、錯誤訊息、log）。
+    要截短的字串一律先遮再截（見 run 的 emit 與 _cut），秘密跨在截斷處也不會留下前幾個字。"""
     if not secrets:
         return value
     if isinstance(value, str):
-        for s in secrets:
-            value = value.replace(s, "***")
-        return value
+        return _mask(value, secrets)
     if isinstance(value, dict):
         return {k: _redact(v, secrets) for k, v in value.items()}
     if isinstance(value, list):
@@ -69,8 +95,10 @@ def _require_enabled() -> None:
         raise PermissionError("LangGraph 工作流的執行還沒開啟（工作流頁面上方的開關）")
 
 
-def _prepare(slug: str) -> tuple[Path, dict[str, Any], dict[str, str], list[str]]:
-    """專案資料夾、設定、子程序環境、要在輸出遮罩的值。"""
+def _prepare(slug: str) -> tuple[Path, dict[str, Any], dict[str, str], list[str], list[str]]:
+    """專案資料夾、設定、子程序環境、要在輸出遮罩的值、這些值的環境變數名稱。
+    名稱放進工作（job）交給執行器：它自己截短的文字（log、tool_result、traceback…）要先遮掉這些值，
+    值本身不經過 job（執行器從自己的環境變數讀）。"""
     _require_enabled()
     pdir = store.project_dir(slug)
     cfg = store.read_config(pdir)
@@ -82,8 +110,9 @@ def _prepare(slug: str) -> tuple[Path, dict[str, Any], dict[str, str], list[str]
     env.update(values)
     env["PYTHONPATH"] = os.pathsep.join([str(RUNTIME_DIR), str(pdir)])
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    secrets = [v for v in values.values() if len(v) >= 6]
-    return pdir, cfg, env, secrets
+    secrets = sorted({v for v in values.values() if len(v) >= 6}, key=len, reverse=True)
+    names = sorted(k for k, v in values.items() if len(v) >= 6)
+    return pdir, cfg, env, secrets, names
 
 
 async def _spawn(slug: str, pdir: Path, env: dict[str, str], job: dict[str, Any]) -> asyncio.subprocess.Process:
@@ -117,9 +146,9 @@ async def _ignore(_ev: dict[str, Any]) -> None:
 
 async def inspect(slug: str, timeout: float = 120) -> dict[str, Any]:
     """載入每個 graph：輸入 / 輸出 schema、節點、邊、mermaid；載入失敗的附錯誤訊息。"""
-    pdir, cfg, env, secrets = _prepare(slug)
+    pdir, cfg, env, secrets, names = _prepare(slug)
     job = {"mode": "inspect", "project_dir": str(pdir), "graphs": cfg["graphs"],
-           "extra_paths": store.extra_paths(slug)}
+           "extra_paths": store.extra_paths(slug), "secret_env": names}
     proc = await _spawn(slug, pdir, env, job)
     events: list[dict[str, Any]] = []
 
@@ -154,13 +183,14 @@ async def inspect(slug: str, timeout: float = 120) -> dict[str, Any]:
         await _kill(proc)
         raise TimeoutError(f"載入圖超過 {timeout:.0f} 秒") from None
     result: dict[str, Any] | None = None
+    # 錯誤訊息會成為 HTTP 的 detail（與 log）：env 的值一律遮掉
     for ev in events:
         if ev.get("type") == "inspect":
             result = ev["graphs"]
         elif ev.get("type") == "error":
-            raise RuntimeError(ev.get("message") or "載入失敗")
+            raise RuntimeError(_redact(ev.get("message") or "載入失敗", secrets))
     if result is None:
-        tail = err.decode("utf-8", "replace").strip()[-2000:]
+        tail = _redact(err.decode("utf-8", "replace"), secrets).strip()[-2000:]
         raise RuntimeError(f"載入圖失敗：{tail or f'exit {proc.returncode}'}")
     for gid, why in cfg["unsupported"].items():
         result[gid] = {"spec": "", "error": why}
@@ -428,7 +458,7 @@ async def chat_turn(args: dict[str, Any], opts: dict[str, Any], node: str, emit:
     for i, c in enumerate(calls):
         c["id"] = c.get("id") or f"call_{uuid.uuid4().hex[:8]}_{i}"
     await emit({"type": "llm_done", "node": node, "chars": len(content),
-                "seconds": round(time.monotonic() - started, 1), "preview": content[:300],
+                "seconds": round(time.monotonic() - started, 1), "preview": content, "_cut": {"preview": 300},
                 **({"tool_calls": [c["name"] for c in calls]} if calls else {})})
     return {"content": content, "tool_calls": calls}
 
@@ -490,7 +520,7 @@ async def chat_agent(args: dict[str, Any], opts: dict[str, Any], node: str, emit
         tool_gateway.close_session(token)
     text = text.strip()
     await emit({"type": "llm_done", "node": node, "chars": len(text),
-                "seconds": round(time.monotonic() - started, 1), "preview": text[:300],
+                "seconds": round(time.monotonic() - started, 1), "preview": text, "_cut": {"preview": 300},
                 **({"tool_calls": [c["name"] for c in calls]} if calls else {})})
     return {"text": text, "calls": calls, "images": images}
 
@@ -538,7 +568,7 @@ async def _bridge(fn: str, args: dict[str, Any], node: str, opts: dict[str, Any]
 async def run(slug: str, graph: str, inp: Any, opts: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
     """執行一個 graph；逐一 yield 事件（第一個是 {"type": "run", "id"}），並存成執行紀錄。
     opts：engine / model / think / effort / num_ctx / image_settings / recursion_limit / source。"""
-    pdir, cfg, env, secrets = _prepare(slug)
+    pdir, cfg, env, secrets, names = _prepare(slug)
     if graph not in cfg["graphs"]:
         raise ValueError(cfg["unsupported"].get(graph) or f"langgraph.json 沒有 graph「{graph}」")
     if opts.get("engine") not in ENGINES:
@@ -548,6 +578,7 @@ async def run(slug: str, graph: str, inp: Any, opts: dict[str, Any]) -> AsyncIte
     job = {"mode": "run", "project_dir": str(pdir), "graphs": cfg["graphs"], "graph": graph,
            "input": inp, "engine": opts["engine"], "model": opts.get("model"),
            "recursion_limit": opts.get("recursion_limit"), "extra_paths": store.extra_paths(slug),
+           "secret_env": names,
            "run_id": run_id, "interactive": interactive}
     proc = await _spawn(slug, pdir, env, job)
     live: dict[str, Any] = {"proc": proc, "waiting": None, "paused": 0.0}
@@ -561,7 +592,13 @@ async def run(slug: str, graph: str, inp: Any, opts: dict[str, Any]) -> AsyncIte
     stderr_tail: list[str] = []
 
     async def emit(ev: dict[str, Any]) -> None:
-        await queue.put(_redact(ev, secrets))
+        # _cut：{欄位: 長度}，遮罩之後才截短
+        cut = ev.pop("_cut", None) or {}
+        ev = _redact(ev, secrets)
+        for k, n in cut.items():
+            if isinstance(ev.get(k), str):
+                ev[k] = ev[k][:n]
+        await queue.put(ev)
 
     local_waiters: dict[str, asyncio.Future] = {}
 
@@ -585,7 +622,8 @@ async def run(slug: str, graph: str, inp: Any, opts: dict[str, Any]) -> AsyncIte
                                    opts, emit, local_call)
             reply = {"id": msg.get("id"), "result": result}
         except Exception as e:  # 回給工作流，讓它自己決定怎麼處理
-            log.warning("langgraph %s/%s webui_app.%s failed: %s", slug, graph, msg.get("fn"), e)
+            log.warning("langgraph %s/%s webui_app.%s failed: %s", slug, graph, msg.get("fn"),
+                        _redact(str(e), secrets))
             reply = {"id": msg.get("id"), "error": describe(e)}
             await emit({"type": "call_error", "node": msg.get("node") or "", "fn": msg.get("fn"),
                         "message": describe(e)})
@@ -600,7 +638,7 @@ async def run(slug: str, graph: str, inp: Any, opts: dict[str, Any]) -> AsyncIte
             try:
                 msg = json.loads(raw)
             except ValueError:
-                await emit({"type": "log", "text": raw.decode("utf-8", "replace").rstrip()[:4000]})
+                await emit({"type": "log", "text": _redact(raw.decode("utf-8", "replace").rstrip(), secrets)[:4000]})
                 continue
             if msg.get("type") == "call":
                 t = asyncio.create_task(answer(msg))
@@ -616,7 +654,8 @@ async def run(slug: str, graph: str, inp: Any, opts: dict[str, Any]) -> AsyncIte
     async def pump_stderr() -> None:
         assert proc.stderr is not None
         async for raw in proc.stderr:
-            line = raw.decode("utf-8", "replace").rstrip()
+            # 先遮罩再截短（秘密跨在 4000 字處也不留前幾個字）；執行器異常結束時尾巴會接在 error 事件後面
+            line = _redact(raw.decode("utf-8", "replace").rstrip(), secrets)
             stderr_tail.append(line)
             del stderr_tail[:-40]
             await emit({"type": "stderr", "text": line[:4000]})
@@ -662,12 +701,14 @@ async def run(slug: str, graph: str, inp: Any, opts: dict[str, Any]) -> AsyncIte
             code = proc.returncode
             reason = "已取消" if code in (-9, 137) else f"執行器結束（exit {code}）"
             tail = "\n".join(stderr_tail[-15:])
-            ev = {"type": "error", "message": reason + (f"\n{tail}" if tail and code not in (-9, 137) else "")}
+            ev = _redact({"type": "error", "message": reason + (f"\n{tail}" if tail and code not in (-9, 137) else "")},
+                         secrets)
             _note(ev, seen, outcome)
             yield ev
     finally:
         with contextlib.suppress(Exception):
-            history.finish(slug, run_id, events=seen, **outcome)
+            # 串流的字在 _note 併成一段：秘密被切在兩個 token 事件裡的話，併起來之後要再遮一次
+            history.finish(slug, run_id, events=_redact(seen, secrets), **_redact(outcome, secrets))
         _runs.pop(run_id, None)
         await _kill(proc)
         watcher.cancel()

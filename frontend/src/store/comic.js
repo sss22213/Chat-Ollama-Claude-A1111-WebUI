@@ -27,6 +27,7 @@ import { useChat } from "./chat";
 import { isExpressionTag, splitTags, tagKey } from "../comic/expressionTags";
 import { defaultTail } from "../comic/bubbleShape";
 import { autoName, findCard, hasName, sameName } from "../comic/names";
+import { comicT } from "../comic/comicI18n";
 import { deepRenameLoraTags } from "../lib/loraTags";
 
 // 作品內容（會存到伺服器的欄位）；這些欄位任一變動就 debounce 自動儲存
@@ -46,9 +47,54 @@ const PROJECT_KEYS = [
   "settings",
   "layout",
   "panels",
+  "panelsStory",
   "pageUrl",
 ];
 const AUTOSAVE_MS = 1500;
+// 自動儲存的計時器、進行中的儲存（同一時間只送一個 PUT，依序存）
+let _saveTimer = null;
+let _saving = null;
+// 每次作品內容變動 +1：儲存成功時內容沒再變過，才算存好（dirty=false）
+let _editSeq = 0;
+// 換作品（開別的作品 / 新作品 / 匯入）進行中：非同步步驟的結果等換完再決定寫到哪一份
+let _switching = null;
+// 寫回伺服器上「已不是目前開著的」原作品：依序做；換作品前先等它們做完，開到的才是新的
+let _remote = Promise.resolve();
+// 這個分頁刪掉的作品：之後的儲存 / 寫回都略過，不會被存回來
+const _deleted = new Set();
+// 進頁面的同步只跑一個（StrictMode / 很快地進出頁面時不會重複另存）
+let _syncing = null;
+// 存檔失敗後自動重試：3 秒、10 秒、30 秒，之後每 60 秒一次，直到存上去。
+// 只重試失敗的那份作品：換了作品、作品被刪、已經沒有待存的修改就不再試。
+// how：重試做什麼（預設再存一次；進頁面時連不上伺服器則是再對一次伺服器）
+const RETRY_MS = [3000, 10000, 30000, 60000];
+let _retryTimer = null;
+let _retryStep = 0;
+function scheduleRetry(id, how = "save") {
+  clearTimeout(_retryTimer);
+  const ms = RETRY_MS[Math.min(_retryStep, RETRY_MS.length - 1)];
+  _retryStep += 1;
+  _retryTimer = setTimeout(() => {
+    _retryTimer = null;
+    const st = useComic.getState();
+    if (st.projectId !== id || !st.dirty || st.remoteGone || _deleted.has(id) || _switching) return;
+    if (how === "sync") st.syncProject();
+    else st.saveProject();
+  }, ms);
+}
+function cancelRetry() {
+  clearTimeout(_retryTimer);
+  _retryTimer = null;
+  _retryStep = 0;
+}
+// 自動儲存的 debounce 計時器（編輯時、刪除失敗要恢復時用）
+function armAutosave() {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    useComic.getState().saveProject();
+  }, AUTOSAVE_MS);
+}
 // 分鏡版本：整份歷史存在伺服器（不設上限）；瀏覽器只快取最近幾版（含分鏡格內容），
 // 更早的版本預覽 / 回復時再向伺服器取
 const VERSION_CACHE = 5;
@@ -56,6 +102,35 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 const versionSummary = ({ panels, pending, ...rest }) => rest;
 
 const pickProject = (st) => Object.fromEntries(PROJECT_KEYS.map((k) => [k, st[k]]));
+const sameProject = (a, b) =>
+  PROJECT_KEYS.every((k) => JSON.stringify(a[k] ?? null) === JSON.stringify(b[k] ?? null));
+// 改作品裡某一格（作品可以是目前的 store 或伺服器上的那份）；找不到這格回 null
+const patchPanel = (proj, id, change) => {
+  const panels = Array.isArray(proj.panels) ? proj.panels : [];
+  const cur = panels.find((p) => p.id === id);
+  if (!cur) return null;
+  const patch = typeof change === "function" ? change(cur) : change;
+  return { panels: panels.map((p) => (p.id === id ? { ...p, ...patch } : p)) };
+};
+// 分鏡版本（本機快取與伺服器共用的格式）；story＝這組分鏡對應的故事
+const makeVersion = (panels, { label, premise, story }) => ({
+  id: uid(),
+  at: Date.now(),
+  label,
+  premise: premise || "",
+  story: story || "",
+  count: panels.length,
+  images: panels.filter((p) => p.image?.url).length,
+  cover: panels.find((p) => p.image?.url)?.image.url || "",
+  panels: clone(panels),
+});
+// AI 重新分鏡前存的版本用「這組分鏡當初依據的故事」：使用者常先改好故事再重新分鏡，
+// 存當下的故事會跟這組分鏡對不上。其他時候（手動、回復前）存畫面上的故事。
+const versionStory = (proj, label) =>
+  label === "auto" && typeof proj.panelsStory === "string" && proj.panelsStory.trim()
+    ? proj.panelsStory
+    : proj.story || "";
+const unsavedError = () => Object.assign(new Error("unsaved"), { code: "unsaved" });
 const projectIsEmpty = (st) =>
   !st.panels.length &&
   !st.premise.trim() &&
@@ -189,6 +264,75 @@ const panelScript = (p) => ({
   caption: (p.bubbles || []).find((b) => b.type === "caption")?.text || "",
 });
 
+// ---- 讀進作品時補齊欄位 ----
+// 直接打 API、手做的資料或很舊的作品可能少欄位、型別不對（例如格子沒有 bubbles）。從伺服器開作品、
+// 瀏覽器還原、取回版本、寫回原作品時都先整理一次，畫面和出圖才不會整頁掛掉；壞掉的格子 / 角色卡略過。
+const DEFAULT_STYLE = "masterpiece, best quality, amazing quality";
+const DEFAULT_NEGATIVE = "lowres, bad anatomy, worst quality, bad hands, text, watermark";
+const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
+const num = (v, d) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+const normBubble = (b) => {
+  const type = typeof b.type === "string" && b.type ? b.type : "speech";
+  return {
+    ...b,
+    id: b.id || uid(),
+    type,
+    tail: typeof b.tail === "string" && b.tail ? b.tail : defaultTail(type),
+    speaker: str(b.speaker),
+    text: str(b.text),
+    x: num(b.x, 0.5),
+    y: num(b.y, type === "caption" ? 0.88 : 0.25),
+    w: num(b.w, type === "caption" ? 0.86 : 0.42),
+  };
+};
+const normPanel = (p) => {
+  if (!isObj(p)) return null;
+  const image = isObj(p.image) && p.image.url ? p.image : null;
+  return {
+    ...newPanel(),
+    ...p,
+    id: p.id || uid(),
+    beat: str(p.beat),
+    prompt: str(p.prompt),
+    description: str(p.description),
+    expression: str(p.expression),
+    characters: Array.isArray(p.characters) ? p.characters.filter((n) => typeof n === "string") : [],
+    looks: isObj(p.looks) ? p.looks : {},
+    bubbles: Array.isArray(p.bubbles) ? p.bubbles.filter(isObj).map(normBubble) : [],
+    image,
+    status: typeof p.status === "string" && p.status ? p.status : image ? "done" : "idle",
+    error: str(p.error),
+    check: isObj(p.check) ? p.check : null,
+  };
+};
+const normCharacter = (c) => {
+  if (!isObj(c)) return null;
+  return {
+    ...newCharacter(),
+    ...c,
+    id: c.id || uid(),
+    // 舊卡只有 appearance：當成角色關鍵字（cardKeywords 的讀法不變）
+    keywords: typeof c.keywords === "string" ? c.keywords : str(c.appearance),
+    ...Object.fromEntries(["name", "lora", "features", "outfit", "pose", "scene", "parsed_from"].map((k) => [k, str(c[k])])),
+  };
+};
+// 回傳補齊後的作品（PROJECT_KEYS 以外的欄位，如 id / 時間戳，原樣保留）
+const normalizeProject = (p) => ({
+  ...p,
+  ...Object.fromEntries(["title", "premise", "story", "systemPrompt", "systemBase", "panelsStory", "pageUrl"].map((k) => [k, str(p[k])])),
+  skills: Array.isArray(p.skills) ? p.skills.filter((x) => typeof x === "string") : [],
+  promptMode: typeof p.promptMode === "string" && p.promptMode ? p.promptMode : "auto",
+  panelCount: num(p.panelCount, 6),
+  think: !!p.think,
+  style: typeof p.style === "string" ? p.style : DEFAULT_STYLE,
+  negative: typeof p.negative === "string" ? p.negative : DEFAULT_NEGATIVE,
+  characters: (Array.isArray(p.characters) ? p.characters : []).map(normCharacter).filter(Boolean),
+  settings: { ...DEFAULT_SETTINGS, ...(isObj(p.settings) ? p.settings : {}) },
+  layout: { ...DEFAULT_LAYOUT, ...(isObj(p.layout) ? p.layout : {}) },
+  panels: (Array.isArray(p.panels) ? p.panels : []).map(normPanel).filter(Boolean),
+});
+
 // 頂列選的引擎／模型（跟聊天頁共用），以及看圖檢查要用的模型
 function aiOptions(settings) {
   const chat = useChat.getState();
@@ -254,6 +398,7 @@ export const useComic = create(
       settings: { ...DEFAULT_SETTINGS },
       layout: { ...DEFAULT_LAYOUT },
       panels: [],
+      panelsStory: "", // 目前的分鏡格是依哪一版故事切的（AI 分鏡 / 回復版本時記下；存版本時用）
       view: "grid", // grid | page
       // ---- 伺服器端作品（永久保存）----
       projectId: null, // 伺服器上的作品 id；第一次有內容時建立
@@ -264,6 +409,12 @@ export const useComic = create(
       versions: [],
       savedAt: null, // 最後一次成功儲存的時間（伺服器時間戳）
       saveState: "idle", // idle | saving | saved | error
+      // 本機有還沒確認存上伺服器的修改（存檔失敗、存到一半、計時器還沒到就關頁）；會持久化，
+      // 下次進漫畫工作室時補存
+      dirty: false,
+      // 這份作品存上去過、現在伺服器上已經沒有了（在別的裝置 / 別處刪除）：不再自動存（不建回來），
+      // 本機修改留著，等使用者選「另存成新作品」或「捨棄」（執行期；重新整理後進頁面會再對一次）
+      remoteGone: false,
       _loading: false, // 從伺服器載入中（避免觸發自動儲存）
 
       // ---- 執行期（不持久化）----
@@ -533,6 +684,7 @@ export const useComic = create(
       // ---- 解析角色關鍵字：拆成人物特徵、預設服裝、範例姿勢、範例場景 ----
       // ids：只解析這些卡（不管有沒有解析過）；不給＝所有還沒解析的有名字的卡。
       // 關鍵字裡的 <lora:…> 不交給模型，角色卡還沒設 LoRA 時放進去。
+      // 結果只寫回發起時的作品（見 _applyResult）；回傳「把解析結果套到一組角色卡」的函式（沒解析回 null）。
       async parseCharacters(opts = {}) {
         const ai = { ...aiOptions(get().settings), ...opts };
         const todo = get().characters.filter(
@@ -541,7 +693,8 @@ export const useComic = create(
             cardKeywords(c) &&
             (opts.ids ? opts.ids.includes(c.id) : !isParsed(c))
         );
-        if (!todo.length || get().parsingCast) return;
+        if (!todo.length || get().parsingCast) return null;
+        const origin = get()._originId();
         set({ parsingCast: true });
         try {
           const data = await parseComicCharacters({
@@ -553,8 +706,8 @@ export const useComic = create(
             think: ai.engine === "ollama" || ai.engine === "strata" ? false : undefined,
           });
           const ids = new Set(todo.map((c) => c.id));
-          set((st) => ({
-            characters: st.characters.map((c) => {
+          const parsed = (cards) =>
+            cards.map((c) => {
               const r = ids.has(c.id) && (data.cards || []).find((x) => sameName(x.name, c.name));
               if (!r) return c;
               return {
@@ -567,8 +720,9 @@ export const useComic = create(
                 parsed_from: cardKeywords(c),
                 lora: c.lora || (r.loras || []).join(", "),
               };
-            }),
-          }));
+            });
+          await get()._applyResult(origin, (proj) => ({ characters: parsed(proj.characters || []) }));
+          return parsed;
         } finally {
           set({ parsingCast: false });
         }
@@ -576,14 +730,18 @@ export const useComic = create(
 
       // ---- AI 撰寫故事（分鏡的依據）----
       // 已有故事時是改寫：照 instruction 改；沒給意見就重寫一個不同的版本。標題空的話順便帶入。
+      // 結果只寫回發起時的作品：途中換了作品就存到伺服器上的原作品並提示（見 _applyResult）。
       async writeStory({ engine, model, lang, numCtx, instruction = "" }) {
         const st = get();
         if (st.storyWriting || (!st.premise.trim() && !st.story.trim())) return;
         get()._namedCast(lang);
+        const origin = get()._originId();
+        const cards = get().characters;
         set({ storyWriting: true, notices: [] });
         try {
-          await get().parseCharacters({ engine, model, lang, numCtx });
-          const cast = get().characters;
+          const parsed = await get().parseCharacters({ engine, model, lang, numCtx });
+          // 解析途中換了作品：用發起時那份的角色卡（套上解析結果），不拿目前開著的
+          const cast = get().projectId === origin ? get().characters : parsed ? parsed(cards) : cards;
           const data = await writeComicStory({
             engine,
             model,
@@ -597,25 +755,29 @@ export const useComic = create(
             num_ctx: numCtx,
             think: engine === "ollama" || engine === "strata" ? st.think : undefined,
           });
-          set({
+          const local = await get()._applyResult(origin, (proj) => ({
             story: data.story || "",
-            notices: Array.isArray(data.notices) ? data.notices : [],
-            ...(!get().title.trim() && data.title ? { title: data.title } : {}),
-          });
+            ...(!(proj.title || "").trim() && data.title ? { title: data.title } : {}),
+          }));
+          if (local) set({ notices: Array.isArray(data.notices) ? data.notices : [] });
         } finally {
           set({ storyWriting: false });
         }
       },
 
       // ---- 依故事生成分鏡 ----
+      // 結果只寫回發起時的作品：途中換了作品就存到伺服器上的原作品（原本的分鏡先存成一版）並提示。
       async generateStoryboard({ engine, model, lang, numCtx }) {
         const { premise, story, panelCount, style, systemPrompt, systemBase, think, skills, promptMode } =
           get();
         if (!story.trim() || get().storyboarding) return;
         get()._namedCast(lang);
+        const origin = get()._originId();
+        const cards = get().characters;
+        const checkpoint = get().settings.sd_model_checkpoint || "";
         // 模型回的名字對回卡片上的寫法（後端已做過一次；這裡再保險，對不上的原樣保留）
-        const canon = (names) => {
-          const cast = get().characters.filter((c) => c.name.trim());
+        const canon = (list, names) => {
+          const cast = list.filter((c) => (c.name || "").trim());
           const out = [];
           for (const n of Array.isArray(names) ? names : []) {
             const v = findCard(cast, n)?.name ?? n;
@@ -625,8 +787,9 @@ export const useComic = create(
         };
         set({ storyboarding: true, notices: [] });
         try {
-          await get().parseCharacters({ engine, model, lang, numCtx });
-          const cast = get().characters.filter((c) => c.name.trim());
+          const parsed = await get().parseCharacters({ engine, model, lang, numCtx });
+          const all = get().projectId === origin ? get().characters : parsed ? parsed(cards) : cards;
+          const cast = all.filter((c) => c.name.trim());
           const data = await generateStoryboard({
             engine,
             model,
@@ -642,21 +805,27 @@ export const useComic = create(
             system_base: systemBase,
             skills,
             prompt_mode: promptMode,
-            checkpoint: get().settings.sd_model_checkpoint || "",
+            checkpoint,
           });
-          const panels = (data.panels || []).map((p) =>
-            newPanel({
-              beat: p.beat || "",
-              prompt: p.prompt || "",
-              description: p.description || "",
-              expression: p.expression || "",
-              characters: canon(p.characters),
-              looks: panelLooks(p),
-              bubbles: bubblesFromScript(p.dialogue, p.caption),
-            })
+          const local = await get()._applyResult(
+            origin,
+            (proj) => ({
+              panels: (data.panels || []).map((p) =>
+                newPanel({
+                  beat: p.beat || "",
+                  prompt: p.prompt || "",
+                  description: p.description || "",
+                  expression: p.expression || "",
+                  characters: canon(proj.characters || [], p.characters),
+                  looks: panelLooks(p),
+                  bubbles: bubblesFromScript(p.dialogue, p.caption),
+                })
+              ),
+              panelsStory: story, // 這組分鏡依據的故事（之後改了故事再分鏡，存版本時用它）
+            }),
+            { snapshot: true }
           );
-          get().snapshotPanels("auto");
-          set({ panels, notices: Array.isArray(data.notices) ? data.notices : [] });
+          if (local) set({ notices: Array.isArray(data.notices) ? data.notices : [] });
         } finally {
           set({ storyboarding: false });
         }
@@ -669,6 +838,7 @@ export const useComic = create(
         const st = get();
         const index = st.panels.findIndex((p) => p.id === id);
         if (index < 0 || st.promptBusy[id]) return;
+        const origin = get()._originId();
         set({
           promptBusy: { ...st.promptBusy, [id]: true },
           promptError: { ...st.promptError, [id]: "" },
@@ -692,8 +862,22 @@ export const useComic = create(
             prompt_mode: st.promptMode,
             checkpoint: st.settings.sd_model_checkpoint || "",
           });
-          const cur = get().panels.find((p) => p.id === id);
-          if (!cur) return;
+          // 只寫回發起時的作品（途中換了作品就存到伺服器上的原作品，見 _applyResult）
+          let cur = null;
+          const local = await get()._applyResult(origin, (proj) =>
+            patchPanel(proj, id, (p) => {
+              cur = p;
+              return {
+                prompt: data.prompt || p.prompt,
+                expression: data.expression || p.expression,
+                // 這次判定只寫標籤（非 Anima）就清掉舊句子，讓這格和新的標籤一致；復原可換回
+                description: data.sentences ? data.description || p.description || "" : "",
+                // 角色卡解析過時，重寫也會調整各角色這格的姿勢、服裝、特徵
+                ...(data.looks && typeof data.looks === "object" ? { looks: data.looks, outfits: undefined } : {}),
+              };
+            })
+          );
+          if (!local || !cur) return;
           set({
             promptUndo: {
               ...get().promptUndo,
@@ -704,14 +888,6 @@ export const useComic = create(
                 looks: panelLooks(cur),
               },
             },
-          });
-          get().setPanel(id, {
-            prompt: data.prompt || cur.prompt,
-            expression: data.expression || cur.expression,
-            // 這次判定只寫標籤（非 Anima）就清掉舊句子，讓這格和新的標籤一致；復原可換回
-            description: data.sentences ? data.description || cur.description || "" : "",
-            // 角色卡解析過時，重寫也會調整各角色這格的姿勢、服裝、特徵
-            ...(data.looks && typeof data.looks === "object" ? { looks: data.looks, outfits: undefined } : {}),
           });
           if (Array.isArray(data.notices) && data.notices.length) set({ notices: data.notices });
         } catch (e) {
@@ -750,26 +926,23 @@ export const useComic = create(
       snapshotPanels(label = "manual") {
         const st = get();
         if (!st.panels.length) return null;
+        const story = versionStory(st, label);
         const json = JSON.stringify(st.panels);
-        if (st.versions.some((v) => v.panels && JSON.stringify(v.panels) === json)) return null;
-        if (!st.projectId) set({ projectId: uid() }); // 版本掛在作品 id 下；作品本身由自動儲存補上
-        const version = {
-          id: uid(),
-          at: Date.now(),
-          label,
-          premise: st.premise,
-          story: st.story,
-          count: st.panels.length,
-          images: st.panels.filter((p) => p.image?.url).length,
-          cover: st.panels.find((p) => p.image?.url)?.image.url || "",
-          panels: clone(st.panels),
-        };
+        if (st.versions.some((v) => v.panels && JSON.stringify(v.panels) === json && (v.story || "") === story))
+          return null;
+        const pid = get()._originId(); // 版本掛在作品 id 下；作品本身由自動儲存補上
+        const version = makeVersion(st.panels, { label, premise: st.premise, story });
         set({ versions: [{ ...version, pending: true }, ...st.versions].slice(0, VERSION_CACHE) });
-        return get().pushVersion(version);
+        return get().pushVersion(version, pid);
       },
-      async pushVersion(version) {
+      // pid：版本屬於哪份作品（送出時就決定，途中換了作品也不會存到別份）。
+      // 作品還沒存上去過、已在別處刪除、或在這個分頁刪掉時不送（後端也會拒絕），版本留在本機快取標
+      // pending：存上去 / 另存成新作品後由 flushVersions 補送到那個 id，選「捨棄」就跟著丟掉。
+      async pushVersion(version, pid = get().projectId) {
+        const st = get();
+        if (_deleted.has(pid) || (pid === st.projectId && (st.remoteGone || !st.savedAt))) return null;
         try {
-          const r = await addComicVersion(get().projectId, version);
+          const r = await addComicVersion(pid, version);
           set((st) => ({
             versions: r.duplicate
               ? st.versions.filter((v) => v.id !== version.id) // 伺服器已有一模一樣的版本
@@ -781,14 +954,17 @@ export const useComic = create(
         }
       },
       async flushVersions() {
+        const pid = get().projectId;
+        if (get().remoteGone) return; // 已在別處刪除：等另存成新作品後再送
         for (const v of get().versions.filter((x) => x.pending && x.panels)) {
-          await get().pushVersion({ ...v, pending: undefined });
+          if (get().projectId !== pid) return; // 換了作品：剩下的是原作品的，下次開它存好時再補
+          await get().pushVersion({ ...v, pending: undefined }, pid);
         }
       },
-      // 版本清單：伺服器的完整歷史（摘要）；取不到就退回本機快取
+      // 版本清單：伺服器的完整歷史（摘要）；取不到、或作品已在別處刪除時用本機快取
       async listVersions() {
         const id = get().projectId;
-        if (!id) return get().versions.map(versionSummary);
+        if (!id || get().remoteGone) return get().versions.map(versionSummary);
         try {
           return await listComicVersions(id);
         } catch {
@@ -798,13 +974,16 @@ export const useComic = create(
       // 整份版本（含分鏡格）：快取有就用，沒有再向伺服器取
       async getVersion(id) {
         const cached = get().versions.find((v) => v.id === id);
-        if (cached?.panels) return cached;
-        return getComicVersion(get().projectId, id);
+        const v = cached?.panels ? cached : await getComicVersion(get().projectId, id);
+        // 伺服器上的版本可能是手做 / 很舊的資料：格子補齊欄位（預覽和回復都用這份）
+        return v && { ...v, panels: (Array.isArray(v.panels) ? v.panels : []).map(normPanel).filter(Boolean) };
       },
       async restoreVersion(id) {
+        const pid = get().projectId;
         const v = await get().getVersion(id);
-        if (!v?.panels) return;
+        if (!v?.panels?.length || get().projectId !== pid) return; // 取版本的途中換了作品
         get().snapshotPanels("beforeRestore"); // 目前的也留一版，回復不會丟東西
+        const story = typeof v.story === "string" && v.story.trim() ? v.story : "";
         set({
           panels: clone(v.panels).map((p) => ({
             ...p,
@@ -812,8 +991,9 @@ export const useComic = create(
             error: "",
             check: isCheckBusy(p.check) ? null : p.check || null,
           })),
-          // 那一版當時的故事（舊版本沒有就保留目前的）
-          ...(typeof v.story === "string" && v.story.trim() ? { story: v.story } : {}),
+          // 那一版當時的故事（舊版本沒存故事就保留目前的）
+          ...(story ? { story } : {}),
+          panelsStory: story,
           view: "grid",
         });
       },
@@ -825,8 +1005,11 @@ export const useComic = create(
       // ---- 出圖 ----
       // 出圖 → 看圖檢查；不符合就依檢查意見重寫這格關鍵字再畫，最多 MAX_AUTO_FIX 次，
       // 還不符合就標「待人工確認」。種子照「鎖定種子」：鎖定時同一個，不鎖定時每次隨機。
+      // 途中換了作品就停（出好的圖由 _renderPanel 存回原作品）。
       async generatePanel(id) {
+        if (!get().panels.some((p) => p.id === id)) return;
         const ai = aiOptions(get().settings);
+        const origin = get()._originId();
         get().setPanel(id, { check: null });
         for (let attempts = 0; ; ) {
           if (!(await get()._renderPanel(id))) return;
@@ -834,6 +1017,7 @@ export const useComic = create(
           let res;
           try {
             res = await get().checkPanel(id, ai);
+            if (get().projectId !== origin) return; // 檢查途中換了作品：結果不寫到別份
           } catch (e) {
             get().setPanel(id, {
               check: { status: "error", attempts, problems: [e.message || "failed"] },
@@ -863,7 +1047,8 @@ export const useComic = create(
         }
       },
 
-      // 只出圖（不檢查）；成功回 true
+      // 只出圖（不檢查）；成功且還開著同一份作品回 true。
+      // 出圖途中換了作品：圖存回伺服器上的原作品那格（見 _applyResult），回 false。
       async _renderPanel(id) {
         const panel = get().panels.find((p) => p.id === id);
         if (!panel) return false;
@@ -872,16 +1057,18 @@ export const useComic = create(
           get().setPanel(id, { status: "error", error: "empty prompt" });
           return false;
         }
+        const origin = get()._originId();
         get().setPanel(id, { status: "generating", error: "" });
         try {
           const r = await generateImage(prompt, get().composeImageSettings());
-          get().setPanel(id, {
-            status: "done",
-            error: "",
-            image: { url: r.url, params: r.params, info: r.info || "" },
-            seed: r.seed ?? r.params?.seed, // 實際用到的（不鎖定時送 -1，A1111 抽的那個）
-          });
-          return true;
+          return await get()._applyResult(origin, (proj) =>
+            patchPanel(proj, id, {
+              status: "done",
+              error: "",
+              image: { url: r.url, params: r.params, info: r.info || "" },
+              seed: r.seed ?? r.params?.seed, // 實際用到的（不鎖定時送 -1，A1111 抽的那個）
+            })
+          );
         } catch (e) {
           get().setPanel(id, { status: "error", error: e.message || "failed" });
           return false;
@@ -914,11 +1101,13 @@ export const useComic = create(
       async generateAll() {
         const ids = get().panels.map((p) => p.id);
         if (!ids.length || get().genProgress) return;
+        const origin = get()._originId();
         // 鎖定種子時先固定一次，確保全部用同一個
         get()._resolvedSeed();
         set({ genProgress: { done: 0, total: ids.length } });
         try {
           for (let i = 0; i < ids.length; i++) {
+            if (get().projectId !== origin) break; // 換了作品：剩下的格子不再畫
             await get().generatePanel(ids[i]);
             set({ genProgress: { done: i + 1, total: ids.length } });
           }
@@ -942,10 +1131,15 @@ export const useComic = create(
         }));
       },
 
-      // 由「圖片說故事」等外部來源匯入整份腳本（角色卡 + 分鏡格），覆蓋目前的角色與分鏡。
-      // panels 為空時只帶入標題與劇情（例如把生成的故事當作劇情大綱，之後再按「AI 生成分鏡」）。
-      importScript({ title = "", premise = "", story = "", style = "", characters = [], panels = [] }) {
-        get().snapshotPanels("import");
+      // 由「圖片說故事」等外部來源匯入整份腳本（角色卡 + 分鏡格）：一律建立一份新作品（新的
+      // projectId），原本開著的作品一個欄位都不動。換之前先把目前作品待存的修改存好（存不上去丟
+      // code="unsaved"，畫面問過使用者後可帶 { discard: true }）。出圖設定、畫風品質詞、負面提示詞、
+      // 額外指示等沿用目前作品的；版本快取從空的開始。匯入後馬上存一次，作品庫就看得到。
+      // panels 為空時只帶入標題與故事（例如把生成的故事當劇情，之後再按「依故事生成分鏡」）。
+      async importScript(
+        { title = "", premise = "", story = "", style = "", characters = [], panels = [] },
+        opts = {}
+      ) {
         const cast = (characters || [])
           .filter((c) => (c?.name || "").trim())
           .map((c) => ({
@@ -954,38 +1148,52 @@ export const useComic = create(
             keywords: c.appearance || "", // 圖片說故事推得的外觀 tag 當角色關鍵字，下次寫故事 / 分鏡時解析
           }));
         const names = cast.map((c) => c.name);
-        // 畫風：保留既有的品質詞，把推得的畫風接在後面（重複 tag 由 composePrompt 去重）
-        const cur = (get().style || "").trim().replace(/[,，\s]*$/, "");
-        const extra = (style || "").trim();
-        const mergedStyle =
-          extra && !cur.toLowerCase().includes(extra.toLowerCase())
-            ? cur
-              ? `${cur}, ${extra}`
-              : extra
-            : cur;
-        set({
-          title: title || "",
-          premise: premise || "",
-          story: story || "",
-          style: mergedStyle,
-          characters: cast,
-          panels: (panels || []).map((p) =>
-            newPanel({
-              beat: p.beat || "",
-              prompt: p.prompt || "",
-              description: p.description || "",
-              expression: p.expression || "",
-              characters: (p.characters || [])
-                .map((n) => names.find((m) => sameName(m, n)))
-                .filter((n, i, arr) => n && arr.indexOf(n) === i),
-              bubbles: bubblesFromScript(p.dialogue, p.caption),
-              // 「圖片分鏡」：上傳圖已存在後端，直接當這格的圖（不必出圖；重新生成會覆蓋）
-              image: p.image_url ? { url: p.image_url, params: null, info: "" } : null,
-              status: p.image_url ? "done" : "idle",
-            })
-          ),
-          view: "grid",
-        });
+        await get()._switchProject(async () => {
+          // 畫風：保留既有的品質詞，把推得的畫風接在後面（重複 tag 由 composePrompt 去重）
+          const cur = (get().style || "").trim().replace(/[,，\s]*$/, "");
+          const extra = (style || "").trim();
+          const mergedStyle =
+            extra && !cur.toLowerCase().includes(extra.toLowerCase())
+              ? cur
+                ? `${cur}, ${extra}`
+                : extra
+              : cur;
+          set({ _loading: true });
+          set({
+            projectId: uid(),
+            pageUrl: "",
+            savedAt: null,
+            saveState: "idle",
+            versions: [],
+            dirty: true,
+            remoteGone: false,
+            notices: [],
+            title: title || "",
+            premise: premise || "",
+            story: story || "",
+            panelsStory: story || "",
+            style: mergedStyle,
+            characters: cast,
+            panels: (panels || []).map((p) =>
+              newPanel({
+                beat: p.beat || "",
+                prompt: p.prompt || "",
+                description: p.description || "",
+                expression: p.expression || "",
+                characters: (p.characters || [])
+                  .map((n) => names.find((m) => sameName(m, n)))
+                  .filter((n, i, arr) => n && arr.indexOf(n) === i),
+                bubbles: bubblesFromScript(p.dialogue, p.caption),
+                // 「圖片分鏡」：上傳圖已存在後端，直接當這格的圖（不必出圖；重新生成會覆蓋）
+                image: p.image_url ? { url: p.image_url, params: null, info: "" } : null,
+                status: p.image_url ? "done" : "idle",
+              })
+            ),
+            view: "grid",
+          });
+          set({ _loading: false });
+        }, opts);
+        await get().saveProject();
       },
 
       reset() {
@@ -1005,6 +1213,7 @@ export const useComic = create(
           settings: { ...DEFAULT_SETTINGS },
           layout: { ...DEFAULT_LAYOUT },
           panels: [],
+          panelsStory: "",
           versions: [],
           view: "grid",
         });
@@ -1013,64 +1222,296 @@ export const useComic = create(
       // ---- 伺服器端作品：自動儲存 / 作品庫 ----
       // 分鏡、角色卡、出圖結果等一有變動就（debounce）整份 PUT 到後端，存進 DATA_DIR 的
       // SQLite；圖片本來就在圖片目錄。重啟容器、清瀏覽器資料、換裝置都還在。
+      // 同一時間只送一個 PUT：前一個還沒回來就排在它後面，舊內容不會後到蓋掉新內容。
       async saveProject() {
+        const run = (_saving || Promise.resolve()).catch(() => {}).then(() => get()._putProject());
+        _saving = run;
+        try {
+          await run;
+        } finally {
+          if (_saving === run) _saving = null;
+        }
+      },
+      async _putProject() {
         const st = get();
         if (st._loading) return;
         let id = st.projectId;
         if (!id) {
-          if (projectIsEmpty(st)) return; // 全空的工作區不建作品
+          if (projectIsEmpty(st)) {
+            if (st.dirty) set({ dirty: false }); // 全空的工作區不建作品，也沒有要存的
+            return;
+          }
           id = uid();
           set({ projectId: id });
         }
+        if (_deleted.has(id)) {
+          cancelRetry();
+          set({ dirty: false }); // 這個分頁剛刪掉的作品：不存回去
+          return;
+        }
+        if (st.remoteGone) return; // 已在別處刪除：等使用者決定，不建回來
+        const seq = _editSeq;
+        clearTimeout(_retryTimer); // 這次就是在存了；失敗再排下一次
+        _retryTimer = null;
         set({ saveState: "saving" });
         try {
+          // 存上去過的作品先確認伺服器上還在：在別處刪除了就不建回來（PUT 會整份新建）。
+          // 只有從沒存上去過的新作品（savedAt 是空的）可以直接建立。
+          if (get().savedAt) {
+            try {
+              await getComic(id);
+            } catch (e) {
+              if (e?.status !== 404) throw e;
+              get()._markRemoteGone(id);
+              return;
+            }
+          }
           const saved = await putComic({ id, ...pickProject(get()) });
-          set({ savedAt: saved.updated_at, saveState: "saved" });
+          if (get().projectId !== id) return;
+          _retryStep = 0;
+          // 存的途中又改過：還不算存好（計時器會再存一次）
+          set({ savedAt: saved.updated_at, saveState: "saved", ...(seq === _editSeq ? { dirty: false } : {}) });
           get().flushVersions();
         } catch {
+          if (get().projectId !== id) return;
           set({ saveState: "error" });
+          scheduleRetry(id);
         }
+      },
+      // 把目前作品待存的修改馬上存好（換作品前用）；存好或本來就沒有待存的回 true
+      async _flushSave() {
+        clearTimeout(_saveTimer);
+        _saveTimer = null;
+        if (_saving) await _saving.catch(() => {});
+        // 存的途中又有修改（例如 AI 的結果剛好回來）就再存一次
+        for (let i = 0; i < 3 && get().dirty; i++) {
+          await get().saveProject();
+          if (get().saveState === "error") break;
+        }
+        return !get().dirty;
+      },
+      // 換到別的作品（開作品 / 新作品 / 匯入都走這裡）：先把目前作品待存的修改存好再換。
+      // 存不上去就不換、丟出 code="unsaved" 的錯誤；畫面問過使用者後可帶 { discard: true } 再呼叫
+      // （不存、直接換；刪除目前作品、或本機修改已另存時也用它）。
+      async _switchProject(load, { discard = false } = {}) {
+        while (_switching) await _switching.catch(() => {});
+        const run = (async () => {
+          if (!discard && !(await get()._flushSave()))
+            throw Object.assign(unsavedError(), { gone: get().remoteGone }); // gone：存不上去是因為已在別處刪除
+          cancelRetry(); // 換作品後不再重試舊作品
+          clearTimeout(_saveTimer);
+          _saveTimer = null;
+          if (_saving) await _saving.catch(() => {});
+          await _remote.catch(() => {}); // 寫回原作品的結果做完，開到的才是新的
+          await load();
+        })();
+        _switching = run;
+        try {
+          await run;
+        } finally {
+          if (_switching === run) _switching = null;
+        }
+      },
+      // 非同步步驟發起時先確定作品 id：結果回來時才知道要寫回哪一份
+      _originId() {
+        let id = get().projectId;
+        if (!id) {
+          id = uid();
+          set({ projectId: id, ...(projectIsEmpty(get()) ? {} : { dirty: true }) });
+        }
+        return id;
+      },
+      // 非同步步驟（寫故事、分鏡、解析角色、單格重寫關鍵字、出圖）的結果只寫回「發起時的作品」：
+      // 還開著同一份就直接改；已經換到別的作品，就改伺服器上原作品那份（目前開著的作品不動、
+      // 也不替它存版本），並在畫面上提示。原作品已刪除或存不上去就丟棄並提示。
+      // patch(作品)：由作品內容算出要改的欄位，回 null＝不用改；snapshot：改分鏡前先把原本的存成一版。
+      // 回傳 true＝改在目前開著的作品上。
+      async _applyResult(origin, patch, { snapshot = false } = {}) {
+        while (_switching) await _switching.catch(() => {});
+        if (get().projectId === origin) {
+          const change = patch(get());
+          if (change) {
+            if (snapshot) get().snapshotPanels("auto");
+            set(change);
+          }
+          return true;
+        }
+        const job = _remote
+          .catch(() => {})
+          .then(async () => {
+            if (_deleted.has(origin)) throw new Error("deleted");
+            const data = normalizeProject(await getComic(origin));
+            const change = patch(data);
+            if (change) {
+              if (snapshot && Array.isArray(data.panels) && data.panels.length) {
+                const v = makeVersion(data.panels, {
+                  label: "auto",
+                  premise: data.premise,
+                  story: versionStory(data, "auto"),
+                });
+                await addComicVersion(origin, v).catch(() => {});
+              }
+              await putComic({ ...data, ...change, id: origin });
+            }
+            return data.title || "";
+          });
+        _remote = job;
+        try {
+          get()._notice({ code: "saved_to_origin", title: await job });
+        } catch {
+          get()._notice({ code: "result_dropped" });
+        }
+        return false;
+      },
+      // 畫面提示（同一種、同一份作品的只留一則）
+      _notice(n) {
+        set((st) => ({
+          notices: [...st.notices.filter((x) => !(x.code === n.code && x.title === n.title)), n],
+        }));
+      },
+      // 目前作品已在別處刪除：停止自動儲存與重試，畫面提示（本機修改留著）
+      _markRemoteGone(id) {
+        if (get().projectId !== id) return;
+        cancelRetry();
+        clearTimeout(_saveTimer);
+        _saveTimer = null;
+        set({ remoteGone: true, saveState: "gone" });
+      },
+      // 已在別處刪除的作品：本機這份另存成新作品（新 id；本機快取的版本也一起補送到新作品）
+      async keepAsNewProject() {
+        if (!get().remoteGone) return;
+        set({
+          projectId: uid(),
+          savedAt: null,
+          remoteGone: false,
+          saveState: "idle",
+          dirty: true,
+          versions: get().versions.map((v) => ({ ...v, pending: !!v.panels })),
+        });
+        await get().saveProject();
       },
       async listProjects() {
         return listComics();
       },
-      async openProject(id) {
-        set({ _loading: true });
-        try {
-          const data = await getComic(id);
-          get().reset(); // 也清掉上一份作品的版本快取
-          set({
-            ...pickProject({ ...get(), ...data }),
-            projectId: id,
-            savedAt: data.updated_at || null,
-            saveState: "saved",
-            view: "grid",
-          });
-          get().settlePanels();
-        } finally {
-          set({ _loading: false });
-        }
+      async openProject(id, opts = {}) {
+        await get()._switchProject(async () => {
+          set({ _loading: true });
+          try {
+            const data = await getComic(id);
+            get().reset(); // 也清掉上一份作品的版本快取
+            set({
+              ...pickProject(normalizeProject({ ...get(), ...data })),
+              projectId: id,
+              savedAt: data.updated_at || null,
+              saveState: "saved",
+              dirty: false,
+              remoteGone: false,
+              view: "grid",
+            });
+            get().settlePanels();
+          } finally {
+            set({ _loading: false });
+          }
+        }, opts);
       },
-      newProject() {
-        get().reset();
-        set({ projectId: null, pageUrl: "", savedAt: null, saveState: "idle" });
+      async newProject(opts = {}) {
+        await get()._switchProject(async () => {
+          set({ _loading: true });
+          get().reset();
+          set({ projectId: null, pageUrl: "", savedAt: null, saveState: "idle", dirty: false, remoteGone: false });
+          set({ _loading: false });
+        }, opts);
       },
       async deleteProject(id) {
-        await deleteComicRemote(id);
-        if (get().projectId === id) get().newProject();
-      },
-      // 進入頁面時對一次伺服器：別的裝置改得比較新就用伺服器的；伺服器沒有（資料被清）就重新存上去
-      async syncProject() {
-        get().settlePanels();
-        const { projectId, savedAt } = get();
-        if (!projectId) return;
-        try {
-          const data = await getComic(projectId);
-          if ((data.updated_at || 0) > (savedAt || 0) + 1) await get().openProject(projectId);
-          else set({ saveState: "saved", savedAt: data.updated_at || savedAt });
-        } catch (e) {
-          if (e?.status === 404) get().saveProject();
+        _deleted.add(id);
+        const current = get().projectId === id;
+        const retrying = current && _retryTimer !== null;
+        const step = _retryStep;
+        const pending = current && _saveTimer !== null;
+        if (current) {
+          cancelRetry();
+          clearTimeout(_saveTimer);
+          _saveTimer = null;
+          if (_saving) await _saving.catch(() => {});
         }
+        try {
+          await deleteComicRemote(id);
+        } catch (e) {
+          _deleted.delete(id);
+          // 沒刪成、還開著這份：恢復刪除前的自動儲存 / 重試（有待存的修改才需要）
+          if (get().projectId === id && get().dirty) {
+            if (retrying || get().saveState === "error") {
+              _retryStep = Math.max(0, step - 1);
+              scheduleRetry(id);
+            } else if (pending) armAutosave();
+          }
+          throw e;
+        }
+        if (get().projectId === id) await get().newProject({ discard: true });
+      },
+      // 進入頁面時對一次伺服器：
+      // - 別的裝置改得比較新就用伺服器的；本機這時也有沒存上去的修改，就先把本機這份另存成
+      //   一份新作品（標題加註）再載入，兩邊都不丟，並在畫面上提示。
+      // - 伺服器沒有比較新、本機有沒存上去的修改（存檔失敗、存到一半、計時器還沒到就關頁）：
+      //   馬上存上去，存成功才顯示「已儲存」。
+      // - 伺服器沒有：存上去過的＝在別處刪除，不建回來、提示；從沒存上去過的新作品才建立。
+      syncProject() {
+        if (!_syncing) _syncing = get()._syncProject().finally(() => (_syncing = null));
+        return _syncing;
+      },
+      async _syncProject() {
+        const wasDirty = get().dirty;
+        const local = pickProject(get()); // 整理「生成中」之前的內容（跟伺服器比對用）
+        get().settlePanels();
+        const seq = _editSeq;
+        if (_switching) return; // 換作品中：換的那邊會把作品載好、存好
+        if (_saving) await _saving.catch(() => {});
+        const { projectId, savedAt } = get();
+        if (!projectId) {
+          if (get().dirty) await get().saveProject();
+          return;
+        }
+        let data;
+        try {
+          data = await getComic(projectId);
+        } catch (e) {
+          if (e?.status === 404) {
+            // 存上去過、現在不在了＝在別處刪除：不建回來，提示；從沒存上去過的新作品才建立
+            if (_deleted.has(projectId)) return;
+            if (savedAt) get()._markRemoteGone(projectId);
+            else get().saveProject();
+          } else if (get().dirty && get().projectId === projectId) {
+            // 連不上伺服器、本機又有沒存上去的修改：標成失敗，稍後再對一次
+            set({ saveState: "error" });
+            scheduleRetry(projectId, "sync");
+          }
+          return;
+        }
+        if (get().projectId !== projectId || _switching) return;
+        if ((data.updated_at || 0) > (savedAt || 0) + 1) {
+          const edited = _editSeq !== seq; // 對伺服器的途中又改了
+          if (!wasDirty && !edited) {
+            await get().openProject(projectId, { discard: true });
+            return;
+          }
+          const mine = edited ? pickProject(get()) : local;
+          if (!sameProject(normalizeProject(data), mine)) {
+            const title = comicT("localCopyTitle", { title: mine.title || comicT("untitled") });
+            try {
+              await putComic({ ...mine, id: uid(), title });
+            } catch {
+              set({ saveState: "error" }); // 另存不了就先不換，本機修改留著，下次再試
+              return;
+            }
+            await get().openProject(projectId, { discard: true });
+            get()._notice({ code: "local_copy", title });
+            return;
+          }
+          // 伺服器那份就是本機這份（上次存到一半就關頁，其實已經存上去了）
+          set({ savedAt: data.updated_at });
+        }
+        if (get().dirty) await get()._flushSave();
+        else set({ saveState: "saved", savedAt: data.updated_at || savedAt });
       },
       // 匯出整頁 PNG 後，同一張圖也存進圖片目錄並記在作品上（作品庫縮圖）
       async savePage(dataUrl) {
@@ -1079,12 +1520,17 @@ export const useComic = create(
         const id = get().projectId;
         if (!id) return;
         const { url } = await saveComicPage(id, dataUrl);
-        set({ pageUrl: url });
+        if (get().projectId === id) set({ pageUrl: url }); // 存的途中換了作品：後端已記在原作品上
       },
     }),
     {
       name: "webui-comic",
       storage: createJSONStorage(() => localStorage),
+      // 瀏覽器裡存的作品也可能少欄位（手做 / 很舊的資料）：還原時補齊
+      merge: (persisted, current) => {
+        const st = { ...current, ...(isObj(persisted) ? persisted : {}) };
+        return { ...st, ...pickProject(normalizeProject(st)) };
+      },
       // 不持久化執行期旗標
       partialize: (st) => ({
         title: st.title,
@@ -1102,22 +1548,24 @@ export const useComic = create(
         settings: st.settings,
         layout: st.layout,
         panels: st.panels,
+        panelsStory: st.panelsStory,
         view: st.view,
         projectId: st.projectId,
         pageUrl: st.pageUrl,
         versions: st.versions,
         savedAt: st.savedAt,
+        dirty: st.dirty,
       }),
     }
   )
 );
 
-// 自動儲存：作品欄位任一變動就 debounce 後整份存到伺服器
-let _saveTimer = null;
+// 自動儲存：作品欄位任一變動就標成未存（dirty），debounce 後整份存到伺服器
 useComic.subscribe((st, prev) => {
   if (st._loading) return;
   if (!PROJECT_KEYS.some((k) => st[k] !== prev[k])) return;
   if (!st.projectId && projectIsEmpty(st)) return;
-  clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(() => useComic.getState().saveProject(), AUTOSAVE_MS);
+  _editSeq += 1;
+  if (!st.dirty) useComic.setState({ dirty: true });
+  armAutosave();
 });

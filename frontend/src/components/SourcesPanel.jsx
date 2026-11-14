@@ -31,10 +31,21 @@ const SERVICES = [
 ];
 const SECRET_FIELDS = ["api_key", "mcp_token", "ch_mcp_token"];
 
+// 網址的 origin（scheme + host + port），跟後端 settings_store.same_origin 同一套比法；解析不了回空字串
+function originOf(url) {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.hostname.toLowerCase()}:${u.port || (u.protocol === "https:" ? "443" : "80")}`;
+  } catch {
+    return "";
+  }
+}
+const urlOf = (cfg) => (cfg.mode === "docker" ? `http://${cfg.container}:${cfg.port}` : cfg.url || "");
+
 // 送給後端的來源設定：秘密欄位只有使用者改過（_dirty）才送，空字串＝清除
 function payloadFor(cfg) {
   if (!cfg) return undefined;
-  const { _dirty = {}, effective_url, ...rest } = cfg;
+  const { _dirty = {}, effective_url, reenter, env_ok_urls, ...rest } = cfg;
   const out = {};
   for (const [k, v] of Object.entries(rest)) {
     if (SECRET_FIELDS.includes(k) || k.endsWith("_set") || k.endsWith("_env")) continue;
@@ -83,8 +94,10 @@ export default function SourcesPanel() {
               context: res.context,
               tools: res.tools,
               ch: res.civitai_helper,
+              withheld: res.token_withheld,
+              reenter: res.token_reenter,
             }
-          : { state: "fail", detail: res.detail },
+          : { state: "fail", detail: res.detail, withheld: res.token_withheld, reenter: res.token_reenter },
       }));
     } catch (e) {
       setTest((r) => ({ ...r, [svc]: { state: "fail", detail: e.message } }));
@@ -278,6 +291,18 @@ function ServiceBlock({ svc, cfg, test, docker, onPatch, onTest, onListContainer
           </span>
         )}
       </div>
+      {/* 測的不是已儲存的網址：已存的 token / key 不會送過去（後端只把秘密送到已儲存的網址） */}
+      {test?.withheld && (
+        <p className="text-[11px] text-amber-300/90" data-testid={`test-withheld-${svc.key}`}>
+          {t("testTokenWithheld")}
+        </p>
+      )}
+      {/* 已儲存的網址改過、token 沒有重新輸入：後端不會把原本的 token 送到新網址 */}
+      {test?.reenter && (
+        <p className="text-[11px] text-amber-300/90" data-testid={`test-reenter-${svc.key}`}>
+          {t("tokenReenter")}
+        </p>
+      )}
     </div>
   );
 }
@@ -287,6 +312,14 @@ function SecretField({ cfg, sec, onPatch }) {
   const t = useT();
   const { field } = sec;
   const isSet = cfg[`${field}_set`];
+  // 後端說要重新輸入（網址改過，原本的 token 被清掉或 .env 的不能送過去）；
+  // 或這次改了網址、token 卻沒一起重填：設定頁存的會被清掉；只靠 .env 的，新網址不是 .env 網址（或升級時的網址）就不會送
+  const reenter = cfg.reenter?.includes(field) && !cfg[field];
+  const newOrigin = originOf(urlOf(cfg));
+  const moved = !reenter && !cfg._dirty?.[field] && newOrigin !== originOf(cfg.effective_url);
+  const willReset = moved && isSet;
+  const envWillReset =
+    moved && !isSet && cfg[`${field}_env`] && !(cfg.env_ok_urls?.[field] || []).some((u) => originOf(u) === newOrigin);
   const fromEnv = cfg[`${field}_env`];
   const dirty = cfg._dirty?.[field];
   const set = (value) => onPatch({ [field]: value, _dirty: { ...(cfg._dirty || {}), [field]: true } });
@@ -313,6 +346,15 @@ function SecretField({ cfg, sec, onPatch }) {
       <p className="text-[11px] text-gray-500">
         {t(sec.label)}
         {dirty && !cfg[field] && isSet && <span className="text-amber-400/90"> · {t("tokenWillClear")}</span>}
+        {reenter && (
+          <span className="text-amber-400/90" data-testid={`reenter-${field}`}> · {t("tokenReenter")}</span>
+        )}
+        {willReset && (
+          <span className="text-amber-400/90" data-testid={`will-reset-${field}`}> · {t("tokenWillReset")}</span>
+        )}
+        {envWillReset && (
+          <span className="text-amber-400/90" data-testid={`will-reset-${field}`}> · {t("tokenEnvWillReset")}</span>
+        )}
       </p>
     </div>
   );

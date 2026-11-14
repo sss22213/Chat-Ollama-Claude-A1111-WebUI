@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from config import (
     DATA_DIR,
@@ -76,6 +77,14 @@ _MCP_TOKENS = {
     "sdcpp": ("sdcpp", "mcp_token", SDCPP_MCP_TOKEN),
     "mmd": ("mmd", "mcp_token", MMD_MCP_TOKEN),
 }
+# (服務來源, 秘密欄位) → .env 給的值；服務 → .env 對應的網址（或預設值）
+_ENV_SECRETS = {(svc, field): env for svc, field, env in _MCP_TOKENS.values()} | {("strata", "api_key"): STRATA_API_KEY}
+_ENV_URLS = {"a1111": A1111_URL, "sdcpp": SDCPP_URL, "mmd": MMD_URL, "strata": STRATA_URL}
+# 秘密只送到「可信任網址」（比對 scheme + host + port），每個秘密欄位各自記：
+# - trusted[欄位]：設定頁的值只送到這裡＝這個欄位最後一次被輸入非空值時、那次存好的網址；清除就收回
+# - .env 的 token 只送到 .env 對應的網址，或 env_trusted[欄位]＝升級時（第一次用新版載入）的已存網址。
+#   在設定頁存別的網址、輸入別的欄位，都不會讓 .env 的 token 變成可以送
+# 已存網址改到別的 origin、又沒重新輸入的欄位：設定頁的值清掉，記在 secrets_cleared（要重新輸入）
 
 
 def _default_web() -> dict:
@@ -162,10 +171,22 @@ def load() -> dict:
         if not _looks_default(d)
     ]
     _normalize_sources()
+    # 升級相容：還沒有可信任網址的服務（舊版設定），目前的已存網址就是各欄位的可信任網址
+    # （設定頁的值與 .env 的 token 都是），現有設定不用重新輸入
+    trust_added = False
+    for svc, src in _settings["sources"].items():
+        if svc in _ENV_URLS and "trusted" not in src:
+            base = src.pop("trusted_url", None)  # 開發中的舊格式（整個服務一個）
+            base = base if isinstance(base, str) and base else effective_url(src)
+            fields = [f for f in _SECRET_FIELDS if f in src]
+            src["trusted"] = {f: base for f in fields if (src.get(f) or "").strip()}
+            src["env_trusted"] = {f: base for f in fields}
+            src.setdefault("secrets_cleared", [])
+            trust_added = True
     _settings["web"] = {**_default_web(), **(_settings.get("web") or {})}
     DEFAULT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    if before != (_settings["image_dir"], _settings["known_dirs"]):
-        _save()  # 舊格式改寫回檔案，主機與容器才能共用同一份
+    if before != (_settings["image_dir"], _settings["known_dirs"]) or (trust_added and SETTINGS_FILE.exists()):
+        _save()  # 舊格式改寫回檔案，主機與容器才能共用同一份；可信任網址要在第一次載入時就定下來
     return _settings
 
 
@@ -405,6 +426,21 @@ def effective_url(source: dict) -> str:
     return (source.get("url") or "").rstrip("/")
 
 
+def same_origin(a: str, b: str) -> bool:
+    """兩個網址是不是同一個服務：scheme + host + port 都一樣（沒寫 port 用 scheme 的預設值）。
+    已存的 API key / MCP token 只送到該服務已儲存的網址，用這個比對。"""
+    def key(u: str) -> tuple[str, str, int | None]:
+        p = urlsplit((u or "").strip())
+        scheme = p.scheme.lower()
+        return scheme, (p.hostname or "").lower(), p.port or {"http": 80, "https": 443}.get(scheme)
+
+    try:
+        ka, kb = key(a), key(b)
+    except ValueError:  # port 不合法
+        return False
+    return bool(ka[0] and ka[1]) and ka == kb
+
+
 def get_ollama_url() -> str:
     return effective_url(_settings["sources"]["ollama"])
 
@@ -417,29 +453,80 @@ def get_service_url(service: str) -> str:
     return effective_url(_settings["sources"][service])
 
 
-def get_mcp_token(server: str) -> str:
-    """MCP 伺服器的 token：設定頁填的優先，其次環境變數。server：a1111 | civitai-helper | sdcpp | mmd。"""
-    service, field, env = _MCP_TOKENS[server]
-    return (_settings["sources"][service].get(field) or "").strip() or env
+def _env_urls(service: str, field: str) -> list[str]:
+    """.env 的 token 可以送的網址：.env 對應的網址、升級時記下的網址。"""
+    src = _settings["sources"][service]
+    return list(dict.fromkeys(u for u in (_ENV_URLS.get(service), (src.get("env_trusted") or {}).get(field)) if u))
+
+
+def secret_for(service: str, field: str, url: str | None = None) -> str:
+    """要送到 url（預設：該服務已存的網址）的秘密；不能送就回空字串。所有用到秘密的地方都經過這裡。
+    設定頁填的優先：只在 url 是這個欄位的可信任網址時用。其次 .env 的值：只在 .env 對應的網址或升級時的網址用。"""
+    url = get_service_url(service) if url is None else url
+    src = _settings["sources"][service]
+    saved = (src.get(field) or "").strip()
+    if saved and same_origin(url, (src.get("trusted") or {}).get(field) or ""):
+        return saved
+    env = _ENV_SECRETS.get((service, field)) or ""
+    if env and any(same_origin(url, u) for u in _env_urls(service, field)):
+        return env
+    return ""
+
+
+def has_secret(service: str, field: str) -> bool:
+    """設定頁或 .env 有沒有這個秘密（不管能不能送到目前的網址）。"""
+    saved = (_settings["sources"][service].get(field) or "").strip()
+    return bool(saved or _ENV_SECRETS.get((service, field)))
+
+
+def needs_reentry(service: str) -> list[str]:
+    """目前的網址拿不到、需要重新輸入的秘密欄位：網址改過而被清掉的，或 .env 有值但不能送到這個網址的。"""
+    src = _settings["sources"][service]
+    out = []
+    for field in _SECRET_FIELDS:
+        if field not in src or secret_for(service, field):
+            continue
+        if field in (src.get("secrets_cleared") or []) or _ENV_SECRETS.get((service, field)):
+            out.append(field)
+    return out
+
+
+def get_mcp_token(server: str, url: str | None = None) -> str:
+    """MCP 伺服器的 token（要送到 url，預設是已存的網址）。server：a1111 | civitai-helper | sdcpp | mmd。"""
+    service, field, _env = _MCP_TOKENS[server]
+    return secret_for(service, field, url)
+
+
+def mcp_token_blocked(server: str) -> bool:
+    """這個 MCP 伺服器的 token 因為網址改過而沒送出（要重新輸入）。"""
+    service, field, _env = _MCP_TOKENS[server]
+    return field in needs_reentry(service)
 
 
 def get_strata_url() -> str:
     return effective_url(_settings["sources"]["strata"])
 
 
-def get_strata_key() -> str:
-    return (_settings["sources"]["strata"].get("api_key") or "").strip()
+def get_strata_key(url: str | None = None) -> str:
+    return secret_for("strata", "api_key", url)
 
 
 def _public(service: str, s: dict) -> dict:
-    """給前端的來源設定：API key / MCP token 不外流，只說有沒有設。"""
-    out = {k: v for k, v in s.items() if k not in _SECRET_FIELDS}
+    """給前端的來源設定：API key / MCP token 不外流，只說有沒有設。
+    reenter：網址改過、要重新輸入才會送出的秘密欄位（設定頁顯示提示）；
+    env_ok_urls：只靠 .env token 的欄位，改到哪些網址 .env 的 token 還會送（設定頁存檔前的提示用）。"""
+    out = {k: v for k, v in s.items()
+           if k not in _SECRET_FIELDS and k not in ("trusted", "env_trusted", "trusted_url", "secrets_cleared")}
     for key in _SECRET_FIELDS:
         if key in s:
             out[f"{key}_set"] = bool((s.get(key) or "").strip())
-    for svc, field, env in _MCP_TOKENS.values():  # 設定頁沒填、但環境變數有給
+    for (svc, field), env in _ENV_SECRETS.items():  # .env 有沒有給（MCP token 與 Strata 的 key 都一樣，只回 true / false）
         if svc == service:
             out[f"{field}_env"] = bool(env)
+    if service in _ENV_URLS:
+        out["reenter"] = needs_reentry(service)
+        out["env_ok_urls"] = {f: _env_urls(service, f) for f in _SECRET_FIELDS
+                              if f in s and _ENV_SECRETS.get((service, f))}
     return {**out, "effective_url": effective_url(s)}
 
 
@@ -466,11 +553,32 @@ def set_source(service: str, cfg: dict) -> dict:
         raise ValueError("API 模式需要網址")
     if mode == "docker" and (not updated["container"] or not updated["port"]):
         raise ValueError("Docker 模式需要容器名稱與 port")
+    # 網址換到別的 origin：沒有一起重新輸入的欄位不能跟著過去（清掉、記下要重新輸入）
+    moved = not same_origin(effective_url(cur), effective_url(updated))
+    cleared = list(cur.get("secrets_cleared") or [])
+    trusted = dict(cur.get("trusted") or {})
     for field in _SECRET_FIELDS:
-        if field in cur:
-            # 沒送＝保持原值；送空字串＝清除
-            key = cfg.get(field)
-            updated[field] = cur.get(field, "") if key is None else str(key).strip()
+        if field not in cur:
+            continue
+        key = cfg.get(field)
+        if key is not None:  # 這次有送：非空＝可信任網址設成這次存好的網址；空字串＝值與可信任網址一起收回
+            updated[field] = str(key).strip()
+            cleared = [f for f in cleared if f != field]
+            if updated[field]:
+                trusted[field] = effective_url(updated)
+            else:
+                trusted.pop(field, None)
+        elif moved:
+            if (cur.get(field) or "").strip():
+                cleared.append(field)
+            updated[field] = ""
+            trusted.pop(field, None)
+        else:  # 沒送＝保持原值
+            updated[field] = cur.get(field, "")
+    if service in _ENV_URLS:
+        updated["trusted"] = trusted
+        updated["env_trusted"] = dict(cur.get("env_trusted") or {})  # 升級時的網址：之後不會變
+        updated["secrets_cleared"] = sorted(set(cleared))
     _settings["sources"][service] = updated
     _save()
     return _public(service, updated)

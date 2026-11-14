@@ -225,11 +225,13 @@ function ProjectList() {
   const doCreate = async () => {
     setErr("");
     setBusy("create");
+    const slug = name.trim() || (template === "empty" ? "my-graph" : template);
     try {
-      await w.create(name.trim() || (template === "empty" ? "my-graph" : template), template);
+      await w.create(slug, template);
       setName("");
     } catch (e) {
-      setErr(e.message);
+      // 409：同名的資料夾在、但不是專案（後端不動它）
+      setErr(e.status === 409 ? wt("notProjectName", { name: slug }) : e.message);
     } finally {
       setBusy("");
     }
@@ -263,7 +265,8 @@ function ProjectList() {
       }
       setName("");
     } catch (e) {
-      setErr(e.message);
+      // 409：工作流資料夾裡已有同名、但不是專案的資料夾（後端不會覆寫）
+      setErr(e.status === 409 ? wt("notProjectFolder", { name: slug }) : e.message);
     } finally {
       setBusy("");
       if (folderRef.current) folderRef.current.value = "";
@@ -418,7 +421,8 @@ function NameForm({ initial, label, onSubmit, onCancel }) {
     try {
       await onSubmit(value.trim());
     } catch (e) {
-      setErr(e.message);
+      // 409：改名 / 複製的名稱被一個不是專案的資料夾佔用
+      setErr(e.status === 409 ? wt("notProjectName", { name: value.trim() }) : e.message);
       setBusy(false);
     }
   };

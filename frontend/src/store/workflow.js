@@ -195,7 +195,14 @@ export const useWorkflow = create(
         await get().select(slug, { force: true });
       },
       async remove(slug) {
-        await deleteWorkflowProject(slug);
+        try {
+          await deleteWorkflowProject(slug);
+        } catch (e) {
+          // 例如同名的資料夾已經不是專案（409，後端不刪）：重新整理清單，顯示原因
+          await get().load();
+          set({ error: e.message });
+          return;
+        }
         if (get().selected === slug) set({ selected: "", project: null, graphs: null });
         await get().load();
       },

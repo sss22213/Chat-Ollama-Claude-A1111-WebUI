@@ -362,39 +362,61 @@ function ApplyButton({ settings }) {
 
 function RefRow({ r }) {
   const gt = useGT();
+  const [err, setErr] = useState("");
   const icon =
     r.type === "chat" ? <MessageSquare size={13} /> : r.type === "comic" ? <BookOpen size={13} /> : <Workflow size={13} />;
+  // 打開成功才關掉詳細資訊：打不開（例如作品已被刪掉）就留在這裡顯示原因
   const open = async () => {
-    useGallery.getState().closeDetail();
-    if (r.type === "chat") {
-      useChat.getState().selectConversation(r.id);
-      navigate("");
-    } else if (r.type === "comic") {
-      const c = useComic.getState();
-      if (c.projectId !== r.id) {
-        await c.saveProject(); // 先存好目前的作品再換
-        await c.openProject(r.id);
+    setErr("");
+    try {
+      if (r.type === "chat") {
+        useChat.getState().selectConversation(r.id);
+        useGallery.getState().closeDetail();
+        navigate("");
+      } else if (r.type === "comic") {
+        const c = useComic.getState();
+        if (c.projectId !== r.id) {
+          // openProject 會先把目前作品待存的修改存好；存不上去（code="unsaved"）就問要不要放棄再換
+          try {
+            await c.openProject(r.id);
+          } catch (e) {
+            if (e?.code !== "unsaved") throw e;
+            if (!window.confirm(gt("unsavedComicSwitch"))) return;
+            await c.openProject(r.id, { discard: true });
+          }
+        }
+        useGallery.getState().closeDetail();
+        navigate("comic");
+      } else {
+        useWorkflow.getState().select?.(r.project);
+        useGallery.getState().closeDetail();
+        navigate("workflows");
       }
-      navigate("comic");
-    } else {
-      useWorkflow.getState().select?.(r.project);
-      navigate("workflows");
+    } catch (e) {
+      setErr(e?.message || String(e));
     }
   };
   const title = r.type === "workflow" ? `${r.project} · ${r.id}` : r.title || gt("untitled");
   return (
-    <li className="flex items-center gap-2 rounded-lg bg-ink-900 px-2 py-1.5 text-xs" data-testid="gal-ref">
-      <span className="flex shrink-0 items-center gap-1 text-gray-400">
-        {icon}
-        {gt(`ref_${r.type}`)}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-gray-200" title={title}>
-        {title}
-      </span>
-      <button onClick={open} className="shrink-0 rounded border border-ink-600 px-2 py-0.5 text-gray-300 hover:bg-ink-750" data-testid="gal-ref-open">
-        {gt("open")}
-      </button>
-    </li>
+    <>
+      <li className="flex items-center gap-2 rounded-lg bg-ink-900 px-2 py-1.5 text-xs" data-testid="gal-ref">
+        <span className="flex shrink-0 items-center gap-1 text-gray-400">
+          {icon}
+          {gt(`ref_${r.type}`)}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-gray-200" title={title}>
+          {title}
+        </span>
+        <button onClick={open} className="shrink-0 rounded border border-ink-600 px-2 py-0.5 text-gray-300 hover:bg-ink-750" data-testid="gal-ref-open">
+          {gt("open")}
+        </button>
+      </li>
+      {err && (
+        <li className="px-2 text-[11px] text-red-300" data-testid="gal-ref-error">
+          {gt("openFailed", { msg: err })}
+        </li>
+      )}
+    </>
   );
 }
 

@@ -34,6 +34,7 @@ import inspect
 import io
 import itertools
 import json
+import os
 import queue
 import threading
 from typing import Any
@@ -50,6 +51,44 @@ _CLOSED = object()
 # Claude CLI / Codex 原生 MCP 的對話進行中：{agent id: {"tools": {名稱: 函式}, "node": 節點}}——
 # CLI 經閘道呼叫工作流裡的 Python 函式時，後端送 local_tool 過來，由這裡執行
 _agents: dict[str, dict[str, Any]] = {}
+# 專案 env 的值（≥6 字，由長到短）：這裡要截短的文字先遮掉它們再截，秘密跨在截斷處也不留前後幾個字。
+# 後端在 job 的 secret_env 只給名稱，值從這個行程的環境變數讀（開始執行前讀好，不會再傳出去）
+_secrets: list[str] = []
+
+
+def _mask(text: str) -> str:
+    """把秘密出現的範圍換成 ***：跟後端 langgraph_exec._mask 同一套（重疊、互為前綴的整段遮）。"""
+    spans: list[list[int]] = []
+    for s in _secrets:
+        i = text.find(s)
+        while i >= 0:
+            spans.append([i, i + len(s)])
+            i = text.find(s, i + 1)
+    if not spans:
+        return text
+    spans.sort()
+    merged = [spans[0]]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out, pos = [], 0
+    for a, b in merged:
+        out += [text[pos:a], "***"]
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _clip(text: str, limit: int) -> str:
+    """先遮再截前 limit 字。"""
+    return _mask(text)[:limit]
+
+
+def _tail(text: str, limit: int) -> str:
+    """先遮再取最後 limit 字（traceback 用）。"""
+    return _mask(text)[-limit:]
 
 
 # ---------------- 協定（runner.py 使用） ----------------
@@ -102,6 +141,8 @@ def _init(proto: Any, job: dict[str, Any], stdin: Any) -> None:
     global _proto
     _proto = proto
     _job.update(job)
+    values = {os.environ.get(str(n)) or "" for n in job.get("secret_env") or []}
+    _secrets[:] = sorted((v for v in values if len(v) >= 6), key=len, reverse=True)
     threading.Thread(target=_reader, args=(stdin,), daemon=True).start()
 
 
@@ -118,12 +159,12 @@ class _LogStream(io.TextIOBase):
         self._buf += s
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)
-            _send({"type": "log", "text": line[:4000]})
+            _send({"type": "log", "text": _clip(line, 4000)})
         return len(s)
 
     def flush(self) -> None:
         if self._buf:
-            _send({"type": "log", "text": self._buf[:4000]})
+            _send({"type": "log", "text": _clip(self._buf, 4000)})
             self._buf = ""
 
 
@@ -316,8 +357,8 @@ def _run_local(tool: Any, name: str, args: dict[str, Any], node: str) -> str:
         text = _as_text(_run_sync(out))
     except Exception as e:  # noqa: BLE001
         text = f"Tool {name} failed: {type(e).__name__}: {e}"
-        _send({"type": "call_error", "node": node, "fn": name, "message": str(e)[:500]})
-    _send({"type": "tool_result", "node": node, "name": name, "text": text[:2000]})
+        _send({"type": "call_error", "node": node, "fn": name, "message": _clip(str(e), 500)})
+    _send({"type": "tool_result", "node": node, "name": name, "text": _clip(text, 2000)})
     return text
 
 
@@ -343,7 +384,7 @@ def _invoke_tool(call: dict[str, Any], local: dict[str, Any], skill: str | None,
                                          "exclude": list(exclude or []), "read_only": read_only}) or {}
         except RuntimeError as e:
             result = {"text": f"Tool {name} failed: {e}"}
-        _send({"type": "tool_result", "node": node, "name": name, "text": str(result.get("text") or "")[:2000]})
+        _send({"type": "tool_result", "node": node, "name": name, "text": _clip(str(result.get("text") or ""), 2000)})
         return result
     return {"text": _run_local(local[name], name, args, node)}
 

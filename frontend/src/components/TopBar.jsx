@@ -41,8 +41,10 @@ export default function TopBar({
   const health = useChat((s) => s.health);
   const usage = useChat((s) => s.usage);
   const compact = useChat((s) => s.compact);
-  const compacting = useChat((s) => s.compacting);
+  const compacting = useChat((s) => s.compacting); // 正在壓縮的對話 id（同時只壓縮一則）
+  const setConversationModel = useChat((s) => s.setConversationModel);
   const currentConversation = useChat((s) => s.currentConversation());
+  const compactingHere = !!compacting && compacting === currentConversation?.id;
 
   // 對話沿用自己的 model；變更時同步到對話與全域預設。
   // 若對話的 model 不在目前引擎的清單中（例如切換引擎後），退回全域預設。
@@ -69,14 +71,8 @@ export default function TopBar({
 
   const onChangeModel = (name) => {
     setSettings({ chatModel: name });
-    if (currentConversation) {
-      // 直接改對話的模型
-      useChat.setState((st) => ({
-        conversations: st.conversations.map((c) =>
-          c.id === st.currentId ? { ...c, model: name } : c
-        ),
-      }));
-    }
+    // 直接改對話的模型（存回後端；存檔衝突時在最新版上重新套用）
+    if (currentConversation) setConversationModel(name);
   };
 
   return (
@@ -198,18 +194,18 @@ export default function TopBar({
       )}
       {(currentConversation?.messages?.length || 0) >= 3 && (
         <button
-          onClick={compact}
-          disabled={compacting}
+          onClick={() => compact()}
+          disabled={!!compacting}
           title={t("compactHint")}
           className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-2.5 py-1.5 text-xs text-gray-300 hover:bg-ink-750 disabled:opacity-60"
         >
-          {compacting ? (
+          {compactingHere ? (
             <Loader2 size={14} className="animate-spin" />
           ) : (
             <Combine size={14} />
           )}
           <span className="hidden xl:inline">
-            {compacting ? t("compacting") : t("compact")}
+            {compactingHere ? t("compacting") : t("compact")}
           </span>
         </button>
       )}

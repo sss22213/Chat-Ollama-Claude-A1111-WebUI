@@ -72,6 +72,16 @@ def server_url(server: str, base: str | None = None) -> str:
     return (base or settings_store.get_service_url(SERVERS[server].service)).rstrip("/") + SERVERS[server].path
 
 
+def _token(server: str, base: str | None, token: str | None) -> str:
+    """token=None＝用已存的（設定頁或 .env）——只送到這個服務已儲存的網址；指定了別的網址（base）就不帶。
+    送不送得出去還要看可信任網址（settings_store.secret_for）：網址改過、沒重新輸入的 token 不會送。"""
+    if token is not None:
+        return token
+    if base and not settings_store.same_origin(base, settings_store.get_service_url(SERVERS[server].service)):
+        return ""
+    return settings_store.get_mcp_token(server)
+
+
 def _explain(server: str, err: BaseException, base: str | None = None) -> str:
     """把 SDK / 網路的例外變成看得懂的一句話。"""
     while isinstance(err, BaseExceptionGroup) and err.exceptions:
@@ -79,6 +89,10 @@ def _explain(server: str, err: BaseException, base: str | None = None) -> str:
     srv, url = SERVERS[server], server_url(server, base)
     status = getattr(getattr(err, "response", None), "status_code", None)
     if status == 401:
+        here = not base or settings_store.same_origin(base, settings_store.get_service_url(srv.service))
+        if here and settings_store.mcp_token_blocked(server):  # 網址改過：原本的 token 不會送到新網址
+            return (f"{srv.label} 的 MCP token 沒有送出（{url}）：服務網址改過，原本的 token 不會送到新網址，"
+                    f"請到設定頁「服務來源 → {_SOURCE_LABELS[srv.service]}」重新輸入 {srv.token_from}")
         return (f"{srv.label} 的 MCP token 不對或沒填（{url}）：到設定頁「服務來源 → "
                 f"{_SOURCE_LABELS[srv.service]}」填入 {srv.token_from}")
     if status == 404:
@@ -90,7 +104,7 @@ def _explain(server: str, err: BaseException, base: str | None = None) -> str:
 
 async def _probe(server: str, base: str | None = None, token: str | None = None) -> str | None:
     """SDK 對 HTTP 錯誤只說「Server returned an error response」：直接 ping 一次看狀態碼。"""
-    token = settings_store.get_mcp_token(server) if token is None else token
+    token = _token(server, base, token)
     try:
         async with httpx2.AsyncClient(timeout=10) as client:
             resp = await client.post(server_url(server, base), json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
@@ -118,7 +132,7 @@ async def _failure(server: str, err: BaseException, base: str | None = None, tok
 async def _session(server: str, timeout: float | None, base: str | None = None, token: str | None = None):
     if server not in SERVERS:
         raise McpError(f"沒有 MCP 伺服器「{server}」")
-    token = settings_store.get_mcp_token(server) if token is None else token
+    token = _token(server, base, token)
     http = create_mcp_http_client(
         headers={"Authorization": f"Bearer {token}"} if token else None,
         timeout=httpx2.Timeout(30.0, read=timeout, connect=10.0),
@@ -185,7 +199,8 @@ async def call_json(server: str, name: str, args: dict[str, Any] | None = None, 
 
 async def check(server: str, base: str, token: str | None = None) -> dict[str, Any]:
     """設定頁「測試連線」：用（可能還沒儲存的）服務位址與 token 連一次。
-    回 {"ok": True, "tools": 數量} 或 {"ok": False, "detail": 原因}。token=None 用已儲存的。"""
+    回 {"ok": True, "tools": 數量} 或 {"ok": False, "detail": 原因}。
+    token=None 用已儲存的（只在 base 是已儲存的網址時），空字串＝不帶。"""
     try:
         async with _session(server, 15, base, token) as session:
             tools = (await session.list_tools()).tools

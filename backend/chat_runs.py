@@ -62,6 +62,8 @@ class ChatRun:
         self.task: asyncio.Task | None = None
         self.timer: asyncio.TimerHandle | None = None
         self.closing = False  # 已在收尾：不能再取消，否則 done 送不出去
+        # 最後一次存檔的 (改之前, 之後) updated_at：中途接上的網頁靠它確認自己的版本（snapshot 帶著）
+        self.saved: tuple[float, float] | None = None
 
     def apply(self, e: dict[str, Any]) -> None:
         """事件 → 助理訊息。"""
@@ -104,10 +106,16 @@ class ChatRun:
         for q in self.subscribers:
             q.put_nowait(event)
 
-    async def save(self) -> float | None:
-        """存進對話（生圖進度只給正在看的人，不存）。對話已刪就回 None。"""
+    async def save(self) -> tuple[float, float] | None:
+        """存進對話（生圖進度只給正在看的人，不存）。對話已刪就回 None。
+        存好後送 saved 事件（改之前 / 之後的 updated_at）：在它之前的事件網頁都收到了，
+        本機版本是改之前那個的網頁就能跟上，之後整則存檔（換模型等）不會被當成舊版本而衝突。"""
         patch = {k: v for k, v in self.message.items() if k != "progress"}
-        return await asyncio.to_thread(conversations_store.update_message, self.conv_id, self.msg_id, patch)
+        saved = await asyncio.to_thread(conversations_store.update_message, self.conv_id, self.msg_id, patch)
+        if saved:
+            self.saved = saved
+            self.publish({"type": "saved", "prev": saved[0], "updated_at": saved[1]})
+        return saved
 
 
 async def _drive(run: ChatRun, stream: AsyncIterator[str]) -> None:
@@ -139,14 +147,15 @@ async def _drive(run: ChatRun, stream: AsyncIterator[str]) -> None:
     m = run.message
     m.update(status="done", toolRunning=False, content=_strip_note(m["content"]))
     m.pop("progress", None)
-    updated_at = None
+    saved = None
     try:
-        updated_at = await run.save()
+        saved = await run.save()
     except Exception:
         log.exception("聊天回覆存檔失敗")
     # 先存好才移除：查不到 run 就代表對話裡已經是最後結果
     _runs.pop(run.conv_id, None)
-    run.publish({"type": "done", "cancelled": cancelled, "updated_at": updated_at})
+    run.publish({"type": "done", "cancelled": cancelled, "updated_at": saved[1] if saved else None,
+                 "prev_updated_at": saved[0] if saved else None})
     run.publish(None)
 
 
@@ -187,7 +196,8 @@ def follow(run: ChatRun, *, snapshot: bool = False) -> AsyncIterator[str]:
     snapshot：先送目前內容，給中途才接上的網頁。連線斷了只是退訂，回覆繼續跑。"""
     q: asyncio.Queue = asyncio.Queue()
     run.subscribers.add(q)
-    first = _sse({"type": "snapshot", "id": run.msg_id, "message": run.message, "usage": run.usage}) if snapshot else None
+    first = _sse({"type": "snapshot", "id": run.msg_id, "message": run.message, "usage": run.usage,
+                  "saved": run.saved}) if snapshot else None
 
     async def events() -> AsyncIterator[str]:
         try:

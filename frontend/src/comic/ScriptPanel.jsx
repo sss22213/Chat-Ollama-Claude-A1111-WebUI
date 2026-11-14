@@ -112,6 +112,34 @@ export default function ScriptPanel() {
 
   return (
     <div className="space-y-4 p-3">
+      {/* 這份作品已在別處刪除：不會自動存（不建回來），本機修改留著讓使用者決定 */}
+      {c.remoteGone && (
+        <div
+          data-testid="remote-gone"
+          className="space-y-2 rounded-lg border border-red-700/60 bg-red-950/40 p-2.5 text-xs text-red-200"
+        >
+          <div className="flex items-start gap-1.5">
+            <AlertCircle size={14} className="mt-0.5 shrink-0" />
+            <span className="leading-relaxed">{ct("remoteGone")}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => c.keepAsNewProject()}
+              className="rounded-md bg-red-700 px-2.5 py-1 text-xs text-white hover:bg-red-600"
+            >
+              {ct("keepAsNew")}
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm(ct("discardGoneConfirm"))) c.newProject({ discard: true });
+              }}
+              className="rounded-md border border-red-700/60 px-2.5 py-1 text-xs text-red-200 hover:bg-red-900/40"
+            >
+              {ct("discardGone")}
+            </button>
+          </div>
+        </div>
+      )}
       {/* 標題 + 劇情 */}
       <div className="space-y-2">
         <Labeled label={ct("pageTitle")}>

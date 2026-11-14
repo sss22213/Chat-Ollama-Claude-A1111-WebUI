@@ -311,12 +311,22 @@ export async function getConversation(id) {
   return r.json();
 }
 
-export async function putConversation(conv) {
+// base：這份資料以哪個版本為基礎（上次從後端拿到的 updated_at；null＝從沒存過的新對話）。
+// 後端已經比較新、或對話已在別處刪除 → 409：丟出的錯誤帶 status、reason（stale / deleted）與 current（目前版本）
+export async function putConversation(conv, base) {
   const r = await fetch(`/api/conversations/${encodeURIComponent(conv.id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(conv),
+    body: JSON.stringify({ ...conv, base_updated_at: base ?? null }),
   });
+  if (r.status === 409) {
+    const d = (await r.json().catch(() => ({}))).detail || {};
+    const err = new Error(d.message || "對話在別處有更新");
+    err.status = 409;
+    err.reason = d.reason;
+    err.current = d.current || null;
+    throw err;
+  }
   if (!r.ok) throw new Error("儲存對話失敗");
   return r.json();
 }
@@ -617,7 +627,9 @@ function readChatEvents(url, init, onEvent, onDone, onError) {
       const resp = await fetch(url, { ...init, signal: controller.signal });
 
       if (!resp.ok || !resp.body) {
-        const err = new Error(`伺服器錯誤 (${resp.status})`);
+        // 後端的說明（例如 409「這個對話還在回覆中」）比狀態碼看得懂
+        const detail = resp.ok ? null : await resp.json().then((d) => d?.detail, () => null);
+        const err = new Error(typeof detail === "string" && detail ? detail : `伺服器錯誤 (${resp.status})`);
         err.status = resp.status;
         throw err;
       }

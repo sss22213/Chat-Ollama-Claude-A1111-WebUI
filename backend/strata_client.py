@@ -11,7 +11,8 @@ model_supports_vision / chat_once），chat.run_chat 的主迴圈（工具呼叫
   {"message": {"content", "thinking", "tool_calls"}} ；最後一塊的 usage.prompt_tokens →
   prompt_eval_count。
 - 思考：app 的 think 開關＋effort → reasoning_effort（none / low / medium / high）。
-- 驗證：設定裡的 API key 以 Authorization: Bearer 送出（金鑰只存在後端設定檔）。
+- 驗證：設定裡的 API key 以 Authorization: Bearer 送出（金鑰只存在後端設定檔），只送到可信任網址
+  （settings_store.secret_for：網址改過、沒重新輸入的 key 不會跟著送到新網址）。
 """
 from __future__ import annotations
 
@@ -62,6 +63,9 @@ def _raise(resp: httpx.Response) -> None:
     if resp.status_code < 400:
         return
     if resp.status_code == 401:
+        if settings_store.needs_reentry("strata"):  # 網址改過：原本的 key 不會送到新網址
+            raise StrataError("Strata 的 API key 沒有送出（HTTP 401）：服務網址改過，原本的 key 不會送到新網址，"
+                              "請到設定 → 服務來源重新輸入 Strata 的 API key")
         raise StrataError("Strata 拒絕了 API key（HTTP 401）：請到設定 → 服務來源檢查 Strata 的 API key")
     raise StrataError(f"Strata 回應 HTTP {resp.status_code}：{_detail(resp)}")
 

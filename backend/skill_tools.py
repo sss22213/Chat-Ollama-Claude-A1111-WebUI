@@ -68,7 +68,8 @@ GET/DELETE 走 query string、POST/PUT 走 JSON body。回應若是 JSON 就美�
 - 環境變數只給最小集合（PATH、HOME=工作目錄、PYTHONPATH=技能目錄、proxy），
   加上 config.SKILL_SCRIPT_ENV 列出的透傳變數與工作目錄內 .env 的內容；
   這些值在輸出中會被遮罩成 ***（避免 token 印給模型／使用者）。
-- 逾時（config.SKILL_SCRIPT_TIMEOUT）直接 kill；stdout/stderr 各自截斷後回給模型。
+- 腳本在新的 process group 啟動；逾時（config.SKILL_SCRIPT_TIMEOUT）或工作被取消（停止回覆、
+  刪除對話、MCP 連線斷、工作流取消）時整組 kill，連腳本開的子行程一起；stdout/stderr 各自截斷後回給模型。
 
 MCP 工具（kind "mcp"）：參數照 tools.json 的 schema 給模型看，呼叫時轉給該服務的 MCP 伺服器。
 結果帶圖（例如 sd.cpp 改圖）就存進圖片目錄、推 image 事件，並附縮圖給視覺模型看。
@@ -85,6 +86,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -455,6 +457,20 @@ def _redact(text: str, secrets: list[str]) -> str:
     return text
 
 
+# POSIX：腳本自成一個 process group（start_new_session），kill 時連它開的子行程一起殺；
+# 子行程還握著 stdout 管線時，只殺腳本本身會讓等待一直卡著
+_GROUP_KILL = hasattr(os, "killpg")
+
+
+def _kill_script(proc: asyncio.subprocess.Process) -> None:
+    """殺掉腳本整個 process group（腳本已結束、只剩子行程時也一樣）。"""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        if _GROUP_KILL:
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+
+
 async def run_script(
     slug: str,
     script: str,
@@ -495,17 +511,23 @@ async def run_script(
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=_GROUP_KILL,
         )
     except OSError as e:
         return f"Script run failed: could not start `{shown}` ({e})"
     try:
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=limit)
     except asyncio.TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        _kill_script(proc)
+        # 整組殺掉後管線就會關；還有脫離群組的行程握著管線時最多等 1 秒，不讓工具呼叫卡住
         with contextlib.suppress(Exception):
-            await proc.wait()
+            await asyncio.wait_for(proc.wait(), 1)
         return f"Script run failed: `{shown}` timed out after {limit:.0f}s and was killed."
+    except BaseException:
+        # 工作被取消（停止回覆、刪除對話、MCP 連線斷、工作流取消）或其他錯誤：
+        # 腳本與它開的子行程一起殺掉，取消照常往上傳
+        _kill_script(proc)
+        raise
     out = _redact(out_b.decode("utf-8", "replace"), secrets).strip()
     err = _redact(err_b.decode("utf-8", "replace"), secrets).strip()
     if raw:

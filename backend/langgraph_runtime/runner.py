@@ -37,12 +37,15 @@ def send(event: dict[str, Any]) -> None:
 
 
 def jsonable(obj: Any, limit: int = EVENT_STR_LIMIT, depth: int = 0) -> Any:
-    """狀態 → 可轉 JSON 的資料（LangChain 訊息、pydantic、dataclass 都處理；長字串截斷）。"""
+    """狀態 → 可轉 JSON 的資料（LangChain 訊息、pydantic、dataclass 都處理；長字串先遮掉 env 的秘密再截斷）。"""
     if depth > 12:
         return "…"
     if obj is None or isinstance(obj, (bool, int, float)):
         return obj
     if isinstance(obj, str):
+        if len(obj) <= limit:  # 沒截的由後端遮
+            return obj
+        obj = webui_app._mask(obj)
         return obj if len(obj) <= limit else obj[:limit] + f"…(+{len(obj) - limit} chars)"
     if isinstance(obj, (bytes, bytearray)):
         return f"<{len(obj)} bytes>"
@@ -66,7 +69,7 @@ def jsonable(obj: Any, limit: int = EVENT_STR_LIMIT, depth: int = 0) -> Any:
             pass
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return jsonable(dataclasses.asdict(obj), limit, depth + 1)
-    return repr(obj)[:limit]
+    return webui_app._clip(repr(obj), limit)
 
 
 # ---------------- 載入圖 ----------------
@@ -182,7 +185,7 @@ async def inspect_graphs(job: dict[str, Any]) -> None:
             out[gid] = {"spec": spec, **describe_graph(graph)}
         except Exception as e:
             out[gid] = {"spec": spec, "error": f"{type(e).__name__}: {e}",
-                        "traceback": traceback.format_exc()[-4000:]}
+                        "traceback": webui_app._tail(traceback.format_exc(), 4000)}
     send({"type": "inspect", "graphs": jsonable(out, OUTPUT_STR_LIMIT)})
 
 
@@ -277,7 +280,7 @@ async def run_graph(job: dict[str, Any]) -> None:
                 text = webui_app._text(getattr(chunk, "content", ""))
                 if text:
                     send({"type": "token", "ns": where,
-                          "node": (meta or {}).get("langgraph_node") or "", "text": text[:EVENT_STR_LIMIT]})
+                          "node": (meta or {}).get("langgraph_node") or "", "text": webui_app._clip(text, EVENT_STR_LIMIT)})
         pending = await _pending_interrupts(graph, config) if resumable else []
         if not pending:
             break
@@ -314,7 +317,7 @@ def main() -> int:
     except BaseException as e:  # noqa: BLE001 — 任何錯誤都要回報給 app
         sys.stdout.flush()
         send({"type": "error", "message": f"{type(e).__name__}: {e}",
-              "traceback": traceback.format_exc()[-6000:]})
+              "traceback": webui_app._tail(traceback.format_exc(), 6000)})
         return 1
     finally:
         sys.stdout.flush()

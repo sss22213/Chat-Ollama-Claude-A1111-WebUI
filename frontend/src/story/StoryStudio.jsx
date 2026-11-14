@@ -122,21 +122,24 @@ export default function StoryStudio() {
 
   const onGenerate = () => s.generate({ engine, model, lang, numCtx });
 
-  // 送到漫畫工作室：漫畫腳本 → 整份匯入（角色卡 + 分鏡）；故事 → 當劇情大綱
-  const toComic = (render) => {
+  // 送到漫畫工作室：一律開成一份新作品（目前開著的作品不動）。
+  // 漫畫腳本 → 整份匯入（角色卡 + 分鏡）；故事 → 當劇情大綱與故事
+  const importing = useRef(false);
+  const toComic = async (render) => {
     const r = s.result;
-    if (!r) return;
+    if (!r || importing.current) return;
+    let script;
     if (r.mode === "comic") {
-      importScript({
+      script = {
         title: r.title,
         premise: r.premise,
         style: r.style,
         characters: r.characters,
         panels: r.panels,
-      });
+      };
     } else if (r.mode === "panels") {
       // 每格帶上傳圖與 AI 補的對白／旁白；場景說明放在 prompt 當備註
-      importScript({
+      script = {
         title: r.title,
         premise: r.premise,
         characters: [],
@@ -146,10 +149,26 @@ export default function StoryStudio() {
           caption: p.caption,
           image_url: p.image_url,
         })),
-      });
+      };
     } else {
       // 生成的故事直接當漫畫的故事（也當劇情大綱），之後按「依故事生成分鏡」
-      importScript({ title: r.title, premise: r.story, story: r.story, characters: [], panels: [] });
+      script = { title: r.title, premise: r.story, story: r.story, characters: [], panels: [] };
+    }
+    importing.current = true;
+    try {
+      // 換作品前會先存好漫畫工作室目前作品的修改；存不上去就問要不要放棄那些修改
+      try {
+        await importScript(script);
+      } catch (e) {
+        if (e?.code !== "unsaved") throw e;
+        if (!window.confirm(st(e.gone ? "goneImport" : "unsavedImport"))) return;
+        await importScript(script, { discard: true });
+      }
+    } catch (e) {
+      s.set({ error: e.message || String(e) });
+      return;
+    } finally {
+      importing.current = false;
     }
     navigate("comic");
     if (render && r.mode === "comic") {

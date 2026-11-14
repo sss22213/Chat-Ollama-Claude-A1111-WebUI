@@ -48,6 +48,10 @@ _MARKER = "webui-installed.json"
 _installing: set[str] = set()
 
 
+class NotProject(FileExistsError):
+    """工作流資料夾裡同名的東西不是專案（沒有 langgraph.json）：不刪、不覆寫（API 回 409）。"""
+
+
 def base() -> Path:
     d = settings_store.get_langgraph_dir()
     d.mkdir(parents=True, exist_ok=True)
@@ -66,11 +70,33 @@ def valid_slug(slug: str) -> bool:
     return bool(_SLUG_RE.match(slug or "")) and slug not in (".", "..")
 
 
+def is_project(d: Path) -> bool:
+    """是不是工作流專案：專案清單、刪除、上傳、讀寫檔都用這個標準（資料夾、名稱合法、有 langgraph.json）。
+    經由 symlink 的不算（專案資料夾本身或它的 langgraph.json 是連結）：連結可能指到工作流資料夾外面。"""
+    cfg = d / CONFIG_NAME
+    return (valid_slug(d.name) and not d.is_symlink() and d.is_dir()
+            and not cfg.is_symlink() and cfg.is_file())
+
+
+def _ensure_free(d: Path) -> None:
+    """新建 / 改名 / 複製的目的地要是空的名稱；被佔用時說清楚是專案還是別的資料夾。"""
+    if d.exists() or d.is_symlink():
+        if is_project(d):
+            raise FileExistsError(f"已有專案「{d.name}」")
+        raise NotProject(f"工作流資料夾裡已有同名資料夾「{d.name}」（不是工作流專案），不會動它：請換一個名稱")
+
+
+def _inside(pdir: Path, p: Path) -> bool:
+    """p 解析 symlink 之後還在專案資料夾裡（某層資料夾或檔案本身是指到外面的連結就不算）。"""
+    root, rp = pdir.resolve(), p.resolve()
+    return rp == root or root in rp.parents
+
+
 def project_dir(slug: str) -> Path:
     if not valid_slug(slug):
         raise ValueError(f"專案名稱只能用英數字、. _ -：{slug!r}")
     d = base() / slug
-    if not (d / CONFIG_NAME).is_file():
+    if not is_project(d):
         raise FileNotFoundError(f"找不到專案「{slug}」（或沒有 {CONFIG_NAME}）")
     return d
 
@@ -136,16 +162,33 @@ def env_values(pdir: Path, cfg: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
-def _secret_paths(cfg: dict[str, Any] | None) -> set[str]:
+def secret_paths(pdir: Path) -> set[str]:
+    """langgraph.json 的 "env" 指到的檔案（相對路徑）。設定檔其他地方有錯（缺 graphs、JSON 壞掉）也要認得，
+    所以不經 read_config 驗證：寬鬆地只取 env 欄位，JSON 讀不了就用字面比對找 "env": "…"。"""
+    try:
+        text = (pdir / CONFIG_NAME).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    try:
+        raw = json.loads(text)
+        found = [raw.get("env")] if isinstance(raw, dict) else []
+    except ValueError:
+        found = []
+        for m in re.finditer(r'"env"\s*:\s*"((?:[^"\\]|\\.)*)"', text):
+            with contextlib.suppress(ValueError):
+                found.append(json.loads(f'"{m.group(1)}"'))
     out = set()
-    if cfg and isinstance(cfg.get("env"), str):
-        with contextlib.suppress(ValueError):
-            out.add(str(safe_rel(cfg["env"])))
+    for env in found:
+        if isinstance(env, str):
+            with contextlib.suppress(ValueError):
+                out.add(str(safe_rel(env)))
     return out
 
 
-def is_secret(rel: PurePosixPath, cfg: dict[str, Any] | None) -> bool:
-    return rel.name == ".env" or rel.name.startswith(".env.") or str(rel) in _secret_paths(cfg)
+def is_secret(rel: PurePosixPath, secrets: set[str]) -> bool:
+    """環境變數檔（.env、.env.*、langgraph.json 指定的 env 檔）：只能寫，不能讀回瀏覽器、不進匯出。
+    secrets：secret_paths(專案資料夾)。"""
+    return rel.name == ".env" or rel.name.startswith(".env.") or str(rel) in secrets
 
 
 # ---------------- 依賴 / venv ----------------
@@ -358,7 +401,7 @@ def list_projects() -> list[dict[str, Any]]:
 
     out = []
     for d in sorted(base().iterdir(), key=lambda e: e.name.lower()):
-        if not d.is_dir() or not (d / CONFIG_NAME).is_file() or not valid_slug(d.name):
+        if not is_project(d):
             continue
         item: dict[str, Any] = {"slug": d.name, "description": describe(d), "updated_at": _updated_at(d)}
         try:
@@ -387,26 +430,22 @@ def get_project(slug: str) -> dict[str, Any]:
         out["error"] = str(e)
         out["venv"] = venv_status(slug)
     files = []
+    secrets = secret_paths(pdir)
     for p in _iter_files(pdir):
         rel = PurePosixPath(p.relative_to(pdir).as_posix())
-        files.append({"path": str(rel), "size": p.stat().st_size, "secret": is_secret(rel, cfg)})
+        files.append({"path": str(rel), "size": p.stat().st_size, "secret": is_secret(rel, secrets)})
     out["files"] = files
     return out
-
-
-def _cfg_or_none(pdir: Path) -> dict[str, Any] | None:
-    try:
-        return read_config(pdir)
-    except ValueError:
-        return None
 
 
 def read_file(slug: str, path: str) -> str:
     pdir = project_dir(slug)
     rel = safe_rel(path)
-    if is_secret(rel, _cfg_or_none(pdir)):
+    if is_secret(rel, secret_paths(pdir)):
         raise PermissionError("環境變數檔只能覆寫，不能讀取內容")
     f = pdir / rel
+    if not _inside(pdir, f):
+        raise PermissionError(f"{rel} 經由連結指到專案外面，不能讀取")
     if not f.is_file() or f.is_symlink():
         raise FileNotFoundError(f"找不到 {rel}")
     if f.stat().st_size > MAX_EDIT_BYTES:
@@ -428,6 +467,8 @@ def write_file(slug: str, path: str, content: str) -> dict[str, Any]:
         except ValueError as e:
             raise ValueError(f"{CONFIG_NAME} 不是合法的 JSON：{e}") from e
     f = pdir / rel
+    if not _inside(pdir, f):  # 不能經由連結寫到專案（工作流資料夾）外面
+        raise PermissionError(f"{rel} 經由連結指到專案外面，不能寫入")
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(content, encoding="utf-8")
     return get_project(slug)
@@ -439,7 +480,9 @@ def delete_file(slug: str, path: str) -> dict[str, Any]:
     if str(rel) == CONFIG_NAME:
         raise ValueError(f"不能刪除 {CONFIG_NAME}（要刪整個專案請用刪除專案）")
     f = pdir / rel
-    if f.is_file():
+    if not _inside(pdir, f.parent):  # 上層資料夾是指到外面的連結：會刪到外面的檔案
+        raise PermissionError(f"{rel} 經由連結指到專案外面，不能刪除")
+    if f.is_file() or f.is_symlink():  # 連結本身只刪連結
         f.unlink()
     return get_project(slug)
 
@@ -454,8 +497,7 @@ def create_project(slug: str, template: str = "example") -> dict[str, Any]:
     if not valid_slug(slug):
         raise ValueError("專案名稱只能用英數字、. _ -（開頭要是英數字）")
     d = base() / slug
-    if d.exists():
-        raise FileExistsError(f"已有專案「{slug}」")
+    _ensure_free(d)
     src = EXAMPLES_DIR / template
     if template and valid_slug(template) and src.is_dir():  # 範本只能是 langgraph_examples/ 底下的資料夾
         shutil.copytree(src, d, ignore=shutil.ignore_patterns(*SKIP_DIRS, "*.pyc"))
@@ -473,9 +515,13 @@ def delete_project(slug: str) -> None:
 
     if not valid_slug(slug):
         raise ValueError("不合法的專案名稱")
+    pdir = base() / slug
+    # 工作流資料夾可能是家目錄等既有資料夾；指到外面的連結也不刪（連結本身也留著）
+    if (pdir.exists() or pdir.is_symlink()) and not is_project(pdir):
+        raise NotProject(f"「{slug}」不是工作流專案（沒有 {CONFIG_NAME}，或是指到別處的連結），不會刪除")
     if str(env_dir(slug)) in _installing:
         raise ValueError("這個專案正在安裝依賴，請稍後再刪")
-    for d in (base() / slug, env_dir(slug), work_dir(slug), langgraph_history.runs_dir(slug)):
+    for d in (pdir, env_dir(slug), work_dir(slug), langgraph_history.runs_dir(slug)):
         if d.exists():
             shutil.rmtree(d)
 
@@ -485,8 +531,7 @@ def _new_slug(new_slug: str) -> Path:
     if not valid_slug(new_slug):
         raise ValueError("專案名稱只能用英數字、. _ -（開頭要是英數字）")
     dest = base() / new_slug
-    if dest.exists():
-        raise FileExistsError(f"已有專案「{new_slug}」")
+    _ensure_free(dest)
     return dest
 
 
@@ -510,22 +555,22 @@ def rename_project(slug: str, new_slug: str) -> dict[str, Any]:
 
 
 def duplicate_project(slug: str, new_slug: str) -> dict[str, Any]:
-    """複製一份專案檔案（含 .env；不含 venv 與執行紀錄）。"""
+    """複製一份專案檔案（含 .env；不含 venv 與執行紀錄）。專案裡的連結照樣複製成連結（不把外面的內容抄進來）。"""
     src = project_dir(slug)
     dest = _new_slug(new_slug)
-    shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*SKIP_DIRS, "*.pyc", "*.egg-info"))
+    shutil.copytree(src, dest, symlinks=True, ignore=shutil.ignore_patterns(*SKIP_DIRS, "*.pyc", "*.egg-info"))
     return get_project(dest.name)
 
 
 def export_zip(slug: str) -> bytes:
     """專案打包成 zip（不含 .env 等環境變數檔、venv、快取）：裡面的祕密不會被下載到瀏覽器。"""
     pdir = project_dir(slug)
-    cfg = _cfg_or_none(pdir)
+    secrets = secret_paths(pdir)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in _iter_files(pdir):
             rel = PurePosixPath(f.relative_to(pdir).as_posix())
-            if not is_secret(rel, cfg):
+            if not is_secret(rel, secrets):
                 zf.write(f, f"{slug}/{rel}")
     return buf.getvalue()
 
@@ -541,9 +586,14 @@ def _strip_top(paths: list[str]) -> str:
 
 
 def import_files(slug: str, files: list[tuple[str, bytes]], *, replace: bool = False) -> dict[str, Any]:
-    """上傳整個專案（資料夾或 zip 解出的檔案）。replace＝先清掉原本的檔案（venv 保留）。"""
+    """上傳整個專案（資料夾或 zip 解出的檔案）。replace＝先清掉原本的檔案（venv 保留）。
+    同名的資料夾已經在、但不是專案（包括指到別處的連結）：不論 replace 都不動它（NotProject）。
+    寫入的路徑經由專案裡的連結指到外面的，整批拒絕（一個檔案都不寫）。"""
     if not valid_slug(slug):
         raise ValueError("專案名稱只能用英數字、. _ -（開頭要是英數字）")
+    d = base() / slug
+    if (d.exists() or d.is_symlink()) and not is_project(d):
+        raise NotProject(f"工作流資料夾裡已有同名資料夾「{slug}」（不是工作流專案），不會覆寫：請換一個專案名稱")
     if len(files) > MAX_UPLOAD_FILES:
         raise ValueError(f"檔案太多（上限 {MAX_UPLOAD_FILES}）")
     if sum(len(b) for _, b in files) > MAX_UPLOAD_BYTES:
@@ -557,10 +607,12 @@ def import_files(slug: str, files: list[tuple[str, bytes]], *, replace: bool = F
     cleaned = [(p[len(top):], b) for p, b in cleaned if p.startswith(top) and p[len(top):]]
     if not any(p == CONFIG_NAME for p, _ in cleaned):
         raise ValueError(f"上傳的檔案裡沒有 {CONFIG_NAME}（要在最上層，或唯一的資料夾裡）")
-    d = base() / slug
     if d.exists() and replace:
         shutil.rmtree(d)
     d.mkdir(parents=True, exist_ok=True)
+    outside = [rel for rel, _ in cleaned if not _inside(d, d / rel)]
+    if outside:
+        raise PermissionError(f"{outside[0]} 經由連結指到專案外面，不會寫入")
     for rel, data in cleaned:
         f = d / rel
         f.parent.mkdir(parents=True, exist_ok=True)

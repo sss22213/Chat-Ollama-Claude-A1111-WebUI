@@ -215,6 +215,32 @@ const newConversation = (model) => ({
   created_at: Date.now() / 1000,
 });
 
+// 存檔排隊：同一則對話一次只送一個 PUT（自己的兩個存檔才不會互相當成舊版本）。值＝最後一個存檔的 promise
+const _saving = new Map();
+// 還沒存到後端的訊息 id（/image、/workflow 進行中；送出時問題還沒存好）：存檔衝突、本機換成後端最新版時
+// 這些訊息留本機的，不會因為後端還沒有就不見
+const _unsaved = new Set();
+// 這個分頁自己刪掉的對話：之後排隊中的存檔不送，也不會被當成「別處刪除」提示
+const _deleted = new Set();
+
+// ---- 對話的變更（_syncConversation 的 redo）：本機與後端最新版都用同一個函式改，重複套用結果不變 ----
+// 把訊息放進對話：同 id 的換掉、沒有的接在最後；對話裡只有這些訊息（新對話）時用 title 當標題
+function withMessages(c, msgs, title) {
+  const list = Array.isArray(c.messages) ? c.messages : [];
+  const byId = new Map(msgs.map((m) => [m.id, m]));
+  const messages = list.map((m) => byId.get(m.id) || m);
+  for (const m of msgs) if (!list.some((x) => x.id === m.id)) messages.push(m);
+  const fresh = title && list.every((m) => byId.has(m.id));
+  return { ...c, title: fresh ? title : c.title, messages };
+}
+// 改一則訊息：patch 可以是函式（回 null＝不用改）；訊息不在、或不用改都回 null
+function withMessagePatch(c, msgId, patch) {
+  const m = (c.messages || []).find((x) => x.id === msgId);
+  const p = m && (typeof patch === "function" ? patch(m) : patch);
+  if (!p) return null;
+  return { ...c, messages: c.messages.map((x) => (x.id === msgId ? { ...x, ...p } : x)) };
+}
+
 export const useChat = create(
   persist(
     (set, get) => ({
@@ -257,7 +283,8 @@ export const useChat = create(
       _lastRefresh: 0,
       attachments: [], // 待送出的附件圖 [{id, dataUrl}]
       usage: null, // {prompt_tokens, num_ctx} 上一輪 context 用量
-      compacting: false,
+      compacting: null, // 正在壓縮的對話 id
+      syncNotice: null, // 存檔沒存成功的提示 {kind: deleted（別處刪了）| failed, title}（顯示在輸入框上方）
       modelReload: null, // 模型重新載入的狀態 {status: busy|done|error, ...}
       composerDraft: null, // 要塞進輸入框的草稿（如「套用歷史」帶入 prompt，會「取代」輸入框內容）
       composerInsert: null, // 要「附加」到輸入框的片段（如 LoRA 瀏覽器帶入 tag，保留已輸入內容）
@@ -405,7 +432,7 @@ export const useChat = create(
           const toMigrate = source.filter((c) => (c.messages?.length || 0) > 0);
           for (const c of toMigrate) {
             try {
-              await putConversation(c);
+              await putConversation(c, null); // 只建新的，不蓋掉後端已有的
             } catch {
               /* 個別失敗略過 */
             }
@@ -496,24 +523,100 @@ export const useChat = create(
         }
       },
 
-      // 把某對話（需已載入且有內容）寫回後端
-      _syncConversation(id) {
+      // 把某對話（需已載入且有內容）寫回後端，帶上本機上次看到的版本（updated_at）。
+      // redo：這次改了什麼（對話 → 改好的對話；不用改回 null），要能重複套用。後端在那之後被改過
+      // （別的分頁 / 裝置、或後端回覆存了新內容）會回 409 附最新版：在最新版上用 redo 重做一次再存，
+      // 本機的舊資料不會蓋掉沒看過的訊息。對話已在別處刪除就不建回來（本機也拿掉並提示）。
+      // 同一則對話的存檔排隊、一次一個。回 null＝存好了（或不用存），失敗回 Error；不會 reject，不等結果也可以
+      _syncConversation(id, redo) {
+        const run = () => get()._putConversation(id, redo);
+        const p = (_saving.get(id) || Promise.resolve()).then(run, run);
+        _saving.set(id, p);
+        p.then(() => {
+          if (_saving.get(id) === p) _saving.delete(id);
+        });
+        return p;
+      },
+
+      async _putConversation(id, redo) {
         const c = get().conversations.find((x) => x.id === id);
-        if (!c || !Array.isArray(c.messages) || c.messages.length === 0) return;
-        putConversation(c)
-          .then((stored) => {
-            // 記下後端時間戳，refreshConversations 才知道哪邊比較新
-            set((st) => ({
-              conversations: st.conversations.map((x) =>
-                x.id === id
-                  ? { ...x, created_at: stored.created_at, updated_at: stored.updated_at }
-                  : x
-              ),
-            }));
-          })
-          .catch(() => {
-            /* 同步失敗：下次互動會再試 */
-          });
+        if (_deleted.has(id) || !c || !Array.isArray(c.messages) || c.messages.length === 0) return null;
+        let body = (redo && redo(c)) || c;
+        let base = c.updated_at ?? null;
+        for (let i = 0; i < 4; i++) {
+          if (!get().conversations.some((x) => x.id === id)) return null; // 存的途中在這裡刪掉了
+          try {
+            const stored = await putConversation(body, base);
+            get()._adoptServer(id, stored); // 記下後端版本，refreshConversations 與下次存檔才知道看過哪一版
+            return null;
+          } catch (e) {
+            if (e.status !== 409) return e; // 連不上等：本機留著，下次存檔會一起帶上
+            if (!e.current) {
+              get()._dropConversation(id);
+              return e;
+            }
+            const next = redo && redo(e.current);
+            if (!next) {
+              get()._adoptServer(id, e.current); // 最新版已經是這樣，不用再存
+              return null;
+            }
+            body = next;
+            base = e.current.updated_at ?? null;
+          }
+        }
+        set({ syncNotice: { kind: "failed", title: c.title } });
+        return new Error("對話在別處一直有更新，沒有存成功");
+      },
+
+      // 本機換成後端存好的版本。本機比後端新的訊息留本機的：正在看的回覆（後端每 3 秒才存一次）、
+      // 還沒存的（/image、/workflow 進行中）
+      _adoptServer(id, stored) {
+        const run = get()._run;
+        const mine = (mid) => (run?.convId === id && run.msgId === mid) || _unsaved.has(mid);
+        set((st) => ({
+          conversations: st.conversations.map((c) => {
+            if (c.id !== id) return c;
+            const local = new Map((c.messages || []).map((m) => [m.id, m]));
+            const messages = (stored.messages || []).map((m) =>
+              mine(m.id) && local.has(m.id) ? local.get(m.id) : m
+            );
+            const have = new Set(messages.map((m) => m.id));
+            for (const m of c.messages || []) if (mine(m.id) && !have.has(m.id)) messages.push(m);
+            return { ...c, ...stored, messages };
+          }),
+        }));
+      },
+
+      // 對話已在別的分頁 / 裝置刪除：本機也拿掉（不建回來），提示剛才的變更沒存
+      _dropConversation(id) {
+        const gone = get().conversations.find((c) => c.id === id);
+        if (!gone) return;
+        set((st) => {
+          const conversations = st.conversations.filter((c) => c.id !== id);
+          const currentId = st.currentId === id ? conversations[0]?.id || null : st.currentId;
+          return { conversations, currentId, syncNotice: { kind: "deleted", title: gone.title } };
+        });
+        if (get().conversations.length === 0) get().createConversation();
+        else get()._ensureLoaded(get().currentId);
+      },
+
+      // 後端回覆存了一次（prev → next）：本機的版本就是 prev 的話，新版本的內容本機都有了（存檔前的事件
+      // 都收到了），跟著換成 next；之後整則存檔（換模型等）才不會被當成舊版本
+      _advanceBase(id, prev, next) {
+        if (prev == null || next == null) return;
+        set((st) => ({
+          conversations: st.conversations.map((c) =>
+            c.id === id && c.updated_at === prev ? { ...c, updated_at: next } : c
+          ),
+        }));
+      },
+
+      // 改一則對話（本機馬上改）並存回後端；redo 見 _syncConversation
+      _editConversation(id, redo) {
+        set((st) => ({
+          conversations: st.conversations.map((c) => (c.id === id ? redo(c) || c : c)),
+        }));
+        return get()._syncConversation(id, redo);
       },
 
       // 重新整理 Ollama 模型清單，再把目前模型從記憶體卸載後重新載入
@@ -555,12 +658,7 @@ export const useChat = create(
         // 同步目前對話的模型，讓下拉與送出都用該引擎的有效模型
         const cur = get().currentConversation();
         if (cur && pref) {
-          useChat.setState((st) => ({
-            conversations: st.conversations.map((c) =>
-              c.id === st.currentId ? { ...c, model: pref } : c
-            ),
-          }));
-          get()._syncConversation(get().currentId);
+          get()._editConversation(cur.id, (c) => (c.model === pref ? null : { ...c, model: pref }));
         }
         _debouncedSaveSettings(get().settings); // 同步 engine + chatModel 到後端
       },
@@ -583,6 +681,7 @@ export const useChat = create(
         get()._resumeRun(id); // 已載入過的對話：回覆可能還在跑
       },
       deleteConversation(id) {
+        _deleted.add(id);
         set((st) => {
           const conversations = st.conversations.filter((c) => c.id !== id);
           let currentId = st.currentId;
@@ -594,12 +693,12 @@ export const useChat = create(
         else get()._ensureLoaded(get().currentId);
       },
       renameConversation(id, title) {
-        set((st) => ({
-          conversations: st.conversations.map((c) =>
-            c.id === id ? { ...c, title } : c
-          ),
-        }));
-        get()._syncConversation(id);
+        get()._editConversation(id, (c) => (c.title === title ? null : { ...c, title }));
+      },
+      // 換目前對話的模型（頂端的模型下拉）：存回後端，存檔衝突時在最新版上重新套用
+      setConversationModel(name) {
+        const id = get().currentId;
+        if (id) get()._editConversation(id, (c) => (c.model === name ? null : { ...c, model: name }));
       },
 
       // ---- 設定 ----（本機即時更新 + debounce 同步到後端）
@@ -617,26 +716,9 @@ export const useChat = create(
         _debouncedSaveSettings(get().settings);
       },
 
-      // 內部：更新目前對話
-      _updateCurrent(updater) {
-        set((st) => ({
-          conversations: st.conversations.map((c) =>
-            c.id === st.currentId ? updater(c) : c
-          ),
-        }));
-      },
+      // 內部：更新指定對話（一律用 id，不用「目前對話」：非同步回來時使用者可能已經切走）
       _updateConversation(id, patch) {
         set((st) => ({ conversations: st.conversations.map((c) => (c.id === id ? { ...c, ...patch } : c)) }));
-      },
-      _patchMessage(msgId, patch) {
-        get()._updateCurrent((c) => ({
-          ...c,
-          messages: c.messages.map((m) =>
-            m.id === msgId
-              ? { ...m, ...(typeof patch === "function" ? patch(m) : patch) }
-              : m
-          ),
-        }));
       },
 
       // 改指定對話的訊息：回覆跑到一半切去別的對話，也要改到原本那則
@@ -749,17 +831,26 @@ export const useChat = create(
         const run = { convId, msgId };
         const mine = () => get()._run === run;
         let done = null;
+        let usage = null; // 這次回覆的 context 用量（自動壓縮只看它）
+        const numCtx = (u) => ({ prompt_tokens: u.prompt_tokens, num_ctx: u.num_ctx || get().settings.numCtx });
         set({ streaming: true, _run: run });
         const abort = open(
           (e) => {
             if (!mine()) return;
             if (e.type === "done") done = e;
-            else if (e.type === "snapshot") get()._applySnapshot(convId, e);
-            else get()._applyChatEvent(convId, msgId, e);
+            else if (e.type === "saved") get()._advanceBase(convId, e.prev, e.updated_at);
+            else if (e.type === "snapshot") {
+              get()._applySnapshot(convId, e);
+              if (e.usage) usage = numCtx(e.usage);
+              if (e.saved) get()._advanceBase(convId, e.saved[0], e.saved[1]);
+            } else {
+              if (e.type === "usage") usage = numCtx(e);
+              get()._applyChatEvent(convId, msgId, e);
+            }
           },
           () => {
             if (!mine()) return;
-            if (done) get()._finishRun(convId, msgId, done);
+            if (done) get()._finishRun(convId, msgId, done, usage);
             else get()._lostRun(convId, msgId); // 連線先斷了，回覆可能還在跑
           },
           (err) => {
@@ -787,7 +878,7 @@ export const useChat = create(
       },
 
       // 回覆結束：後端已經存好了，這裡不用（也不能）再存一次，以免舊內容蓋掉後端的
-      _finishRun(convId, msgId, done) {
+      _finishRun(convId, msgId, done, usage) {
         get()._patchMessageIn(convId, msgId, (m) => ({
           status: "done",
           toolRunning: false,
@@ -795,8 +886,8 @@ export const useChat = create(
           content: stripEchoedNote(m.content),
         }));
         set({ streaming: false, _abort: null, _run: null });
-        if (done.updated_at) get()._updateConversation(convId, { updated_at: done.updated_at });
-        get()._maybeAutoCompact();
+        get()._advanceBase(convId, done.prev_updated_at, done.updated_at);
+        get()._maybeAutoCompact(convId, usage);
       },
 
       // 連線斷了但沒收到結束：回覆多半還在後端跑，接回去；後端連不上才顯示錯誤
@@ -804,8 +895,12 @@ export const useChat = create(
         set({ streaming: false, _abort: null, _run: null });
         if (err?.status === 409) {
           // 別的分頁正在這個對話回覆：這則不會跑，下次同步就看得到那邊的回覆
-          get()._patchMessageIn(convId, msgId, { status: "done", error: err.message, toolRunning: false });
-          get()._syncConversation(convId);
+          const patch = { status: "done", error: err.message, toolRunning: false };
+          get()._patchMessageIn(convId, msgId, patch);
+          // 存好之後接上那邊的回覆（它可能不是最後一則了）
+          get()
+            ._syncConversation(convId, (c) => withMessagePatch(c, msgId, patch))
+            .then(() => get()._resumeRun(convId));
           return;
         }
         for (const wait of [300, 1500, 3000, 5000]) {
@@ -824,26 +919,39 @@ export const useChat = create(
       // 對話停在「回覆中」：還在跑就接上；已經沒在跑就以後端存的為準。
       // 順序不能換：先查 run 再讀對話，後端是存好才移除 run，讀到的才會是最後結果。
       async _resumeRun(convId, { strict = false, reason } = {}) {
-        const last = () => get().conversations.find((c) => c.id === convId)?.messages?.at?.(-1);
-        const pending = (m) => m?.role === "assistant" && m.status === "streaming";
-        if (get().streaming || get()._resuming === convId || !pending(last())) return;
+        // 停在回覆中的訊息：不一定是最後一則（回覆在跑的時候別處又送了問題，問題和回覆會接在它後面）
+        const pendingIds = () =>
+          (get().conversations.find((c) => c.id === convId)?.messages || [])
+            .filter((m) => m.role === "assistant" && m.status === "streaming")
+            .map((m) => m.id);
+        if (get().streaming || get()._resuming === convId || !pendingIds().length) return;
         set({ _resuming: convId });
         try {
           const run = await getChatRun(convId);
           const full = await getConversation(convId);
           if (get().streaming) return;
           get()._updateConversation(convId, { ...full, messages: full.messages || [] });
-          if (run.running) {
-            get()._followRun(convId, run.message_id, (...cb) => followChatRun(convId, ...cb));
-          } else if (pending(last())) {
-            // 沒在跑卻停在回覆中：後端中途重啟了（或一開始就沒跑起來）。已存的部分留著
-            get()._patchMessageIn(convId, last().id, {
+          // 還在跑的那則接上；其他停在回覆中的都沒在跑：後端中途重啟了（或一開始就沒跑起來）。已存的部分留著
+          const stale = pendingIds().filter((id) => !(run.running && id === run.message_id));
+          if (stale.length) {
+            const patch = {
               status: "done",
               toolRunning: false,
               progress: null,
               ...(reason ? { error: reason } : { interrupted: true }),
+            };
+            for (const id of stale) get()._patchMessageIn(convId, id, patch);
+            // 存檔衝突時只標還停在回覆中的那幾則（別處已經標好就不動）
+            get()._syncConversation(convId, (c) => {
+              let out = null;
+              for (const id of stale) {
+                out = withMessagePatch(out || c, id, (m) => (m.status === "streaming" ? patch : null)) || out;
+              }
+              return out;
             });
-            get()._syncConversation(convId);
+          }
+          if (run.running) {
+            get()._followRun(convId, run.message_id, (...cb) => followChatRun(convId, ...cb));
           }
         } catch (e) {
           if (strict) throw e; // 其他時候後端連不上就算了，下次同步再確認
@@ -884,6 +992,20 @@ export const useChat = create(
           return;
         }
 
+        // 這則對話在後端還有回覆在跑（別的分頁 / 裝置送的）：後端不會再開一個（409），所以不送出——
+        // 文字放回輸入框、輸入框上方提示，並接上那個回覆
+        if (await getChatRun(convId).then((r) => r.running, () => false)) {
+          set({ composerDraft: trimmed, syncNotice: { kind: "busy", title: convo.title } });
+          try {
+            const full = await getConversation(convId);
+            get()._updateConversation(convId, { ...full, messages: full.messages || [] });
+          } catch {
+            /* 連不上：下次同步再接 */
+          }
+          get()._resumeRun(convId);
+          return;
+        }
+
         const attachments = get().attachments;
         const userMsg = {
           id: uid(),
@@ -900,18 +1022,31 @@ export const useChat = create(
           status: "streaming",
         };
 
-        get()._updateCurrent((c) => ({
-          ...c,
-          // 首則訊息設為標題
-          title: c.messages.length === 0 ? trimmed.slice(0, 30) : c.title,
-          messages: [...c.messages, userMsg, assistantMsg],
+        // 問題和空的回覆接在最後，首則訊息設為標題（存檔衝突時在後端最新版上也這樣接）
+        const add = (c) => withMessages(c, [userMsg, assistantMsg], trimmed.slice(0, 30));
+        _unsaved.add(userMsg.id).add(assistantMsg.id);
+        set((st) => ({
+          conversations: st.conversations.map((c) => (c.id === convId ? add(c) : c)),
+          streaming: true,
+          syncNotice: null,
         }));
         get().clearAttachments();
 
+        // 先把問題和空的回覆存好：回覆在後端跑，關掉網頁問題也不會不見，後端也才有地方寫。
+        // 本機的版本舊了（別的分頁 / 裝置剛存過）就接在後端最新版後面，送給模型的歷史也用存好的這份
+        const saveErr = await get()._syncConversation(convId, add);
+        _unsaved.delete(userMsg.id);
+        _unsaved.delete(assistantMsg.id);
+        if (saveErr) {
+          get()._patchMessageIn(convId, assistantMsg.id, { status: "done", error: saveErr.message });
+          if (saveErr.reason === "deleted") set({ composerDraft: trimmed }); // 對話已在別處刪除：問題放回輸入框
+          set({ streaming: false });
+          return;
+        }
+
         // 組送出的訊息（帶 role+content；有附件則帶 images 供 vision/img2img）
-        const sendable = get()
-          .currentConversation()
-          .messages.filter((m) => m.role === "user" || m.role === "assistant")
+        const sendable = (get().conversations.find((c) => c.id === convId)?.messages || [])
+          .filter((m) => m.role === "user" || m.role === "assistant")
           .filter((m) => m.id !== assistantMsg.id);
         // PNG info 只附在「最後一則」有圖的助理訊息（問參數幾乎都是問最近那張）。
         // 每則都附會讓歷史充滿 prompt 純文字範本 → 模型模仿著印文字而忘記呼叫工具。
@@ -954,8 +1089,6 @@ export const useChat = create(
           .map((a) => stripPrefix(a.original || a.dataUrl))
           .filter((b64) => b64.length <= MAX_SRC);
 
-        set({ streaming: true });
-
         const canTools = get().modelSupportsTools(model);
         const toolsEnabled = settings.toolsEnabled && canTools;
         const webEnabled = settings.webEnabled && canTools;
@@ -968,16 +1101,6 @@ export const useChat = create(
           if (supported?.length && !supported.includes(effort)) {
             effort = supported.includes("medium") ? "medium" : supported[0];
           }
-        }
-
-        // 先把問題和空的回覆存好：回覆在後端跑，關掉網頁問題也不會不見，後端也才有地方寫
-        try {
-          const stored = await putConversation(get().conversations.find((c) => c.id === convId));
-          get()._updateConversation(convId, { created_at: stored.created_at, updated_at: stored.updated_at });
-        } catch (e) {
-          get()._patchMessageIn(convId, assistantMsg.id, { status: "done", error: e.message });
-          set({ streaming: false });
-          return;
         }
 
         get()._followRun(convId, assistantMsg.id, (onEvent, onDone, onError) =>
@@ -1022,19 +1145,23 @@ export const useChat = create(
           toolRunning: !!target,
           toolName: target ? `workflow ${target}` : "",
         };
-        const convId = get().currentConversation()?.id;
-        get()._updateCurrent((c) => ({
-          ...c,
-          title: c.messages.length === 0 ? `/workflow ${target}`.slice(0, 30) : c.title,
-          messages: [...c.messages, userMsg, assistantMsg],
+        // 綁定開始時的對話：跑到一半切去別的對話，也是改、存原本那則
+        const convId = get().currentId;
+        const title = `/workflow ${target}`.slice(0, 30);
+        _unsaved.add(userMsg.id).add(assistantMsg.id);
+        set((st) => ({
+          conversations: st.conversations.map((c) =>
+            c.id === convId ? withMessages(c, [userMsg, assistantMsg], title) : c
+          ),
+          streaming: true,
+          syncNotice: null,
         }));
-        const patch = (p) => get()._patchMessage(assistantMsg.id, p);
+        const patch = (p) => get()._patchMessageIn(convId, assistantMsg.id, p);
         const finish = (p = {}) => {
           patch({ status: "done", toolRunning: false, progress: null, ...p });
           set({ streaming: false, _abort: null });
-          if (convId) get()._syncConversation(convId);
+          get()._saveNewMessages(convId, [userMsg.id, assistantMsg.id], title);
         };
-        set({ streaming: true });
 
         if (!target) {
           try {
@@ -1139,18 +1266,23 @@ export const useChat = create(
           status: "streaming",
           toolRunning: true,
         };
-        get()._updateCurrent((c) => ({
-          ...c,
-          title: c.messages.length === 0 ? prompt.slice(0, 30) : c.title,
-          messages: [...c.messages, userMsg, assistantMsg],
+        // 綁定開始時的對話：生成中切去別的對話，也是改、存原本那則
+        const convId = get().currentId;
+        const title = prompt.slice(0, 30);
+        _unsaved.add(userMsg.id).add(assistantMsg.id);
+        set((st) => ({
+          conversations: st.conversations.map((c) =>
+            c.id === convId ? withMessages(c, [userMsg, assistantMsg], title) : c
+          ),
+          streaming: true,
+          syncNotice: null,
         }));
-        set({ streaming: true });
         try {
           const result = await generateImage(
             prompt,
             settingsOverride || get().settings.imageSettings
           );
-          get()._patchMessage(assistantMsg.id, {
+          get()._patchMessageIn(convId, assistantMsg.id, {
             toolRunning: false,
             status: "done",
             images: [
@@ -1158,15 +1290,23 @@ export const useChat = create(
             ],
           });
         } catch (e) {
-          get()._patchMessage(assistantMsg.id, {
+          get()._patchMessageIn(convId, assistantMsg.id, {
             toolRunning: false,
             status: "done",
             error: e.message,
           });
         } finally {
           set({ streaming: false });
-          get()._syncConversation(get().currentId);
+          await get()._saveNewMessages(convId, [userMsg.id, assistantMsg.id], title);
         }
+      },
+
+      // /image、/workflow 結束：把這次加的訊息（本機的最後內容）存回後端；存完才不算「還沒存」
+      async _saveNewMessages(convId, ids, title) {
+        const c = get().conversations.find((x) => x.id === convId);
+        const msgs = ids.map((id) => c?.messages?.find((m) => m.id === id)).filter(Boolean);
+        if (msgs.length) await get()._syncConversation(convId, (cv) => withMessages(cv, msgs, title));
+        for (const id of ids) _unsaved.delete(id);
       },
 
       // ---- 提示詞歷史（sd-webui-prompt-history 整合）----
@@ -1271,18 +1411,22 @@ export const useChat = create(
         set({ streaming: false, _abort: null, _run: null });
       },
 
-      // 自動壓縮：設定開啟且上一輪用量達門檻（預設 80%）就壓縮；compact 本身會擋太短的對話
-      _maybeAutoCompact() {
-        const { settings, usage } = get();
+      // 自動壓縮：設定開啟且剛結束的那次回覆用量達門檻（預設 80%）就壓縮「那則」對話
+      //（回覆中切到別的對話也一樣，不會壓到目前開著的）；compact 本身會擋太短的對話
+      _maybeAutoCompact(convId, usage) {
+        const { settings } = get();
         if (!settings.autoCompact || !usage?.num_ctx || !usage.prompt_tokens) return;
         const at = Number(settings.autoCompactAt) || 0.8;
-        if (usage.prompt_tokens / usage.num_ctx >= at) get().compact();
+        if (usage.prompt_tokens / usage.num_ctx >= at) get().compact(convId);
       },
 
-      // 壓縮對話：把較舊訊息摘要成一則，保留最後一組往返，省 context
-      async compact() {
-        const convo = get().currentConversation();
-        if (!convo || get().streaming || get().compacting) return;
+      // 壓縮對話：把較舊訊息摘要成一則，保留最後一組往返，省 context。
+      // 綁定開始時的那則對話（convId，預設目前對話）：摘要回來前切到別的對話，也只改原本那則。
+      // 壓縮期間才加進來的訊息（這裡送出的、別處存的）接在摘要與保留的那組後面，不會被丟掉
+      async compact(convId) {
+        const id = typeof convId === "string" ? convId : get().currentId;
+        const convo = get().conversations.find((c) => c.id === id);
+        if (!convo || !Array.isArray(convo.messages) || get().streaming || get().compacting) return;
         const turns = convo.messages.filter(
           (m) => m.role === "user" || m.role === "assistant"
         );
@@ -1290,7 +1434,7 @@ export const useChat = create(
         const model = convo.model || get().settings.chatModel;
         const payload = turns.map((m) => ({ role: m.role, content: m.content }));
 
-        set({ compacting: true });
+        set({ compacting: id });
         try {
           const { summary, notices } = await compactConversation(
             model,
@@ -1300,7 +1444,8 @@ export const useChat = create(
             ["ollama", "strata"].includes(get().settings.engine) ? !!get().settings.think : undefined
           );
           if (!summary) return;
-          const keep = convo.messages.slice(-2); // 保留最後一組往返
+          const before = new Set(convo.messages.map((m) => m.id)); // 開始壓縮時已有的：換成摘要
+          const keep = new Set(convo.messages.slice(-2).map((m) => m.id)); // 保留最後一組往返
           const summaryMsg = {
             id: uid(),
             role: "assistant",
@@ -1310,16 +1455,26 @@ export const useChat = create(
             notices: Array.isArray(notices) && notices.length ? notices : undefined,
             status: "done",
           };
-          get()._updateCurrent((c) => ({
+          const redo = (c) => ({
             ...c,
-            messages: [summaryMsg, ...keep],
+            messages: [
+              summaryMsg,
+              ...(c.messages || []).filter(
+                (m) => m.id !== summaryMsg.id && (keep.has(m.id) || !before.has(m.id))
+              ),
+            ],
+          });
+          set((st) => ({
+            conversations: st.conversations.map((c) =>
+              c.id === id && Array.isArray(c.messages) ? redo(c) : c
+            ),
           }));
-          set({ usage: null });
-          get()._syncConversation(get().currentId);
+          if (get().currentId === id) set({ usage: null });
+          get()._syncConversation(id, redo);
         } catch (e) {
           /* 摘要失敗：保持原樣 */
         } finally {
-          set({ compacting: false });
+          set({ compacting: null });
         }
       },
     }),

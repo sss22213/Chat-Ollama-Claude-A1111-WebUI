@@ -3,8 +3,9 @@
 DATA_DIR 綁定到主機資料夾，重建容器不掉）；圖片本身在圖片目錄，作品只記 /images/<檔名>。
 單機個人工具：所有作品共用一張表、無帳號隔離，連到同一個後端的裝置看到同一份。
 
-分鏡版本（comic_versions）另存一張表、不設上限：每一版是一份分鏡格的快照（JSON），
-用內容雜湊去重（同一份作品內容一模一樣的不重複存）。清單只回摘要，預覽 / 回復才取整份。
+分鏡版本（comic_versions）另存一張表、不設上限：每一版是一份分鏡格的快照（JSON）加上
+當時的故事（story 欄），用內容雜湊去重（同一份作品分鏡與故事都一模一樣的不重複存）。
+清單只回摘要，預覽 / 回復才取整份。
 """
 from __future__ import annotations
 
@@ -54,10 +55,15 @@ def _connect() -> sqlite3.Connection:
                 images   INTEGER,
                 cover    TEXT,
                 hash     TEXT,
-                data     TEXT NOT NULL
+                data     TEXT NOT NULL,
+                story    TEXT
             )
             """
         )
+        # 舊版資料庫的版本表沒有 story 欄：直接補上（舊版本的 story 是 NULL＝當時沒存）
+        cols = {r[1] for r in _conn.execute("PRAGMA table_info(comic_versions)")}
+        if "story" not in cols:
+            _conn.execute("ALTER TABLE comic_versions ADD COLUMN story TEXT")
         _conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_comic_versions ON comic_versions(comic_id, at DESC)"
         )
@@ -102,13 +108,15 @@ def list_summaries() -> list[dict[str, Any]]:
 
 
 def scan_texts() -> list[tuple[str, str, str]]:
-    """(作品 id, 標題, 作品與各版本的 JSON) — 圖片庫找「哪些作品用了這張圖」用。"""
+    """(作品 id, 標題, 作品與各版本的 JSON) — 圖片庫找「哪些作品用了這張圖」用。
+    只算作品還在的版本：作品不存在的孤兒版本（舊版前端在作品被別處刪除後還送版本留下的）不算使用中。"""
     with _lock:
         conn = _connect()
         rows = conn.execute("SELECT id, title, COALESCE(cover, '') || ' ' || data FROM comics").fetchall()
         titles = {r[0]: r[1] for r in rows}
         versions = conn.execute(
-            "SELECT comic_id, COALESCE(cover, '') || ' ' || data FROM comic_versions"
+            "SELECT comic_id, COALESCE(cover, '') || ' ' || data FROM comic_versions "
+            "WHERE comic_id IN (SELECT id FROM comics)"
         ).fetchall()
     return [*rows, *((cid, titles.get(cid) or "", text) for cid, text in versions)]
 
@@ -132,12 +140,8 @@ def upsert(comic: dict[str, Any]) -> dict[str, Any]:
     now = time.time()
     created = comic.get("created_at") or now
     stored = {**comic, "created_at": created, "updated_at": now}
-    # 舊版前端把版本塞在作品 JSON 裡：搬進版本表，作品本身不再帶
+    # 舊版前端把版本塞在作品 JSON 裡：作品存好後搬進版本表，作品本身不再帶
     legacy_versions = stored.pop("versions", None)
-    if isinstance(legacy_versions, list):
-        for v in legacy_versions:
-            if isinstance(v, dict) and isinstance(v.get("panels"), list):
-                add_version(comic_id, v)
     panels = stored.get("panels") or []
     with _lock:
         c = _connect()
@@ -163,6 +167,10 @@ def upsert(comic: dict[str, Any]) -> dict[str, Any]:
             ),
         )
         c.commit()
+    if isinstance(legacy_versions, list):
+        for v in legacy_versions:
+            if isinstance(v, dict) and isinstance(v.get("panels"), list):
+                add_version(comic_id, v)
     return stored
 
 
@@ -192,10 +200,12 @@ def _version_summary(r: tuple) -> dict[str, Any]:
     }
 
 
-def _panels_hash(panels: list[Any]) -> str:
-    return hashlib.sha1(
-        json.dumps(panels, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+def _panels_hash(panels: list[Any], story: str = "") -> str:
+    """去重用的內容雜湊。沒有故事時只算分鏡格（與舊版本的雜湊相同）。"""
+    text = json.dumps(panels, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if story:
+        text += "\n" + story
+    return hashlib.sha1(text.encode()).hexdigest()
 
 
 def list_versions(comic_id: str) -> list[dict[str, Any]]:
@@ -209,10 +219,10 @@ def list_versions(comic_id: str) -> list[dict[str, Any]]:
 
 
 def get_version(comic_id: str, version_id: str) -> dict[str, Any] | None:
-    """整份版本（含 panels）。"""
+    """整份版本（含 panels；有存故事的版本另含 story）。"""
     with _lock:
         row = _connect().execute(
-            f"SELECT {_VERSION_COLS}, data FROM comic_versions WHERE comic_id = ? AND id = ?",
+            f"SELECT {_VERSION_COLS}, data, story FROM comic_versions WHERE comic_id = ? AND id = ?",
             (comic_id, version_id),
         ).fetchone()
     if not row:
@@ -222,17 +232,24 @@ def get_version(comic_id: str, version_id: str) -> dict[str, Any] | None:
         out["panels"] = json.loads(row[8])
     except json.JSONDecodeError:
         out["panels"] = []
+    if row[9] is not None:  # 舊版本沒存故事：不回 story，前端回復時保留目前的故事
+        out["story"] = row[9]
     return out
 
 
 def add_version(comic_id: str, v: dict[str, Any]) -> dict[str, Any]:
-    """新增一版。內容與既有版本一模一樣時不重複存，回傳既有的那版並標 duplicate=True。"""
+    """新增一版。內容與既有版本一模一樣時不重複存，回傳既有的那版並標 duplicate=True。
+    作品不存在（還沒存上去、或已被刪除）時拒絕（ValueError → API 回 400），不留下孤兒版本。"""
     panels = v.get("panels")
     if not isinstance(panels, list) or not panels:
         raise ValueError("version 缺少 panels")
-    h = _panels_hash(panels)
+    story = v.get("story")
+    story = story if isinstance(story, str) else ""
+    h = _panels_hash(panels, story)
     with _lock:
         c = _connect()
+        if not c.execute("SELECT 1 FROM comics WHERE id = ?", (comic_id,)).fetchone():
+            raise ValueError("找不到作品，不能新增版本")
         dup = c.execute(
             f"SELECT {_VERSION_COLS} FROM comic_versions WHERE comic_id = ? AND hash = ? "
             "ORDER BY at DESC LIMIT 1",
@@ -259,11 +276,12 @@ def add_version(comic_id: str, v: dict[str, Any]) -> dict[str, Any]:
             ),
             h,
             json.dumps(panels, ensure_ascii=False),
+            story,
         )
         c.execute(
             "INSERT OR REPLACE INTO comic_versions "
-            "(id, comic_id, at, label, premise, count, images, cover, hash, data) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(id, comic_id, at, label, premise, count, images, cover, hash, data, story) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             row,
         )
         c.commit()

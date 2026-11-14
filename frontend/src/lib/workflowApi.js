@@ -9,7 +9,11 @@ async function req(method, url, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+  if (!r.ok) {
+    const err = new Error(data.detail || `HTTP ${r.status}`);
+    err.status = r.status; // 409＝同名的資料夾不是專案（不刪、不覆寫）
+    throw err;
+  }
   return data;
 }
 

@@ -97,11 +97,40 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   one, and "Export page PNG" also stores the page image in the image folder. The browser's
   localStorage is only a cache, so container rebuilds, another browser or another device
   all see the same comics.
-  Each comic also keeps **storyboard versions**: before a new AI storyboard, a script
-  import or a restore, the current panels (rendered images included) are snapshotted; the
-  "Storyboard versions" section in the script panel lists them with previews to restore or
-  delete. Versions live on the server (`comic_versions` table, no limit, identical content
-  stored once); the browser caches only the latest five and fetches older ones on demand.
+  Edits are saved a moment after you stop typing. Opening another comic, starting a new one
+  or importing from Image Story first saves the pending edits of the open comic (if the
+  server cannot be reached you are asked before switching, because those edits would be
+  lost). A failed save is retried automatically (after 3 s, 10 s and 30 s, then every
+  minute) until it goes through, without another edit. Edits that never reached the server
+  (the page closed before the autosave or while the server was down) are kept in the browser
+  and sent when you come back to Comic Studio; the header only says *Saved* once the server
+  has them. If the comic was meanwhile changed on another device, the server's version is
+  loaded and your unsaved edits are kept as a new comic named
+  "<title> (unsaved local changes)" in the Library, with a notice — nothing is overwritten
+  or dropped. Before saving a comic that was saved before, the page checks that it still
+  exists on the server: if it was deleted elsewhere (another device or tab), neither autosave
+  nor the retries bring it back. The header says *Deleted elsewhere* and the script panel
+  offers **Keep as new comic** (your local version is saved under a new id) or **Discard**;
+  until you choose, your edits stay in the browser. Versions saved meanwhile also stay in the
+  browser and go with **Keep as new comic** (or are dropped with **Discard**); the server
+  only accepts versions for comics it has. Only a comic that was never saved yet is
+  created. Comics with missing or malformed fields (written through the API by
+  hand, or very old ones) still open: missing panel, bubble and card fields are filled in
+  with defaults when the comic, a version or the browser cache is loaded.
+  AI steps (write story, storyboard, AI parse of the cards, regenerate tags) and panel
+  renders always go to the comic they were started from: if you open another comic while
+  one is running, the result is saved to the original comic on the server (the replaced
+  storyboard becomes a version there) and a notice says where it went; the comic you are
+  looking at is not touched. If the original comic was deleted meanwhile, the result is
+  discarded with a notice. A running **Generate all** stops after the panel in progress.
+  Each comic also keeps **storyboard versions**: before a new AI storyboard or a restore,
+  the current panels (rendered images included) are snapshotted together with their story
+  (for a new AI storyboard, the story those panels were made from); the "Storyboard
+  versions" section in the script panel lists them with previews to restore or delete, and
+  restoring brings that story back too (versions saved before the story was stored keep the
+  current story). Versions live on the server (`comic_versions` table, no limit, identical
+  panels and story stored once; older databases get the `story` column added on start);
+  the browser caches only the latest five and fetches older ones on demand.
   Character cards are matched to the storyboard by name, leniently (case, spaces and
   suffixes like "Mia (heroine)" are ignored), anyone who speaks in a panel is listed as
   present, unnamed cards are auto-named before generation, and renaming a card renames its
@@ -112,7 +141,10 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   `num_ctx`, lower the panel count or switch thinking off.
 - 🖼️➡️📖 **Image Story** (`#/story`) — upload any number of images and let a vision model
   write a **short story** or a complete **comic script** (cast with appearance tags, art
-  style, premise, panels) from them; one click opens it in Comic Studio and renders it.
+  style, premise, panels) from them; one click opens it in Comic Studio as a **new comic**
+  and renders it. Sending to Comic Studio always creates a new comic (it keeps the render
+  settings, quality tags and negative prompt of the comic you had open), so the comic that
+  was open is never overwritten.
   A third mode, **Image panels**, treats each uploaded image as one panel (in upload
   order) and writes a scene note, dialogue and caption for every panel; open it in Comic
   Studio with the images already in place to position bubbles and export. Panels are
@@ -135,6 +167,11 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   live **usage meter** (used / limit) in the top bar, one-click **compact** that
   summarizes older messages while keeping the latest exchange, and an optional
   **auto compact** (Settings) that does it for you once usage crosses a threshold.
+  Compacting is tied to the conversation it was started in: switching to another chat
+  while the summary is being written does not touch that other chat, and messages sent
+  while compacting are kept after the summary and the last exchange. Auto compact only
+  looks at the reply that just finished and compacts that conversation, even if you have
+  switched away meanwhile.
 - 🔁 **Replies run on the server** — close the page, reload, or lose the connection and the reply
   keeps going and is saved in the conversation. Reopen it (on any device) to read it, or watch the
   rest arrive if it is still running; **Stop** works from there too. *(See
@@ -174,6 +211,21 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   (auto-lists containers when the docker socket is reachable). Strata also has an API key
   field: it shows only whether a key is set, keeps the saved key when left empty, and
   "Test connection" can try a newly typed key before you save it.
+  Keys and tokens are only ever sent to a trusted address (same scheme, host and port; path,
+  trailing slash and letter case do not matter), tracked separately for every token:
+  - a token typed on the settings page goes only to the address it was saved together with;
+    clearing it takes that address back, and changing the address without typing the token
+    again clears it;
+  - a token from `.env` goes only to the address `.env` names (`A1111_URL`, `SDCPP_URL`,
+    `MMD_URL`, `STRATA_URL` or their defaults) and to the address that was already saved when
+    you upgraded. Saving other addresses or other tokens on the settings page never makes it
+    go anywhere else — to use it at a new address, type it on the settings page or change the
+    address in `.env`.
+  When a token will not be sent to the address you entered, the settings page says so before
+  and after saving, and failed calls and "Test connection" explain that the token has to be
+  entered again. "Test connection" on a different, unsaved address sends only the token typed
+  into the form (nothing if the field is empty or cleared). Existing settings keep working
+  after the upgrade without typing anything again.
 - 🌐 **Multilingual UI** — Traditional Chinese / Simplified Chinese / English / 日本語 /
   한국어, switchable live.
 - ⚙️ **Settings panel** — SD checkpoint, sampler, width/height, steps, CFG, seed,
@@ -183,6 +235,12 @@ conversation. You can also switch the AI engine between **Ollama**, your logged-
   images live on the backend and only their URLs are stored. Open tabs re-sync the
   conversation list when they regain focus and every 30 s, so a chat continued on your
   phone shows up on the desktop without a reload.
+  Saves are versioned: a tab or device that still shows an older copy of a conversation
+  cannot overwrite newer messages saved elsewhere (including a reply the backend is still
+  writing). Its change — a new message, a model / engine switch, a compaction, an
+  "interrupted" mark — is re-applied on top of the latest version instead, and a
+  conversation deleted on another device is not brought back: the tab drops it and shows
+  a notice above the input box that the last change was not saved.
 - 🧩 **Skills (Agent Skills plugin)** — drop community `SKILL.md` folders into the skills
   directory and enable any number of them (or let the model pick) from the ✨ button. Skills can declare
   HTTP API tools (`tools.json`) and, once you enable it in Settings, the model can run the
@@ -388,9 +446,10 @@ npm run dev
     like (the page shows an estimated token count against the context window), pick
     **Story**, **Comic script** or **Image panels** (your images are the panels; reorder
     them with ◀ ▶), optionally add direction ("heartwarming, twist ending"),
-    and press **Generate**. A story can be sent to Comic Studio as its story; a comic
-    script can be opened there directly — **Open & render all** imports the cast and
-    panels and starts rendering. Needs a vision-capable model (👁 in the dropdown).
+    and press **Generate**. A story can be sent to Comic Studio as the premise and story of a
+    new comic; a comic script can be opened there directly as a new comic — **Open as new
+    comic & render all** imports the cast and panels and starts rendering. The comic that was
+    open in Comic Studio stays as it was. Needs a vision-capable model (👁 in the dropdown).
 16. **Illustrated story in chat:** enable **Story Illustrator** (and **SD Prompt Guide (Illustrious)**)
     with the ✨ button, then ask e.g. *"tell a story in 8 pictures: a little fox lost in a
     snowstorm finds its way home by the stars"*. The model writes the outline, then each
@@ -583,6 +642,18 @@ A chat reply belongs to the backend, not to the browser tab (`backend/chat_runs.
   reloading or dropping the connection does not stop it.
 - Opening a conversation with a reply in progress shows what exists so far and then follows the
   rest live. Any device can do this, and several can watch at once.
+- A reply does not have to be the last message to be picked up: if something was added
+  after it while it ran, opening the conversation still follows it live, and after a
+  backend restart it is still marked as cut off.
+- Sending in a conversation whose reply is still running elsewhere (another tab or device)
+  is held back: your text stays in the input box, a notice says the conversation is still
+  replying, and the page starts following that reply. Send again once it has finished. If
+  the backend still refuses a second reply, the error says "this conversation is still
+  replying" instead of a bare status code.
+- While a reply runs, the page you are watching it from stays in step with the backend's
+  saves, so switching the engine or model mid-reply saves normally. Another tab or device
+  with an older copy re-applies its change on the newest version (see *Server-side
+  persistence*); the running reply is never cut short or reordered by it.
 - **Stop** tells the backend to stop; what was written so far stays. Deleting the conversation
   stops its reply too.
 - One reply at a time per conversation. `CHAT_RUN_TIMEOUT` (default 7200 s) stops a reply nobody
@@ -630,7 +701,8 @@ Every tool call goes through MCP (Model Context Protocol):
   server; **Test connection** checks the MCP endpoints and lists their tool counts) or set
   `A1111_MCP_TOKEN` / `CIVITAI_HELPER_MCP_TOKEN` / `SDCPP_MCP_TOKEN` / `MMD_MCP_TOKEN` in `.env`;
   the settings page wins. A wrong or missing token, or a service without MCP, is reported in plain
-  words where the call fails.
+  words where the call fails. Each token is sent only to its trusted address (see *Configurable
+  service sources*); after changing an address, enter the token again together with it.
 - These MCP servers are open to other clients as well (Claude Code, Claude Desktop, Codex …)
   with the same tokens; see each project's README for the commands.
 
@@ -676,10 +748,12 @@ restarts). The script only sees a minimal environment: `PATH`, `HOME` set to the
 folder (so mounted CLI credentials are not exposed), `PYTHONPATH` pointing at the skill
 folder, proxy variables, plus the variables named in `SKILL_SCRIPT_ENV` and any
 `KEY=VALUE` lines in `<work folder>/.env`. Those values are masked as `***` in the output
-the model sees. Runs are killed after `SKILL_SCRIPT_TIMEOUT` seconds (default 300) and
-output is truncated to a few thousand characters. Only the standard library and the
-backend's own dependencies are importable; there is no `pip install`. Review third-party
-skills before enabling scripts for them.
+the model sees. Each script runs in its own process group: it is killed together with any
+processes it started after `SKILL_SCRIPT_TIMEOUT` seconds (default 300), and also as soon as
+the tool call is cancelled (the reply is stopped, the chat deleted, the CLI's MCP connection
+drops or the workflow is cancelled). Output is truncated to a few thousand characters. Only
+the standard library and the backend's own dependencies are importable; there is no
+`pip install`. Review third-party skills before enabling scripts for them.
 
 **Installing a ClawHub skill.** Either paste the folder into the skills directory, or:
 
@@ -724,8 +798,17 @@ use — on the app's server. A project is a subfolder of the **workflows folder*
   `sys.path` otherwise); other strings are package names. Each project gets its own venv in
   `backend/data/langgraph-envs/<project>/` (pip cache shared); changing the dependency files
   marks it **needs reinstall**.
-- **env** — a `.env` path or a `{name: value}` map. `.env` files are write-only in the page
-  (never sent back to the browser) and their values are masked as `***` in logs and outputs.
+- **env** — a `.env` path or a `{name: value}` map. `.env*` files and the file named by
+  `"env"` (even while `langgraph.json` has an error elsewhere) are write-only in the page:
+  never sent back to the browser, listed as secret and left out of the zip export. Their
+  values are masked as `***` in run events, run history, error messages (including a runner
+  that crashed and the "graph failed to load" error of the inspector) and logs.
+  Values that overlap (one is a prefix or part of another) are masked as a whole, and every
+  text that gets shortened — long output lines, `print` output, tool results and errors,
+  node updates and the tail of a traceback, both in the backend and in the runner — is
+  masked before it is cut, so no part of a value is left behind. (Streamed LLM tokens are
+  masked one chunk at a time; a value split across two chunks is only masked in the saved
+  run history.)
 
 **Using the app from a graph.** `import webui_app` (provided by the runner, nothing to install):
 
@@ -873,6 +956,16 @@ gets a minimal environment with its own `HOME` (the mounted `~/.claude` / `~/.co
 visible), the project's `.env`, and no app secrets. Paths in uploads and the file editor are
 confined to the project folder.
 
+Delete and upload only touch real projects (a folder with a `langgraph.json`, the same test the
+project list uses). The workflows folder can be an existing folder such as your home directory:
+deleting or uploading under the name of a folder there that is not a project is refused, and
+the page says a folder with that name already exists and is not a workflow project; creating,
+renaming or duplicating onto such a name is refused with the same message. A symlink in the
+workflows folder (or a project whose `langgraph.json` is a symlink) is not a project either:
+it is not listed and cannot be opened, deleted or uploaded into. Inside a project, reading,
+writing, deleting and uploading files never follow a link out of the project folder, and
+duplicating a project copies links as links.
+
 The **example** project (`backend/langgraph_examples/example`) has two graphs: `illustrate`
 (idea → English scene → danbooru tags → A1111 → the LLM looks at the image and asks for a
 redraw with fixed tags when it does not match, at most two pictures) and `chat` (a
@@ -910,8 +1003,8 @@ images, Comic Studio pages (`comic_*.png`) and pictures uploaded in Comic Studio
   - **PNG tags / metadata** — every text chunk in the file (`tEXt`, `zTXt`, `iTXt`, including
     ones after the image data), JSON pretty-printed, each with its length and a copy button.
   - **EXIF**, file name / folder / size / format / date, and other image info (DPI, ICC profile).
-  - **Used in** — the chats, comics (including storyboard versions) and workflow runs that
-    reference the image, with a button to open each.
+  - **Used in** — the chats, comics (including storyboard versions of comics that still
+    exist) and workflow runs that reference the image, with a button to open each.
   - Open the original, download, or delete.
 - **Delete one.** From the detail view, or press Delete there.
 - **Delete many (multi-select).** Hover a tile and tick its box, Ctrl / ⌘-click it, or long-press

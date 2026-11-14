@@ -81,6 +81,8 @@ export default function ComicStudio() {
       ? ct("saving")
       : saveState === "error"
         ? ct("saveError")
+        : saveState === "gone"
+          ? ct("savedGone")
         : saveState === "saved" && savedAt
           ? ct("savedAt", { t: new Date(savedAt * 1000).toLocaleTimeString() })
           : "";
@@ -106,7 +108,7 @@ export default function ComicStudio() {
           <span
             data-testid="save-state"
             className={`hidden shrink-0 text-[11px] md:inline ${
-              saveState === "error" ? "text-red-400" : "text-gray-500"
+              saveState === "error" || saveState === "gone" ? "text-red-400" : "text-gray-500"
             }`}
           >
             {saveLabel}
