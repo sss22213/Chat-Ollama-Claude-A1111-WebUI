@@ -16,6 +16,7 @@ import { useCT } from "./comicI18n";
 import { fetchComicSystemDefault } from "../lib/comicApi";
 import CharacterCast from "./CharacterCast";
 import VersionList from "./VersionList";
+import ModulePicker from "../components/ModulePicker";
 import { noticeText } from "./notices";
 
 function Labeled({ label, children }) {
@@ -472,6 +473,12 @@ export default function ScriptPanel() {
             ))}
           </select>
         </Labeled>
+        <ModulePicker
+          testId="comic-sd-modules"
+          compact
+          value={s.sd_modules}
+          onChange={(v) => c.setSettings({ sd_modules: v })}
+        />
         <div className="grid grid-cols-2 gap-2">
           <Labeled label={ct("width")}>
             <input

@@ -541,10 +541,14 @@ async def _bridge(fn: str, args: dict[str, Any], node: str, opts: dict[str, Any]
     if fn == "generate_image":
         call_args = {k: args[k] for k in ("prompt", "negative_prompt", "width", "height") if args.get(k)}
         _kind, kwargs = tools_mod.build_call("generate_image", call_args, opts.get("image_settings"), None)
+        if args.get("checkpoint") is not None:
+            kwargs["sd_modules"] = []  # graph 換了 checkpoint：圖片設定的 VAE / 文字編碼器是配原本的，改回自動
         for key, target in (("seed", "seed"), ("steps", "steps"), ("cfg_scale", "cfg_scale"),
                             ("checkpoint", "sd_model_checkpoint")):
             if args.get(key) is not None:
                 kwargs[target] = args[key]
+        if args.get("modules") is not None:
+            kwargs["sd_modules"] = a1111_client.normalize_modules(args["modules"])
         result: dict[str, Any] = {}
         async for ev in chat_mod._generate_with_progress("txt2img", kwargs):
             if ev["type"] == "image":

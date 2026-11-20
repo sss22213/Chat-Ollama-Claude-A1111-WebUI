@@ -45,6 +45,8 @@ class ToolContext:
     # （點名的與工作流自己的函式照給）
     read_only: bool = False
     image_settings: dict[str, Any] | None = None
+    # 生圖工具說明裡的 prompt 寫法（tools.image_tool）：""＝逗號 tag、"anima"、"skill"（照技能的格式）
+    prompt_style: str = ""
     init_image: str | None = None  # 對話最後附的圖（改圖、技能的 attach_image）
     edit_image: str | None = None
     png_source: str | None = None  # 讀 PNG Info 用的原圖
@@ -106,7 +108,8 @@ async def _server(ctx: ToolContext) -> mcp_lite.McpServer:
         return lambda args, _mctx: _execute(ctx, name, args, defs)
 
     for name in _builtins(ctx):
-        fn = _BUILTIN[name]["function"]
+        fn = (tools_mod.image_tool(name, ctx.prompt_style) if name in ("generate_image", "edit_image")
+              else _BUILTIN[name])["function"]
         server.add_tool(name, fn.get("description") or "", fn.get("parameters"), handler(name))
     for name, d in defs.items():
         server.add_tool(name, d.get("description") or "", d.get("parameters"), handler(name))

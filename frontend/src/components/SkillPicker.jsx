@@ -7,6 +7,7 @@ import {
   Loader2,
   Ban,
   Wand2,
+  Zap,
   Plus,
   Pencil,
   Trash2,
@@ -15,7 +16,7 @@ import {
   AlertCircle,
   RefreshCw,
 } from "lucide-react";
-import { useChat, skillSelection } from "../store/chat";
+import { useChat, skillSelection, SKILL_MODES } from "../store/chat";
 import { useT } from "../i18n";
 import {
   fetchSkill,
@@ -38,7 +39,8 @@ Generate images with the app's built-in image tool (local Stable Diffusion).
 /**
  * 技能（Agent Skills）選擇器 + 管理。
  * - 選定的技能會注入到目前引擎的 system prompt（全引擎通用），出圖仍走 A1111。
- * - 「自動」讓模型自行判斷要不要用、用哪個。
+ * - 「自動」讓模型自行判斷要不要用、用哪個（所有技能全文都放進去）。
+ * - 「觸發時才載入」由 App 每輪先判斷要用哪些技能，只放那幾個的全文；同一段對話會沿用。
  * - 可在網頁直接新增 / 編輯 / 刪除 SKILL.md。
  */
 export default function SkillPicker({ onClose }) {
@@ -47,6 +49,7 @@ export default function SkillPicker({ onClose }) {
   const settings = useChat((s) => s.settings);
   const selected = skillSelection(settings);
   const isAuto = selected.includes("__auto__");
+  const isLazy = selected.includes("__lazy__");
   const setSettings = useChat((s) => s.setSettings);
   const reloadSkills = useChat((s) => s.reloadSkills);
 
@@ -82,8 +85,9 @@ export default function SkillPicker({ onClose }) {
   const setSkills = (list) => setSettings({ skills: list, skill: undefined });
   const chooseNone = () => setSkills([]);
   const chooseAuto = () => setSkills(["__auto__"]);
+  const chooseLazy = () => setSkills(["__lazy__"]);
   const toggleSkill = (slug) => {
-    const manual = selected.filter((x) => x !== "__auto__");
+    const manual = selected.filter((x) => !SKILL_MODES.includes(x));
     setSkills(
       manual.includes(slug) ? manual.filter((x) => x !== slug) : [...manual, slug]
     );
@@ -300,6 +304,14 @@ export default function SkillPicker({ onClose }) {
                 desc={t("skillAutoDesc")}
                 on={isAuto}
                 onClick={chooseAuto}
+              />
+              {/* 觸發時才載入 */}
+              <Row
+                icon={<Zap size={15} className="text-amber-300" />}
+                label={t("skillLazy")}
+                desc={t("skillLazyDesc")}
+                on={isLazy}
+                onClick={chooseLazy}
               />
 
               {skills.length === 0 && (

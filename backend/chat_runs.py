@@ -26,7 +26,7 @@ _SAVE_EVERY = 3.0  # 打字中多久存一次（秒）
 # 連線死掉不一定收得到通知（手機換網路、電腦休眠、代理卡住），要跟前端 lib/api.js 的 STALL_MS 搭配
 _PING_EVERY = 10.0
 # 這些事件之後馬上存：內容不會再從別處補回來，重開網頁要看得到
-_SAVE_NOW = {"tool_call", "image", "gallery", "candidates", "sources", "error"}
+_SAVE_NOW = {"tool_call", "image", "gallery", "candidates", "sources", "skills", "error"}
 # 模型偶爾把給它看的系統備註抄進回覆：從標記起切掉（跟前端 stripEchoedNote 同一個標記）
 _NOTE_MARKER = "[系統備註，使用者看不到"
 
@@ -97,6 +97,9 @@ class ChatRun:
             m["images"].append({"url": e.get("url"), "params": e.get("params"), "info": e.get("info") or "",
                                 "at": _js_len(m["content"])})
             m.update(toolRunning=False, progress=None)
+        elif t == "skills":
+            # 觸發時才載入：這則回覆用了哪些技能（下一輪由前端當 skills_loaded 送回來沿用）
+            m.update(skills=list(e.get("skills") or []), skillNames=list(e.get("names") or []))
         elif t == "usage":
             self.usage = {"prompt_tokens": e.get("prompt_tokens"), "num_ctx": e.get("num_ctx")}
         elif t == "error":

@@ -160,6 +160,7 @@ const DEFAULT_SETTINGS = {
   cfg_scale: 5,
   sampler_name: "Euler a",
   sd_model_checkpoint: "",
+  sd_modules: [], // VAE / 文字編碼器（可多選，VAE 一個）；空＝自動
   lockSeed: true,
   seed: -1, // -1＝首次生成時抽一個固定下來（鎖定時跨格共用）；不鎖定時每格每次隨機
   checkModel: "", // 看圖檢查用的模型；空＝自動（頂列的模型能看圖就用它，否則挑第一個能看圖的）
@@ -630,6 +631,7 @@ export const useComic = create(
           cfg_scale: Number(s.cfg_scale) || 5,
           sampler_name: s.sampler_name || "Euler a",
           sd_model_checkpoint: s.sd_model_checkpoint || "",
+          sd_modules: Array.isArray(s.sd_modules) ? s.sd_modules : [],
           negative_prompt: get().negative || "",
           seed: get()._resolvedSeed(),
         };
@@ -655,6 +657,7 @@ export const useComic = create(
         if (s.cfg_scale != null) patch.cfg_scale = s.cfg_scale;
         if (s.sampler_name) patch.sampler_name = s.sampler_name;
         if (s.sd_model_checkpoint) patch.sd_model_checkpoint = s.sd_model_checkpoint;
+        if (Array.isArray(s.sd_modules) && s.sd_modules.length) patch.sd_modules = s.sd_modules;
         if (s.seed != null && s.seed !== -1) {
           patch.seed = s.seed;
           patch.lockSeed = true;

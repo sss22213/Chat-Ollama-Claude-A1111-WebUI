@@ -23,6 +23,7 @@ import {
   Combine,
   FileText,
   Wrench,
+  Zap,
 } from "lucide-react";
 import ImageBlock from "./ImageBlock";
 import ImageNo from "./ImageNo";
@@ -76,6 +77,7 @@ export default function Message({ msg, imageNo }) {
       </div>
       <div className="min-w-0 flex-1 space-y-2">
         {msg.compacted && <CompactBadge notices={msg.notices} />}
+        {Array.isArray(msg.skills) && <SkillsBadge names={msg.skillNames} slugs={msg.skills} />}
 
         {msg.thinking ? (
           <Thinking text={msg.thinking} streaming={msg.status === "streaming"} />
@@ -197,6 +199,24 @@ function StreamingDots() {
   return (
     <div className="flex items-center gap-2 text-sm text-gray-500">
       <Loader2 size={14} className="animate-spin" /> {t("thinkingDots")}
+    </div>
+  );
+}
+
+// 觸發時才載入：這則回覆用了哪些技能（App 判斷的，或模型用 load_skill 自己載入的）
+function SkillsBadge({ names, slugs }) {
+  const t = useT();
+  const list = (names?.length ? names : slugs) || [];
+  return (
+    <div
+      data-testid="skills-badge"
+      title={t("skillsUsedTitle")}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-ink-700 px-2 py-0.5 text-xs text-gray-300"
+    >
+      <Zap size={12} className="shrink-0 text-amber-300" />
+      <span className="truncate">
+        {list.length ? t("skillsUsed", { names: list.join(", ") }) : t("skillsUsedNone")}
+      </span>
     </div>
   );
 }

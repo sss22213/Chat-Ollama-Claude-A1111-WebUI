@@ -35,6 +35,13 @@ export async function fetchSdModels() {
   return r.json();
 }
 
+// Forge 能選的 VAE / 文字編碼器：[{name, kind: "vae" | "text_encoder"}]（圖片設定的多選）
+export async function fetchForgeModules() {
+  const r = await fetch("/api/sd-modules");
+  if (!r.ok) throw new Error("無法取得 VAE / 文字編碼器清單");
+  return r.json();
+}
+
 export async function fetchSamplers() {
   const r = await fetch("/api/samplers");
   if (!r.ok) throw new Error("無法取得取樣器");

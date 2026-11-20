@@ -181,6 +181,15 @@ async def sd_models() -> list[dict[str, str]]:
         raise HTTPException(502, f"無法連線 A1111：{describe(e)}")
 
 
+@app.get("/api/sd-modules")
+async def sd_modules() -> list[dict[str, str]]:
+    """Forge 能選的 VAE / 文字編碼器（圖片設定的多選）：[{name, kind: vae | text_encoder}]。"""
+    try:
+        return await a1111_client.list_modules()
+    except Exception as e:
+        raise HTTPException(502, f"無法連線 A1111：{describe(e)}")
+
+
 @app.get("/api/samplers")
 async def samplers() -> list[str]:
     try:

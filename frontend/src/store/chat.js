@@ -4,6 +4,7 @@ import {
   fetchModels,
   reloadOllamaModel,
   fetchSdModels,
+  fetchForgeModules,
   fetchSamplers,
   fetchDefaults,
   fetchHealth,
@@ -34,16 +35,19 @@ export function skillSelection(settings) {
   const legacy = settings?.skill || "";
   return legacy ? legacy.split(",").map((x) => x.trim()).filter(Boolean) : [];
 }
-// 送給後端的參數："__auto__" / "a,b" / ""
+// 兩種「不用手動挑」的模式：自動（全部技能都放進去，模型自己判斷）、觸發時才載入（App 每輪先判斷，只放用得到的）
+export const SKILL_MODES = ["__auto__", "__lazy__"];
+// 送給後端的參數："__auto__" / "__lazy__" / "a,b" / ""
 export function skillParam(settings) {
   const sel = skillSelection(settings);
-  return sel.includes("__auto__") ? "__auto__" : sel.join(",");
+  return SKILL_MODES.find((m) => sel.includes(m)) || sel.join(",");
 }
-// 依後端技能清單整理選擇：__auto__ 保留、已被移除的技能剔除；回 null 表示不用改
+// 依後端技能清單整理選擇：模式值保留、已被移除的技能剔除；回 null 表示不用改
 function _normalizedSkills(settings, list) {
   const sel = skillSelection(settings);
-  const next = sel.includes("__auto__")
-    ? ["__auto__"]
+  const mode = SKILL_MODES.find((m) => sel.includes(m));
+  const next = mode
+    ? [mode]
     : sel.filter((slug) => list.some((s) => s.slug === slug));
   const same =
     Array.isArray(settings.skills) &&
@@ -108,6 +112,7 @@ function paramsToText(p) {
   if (p.seed != null) tail.push(`Seed: ${p.seed}`);
   if (p.width && p.height) tail.push(`Size: ${p.width}x${p.height}`);
   if (p.sd_model_checkpoint) tail.push(`Model: ${p.sd_model_checkpoint}`);
+  (p.sd_modules || []).forEach((m, i) => tail.push(`Module ${i + 1}: ${m}`));
   if (tail.length) lines.push(tail.join(", "));
   return lines.join("\n");
 }
@@ -169,6 +174,7 @@ const DEFAULT_IMAGE_SETTINGS = {
   sampler_name: "Euler a",
   seed: -1,
   sd_model_checkpoint: "",
+  sd_modules: [], // VAE / 文字編碼器（可多選，VAE 一個）；空＝自動（Anima 自動帶，其他沿用 Forge 目前的）
   negative_prompt: "",
   denoising_strength: 0.6,
 };
@@ -270,6 +276,7 @@ export const useChat = create(
       // ---- 執行期狀態（不持久化）----
       models: [],
       sdModels: [],
+      forgeModules: [], // Forge 的 VAE / 文字編碼器清單 [{name, kind}]
       samplers: [],
       engines: { ollama: true, claude_cli: false, codex: false, strata: false },
       features: { promptHistory: false }, // 後端可用的選用功能（依掛載/設定而定）
@@ -348,10 +355,11 @@ export const useChat = create(
           set((st) => ({ settings: { ...st.settings, engine } }));
         }
 
-        const [models, sdModels, samplers, defaults, health, skills] =
+        const [models, sdModels, forgeModules, samplers, defaults, health, skills] =
           await Promise.all([
             fetchModels(engine).catch(() => []),
             fetchSdModels().catch(() => []),
+            fetchForgeModules().catch(() => []),
             fetchSamplers().catch(() => []),
             fetchDefaults().catch(() => null),
             fetchHealth(),
@@ -372,6 +380,7 @@ export const useChat = create(
         set({
           models,
           sdModels,
+          forgeModules,
           samplers,
           health,
           engines,
@@ -811,6 +820,9 @@ export const useChat = create(
               { url: e.url, params: e.params, info: e.info || "", at: (m.content || "").length },
             ],
           }));
+        } else if (e.type === "skills") {
+          // 觸發時才載入：這則回覆用了哪些技能（存在訊息上，下一輪送回去沿用）
+          patch({ skills: e.skills || [], skillNames: e.names || [] });
         } else if (e.type === "usage") {
           set({
             usage: {
@@ -1071,6 +1083,8 @@ export const useChat = create(
           if (m.attachments?.length) {
             base.images = m.attachments.map((a) => stripPrefix(a.dataUrl));
           }
+          // 觸發時才載入：上一則回覆用了哪些技能（後端判斷時沿用，送給模型前會拿掉）
+          if (m.role === "assistant" && Array.isArray(m.skills)) base.skills_loaded = m.skills;
           // 助理訊息裡生成 / 編輯出的圖（只帶網址）：讓編輯技能能直接改「剛剛那張」
           if (m.role === "assistant" && m.images?.length) {
             const urls = m.images.map((im) => im?.url).filter((u) => typeof u === "string" && u.startsWith("/images/"));

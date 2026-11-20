@@ -48,6 +48,9 @@ DEFAULT_IMAGE_SETTINGS = {
     "seed": -1,
     # checkpoint 為空字串代表沿用 A1111 當前載入的模型
     "sd_model_checkpoint": "",
+    # VAE / 文字編碼器（Forge models/VAE、models/text_encoder 的檔名，可多選、VAE 只能一個）；
+    # 空清單代表自動（Anima 帶 qwen_3_06b_base + qwen_image_vae，其他沿用 Forge 目前的）
+    "sd_modules": [],
     "negative_prompt": "",
     # img2img 重繪力度（0~1）
     "denoising_strength": 0.6,

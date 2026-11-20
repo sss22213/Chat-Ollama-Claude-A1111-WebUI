@@ -17,7 +17,7 @@ import {
   Check,
   AlertCircle,
 } from "lucide-react";
-import { useChat, skillSelection } from "../store/chat";
+import { useChat, skillSelection, SKILL_MODES } from "../store/chat";
 import { useT } from "../i18n";
 import { navigate } from "../Root";
 
@@ -57,17 +57,17 @@ export default function TopBar({
   const selectedSkills = skillSelection(settings);
   const skillOn = selectedSkills.length > 0;
   const skillNames = selectedSkills
-    .filter((x) => x !== "__auto__")
+    .filter((x) => !SKILL_MODES.includes(x))
     .map((slug) => skills.find((s) => s.slug === slug)?.name || slug);
-  // 自動 → 「自動」；一個 → 名稱；多個 → 「第一個 +N」
-  const skillLabel = selectedSkills.includes("__auto__")
-    ? t("skillAuto")
+  // 自動 →「自動」；觸發時才載入 → 那個名稱；一個 → 名稱；多個 →「第一個 +N」
+  const skillMode = SKILL_MODES.find((m) => selectedSkills.includes(m));
+  const modeLabel = skillMode === "__auto__" ? t("skillAuto") : skillMode === "__lazy__" ? t("skillLazy") : "";
+  const skillLabel = modeLabel
+    ? modeLabel
     : skillNames.length > 1
       ? `${skillNames[0]} +${skillNames.length - 1}`
       : skillNames[0];
-  const skillTitle = selectedSkills.includes("__auto__")
-    ? t("skillAuto")
-    : skillNames.join(", ");
+  const skillTitle = modeLabel || skillNames.join(", ");
 
   const onChangeModel = (name) => {
     setSettings({ chatModel: name });

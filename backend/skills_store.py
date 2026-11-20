@@ -54,8 +54,11 @@ _IMAGE_NOTE = (
     "Your ONLY image generator is the app's LOCAL Stable Diffusion (A1111). Whenever the "
     "skill says to use 'image_gen', a built-in image tool, or to generate/show/render an "
     "image or reference sheet, use THIS image capability — it renders inline in the chat. "
-    "Write Stable Diffusion prompts as comma-separated English danbooru-style tags (for "
-    "consistent characters, reuse the same character tags / LoRA / seed). Images you "
+    "Write each image prompt in the format the skill gives (some checkpoints, such as Anima, "
+    "want English sentences as well as tags): this adapter does not override the skill's prompt "
+    "format. Only when the skill gives no prompt format, write comma-separated English "
+    "danbooru-style tags. For consistent characters, reuse the same character tags / LoRA / "
+    "seed. Images you "
     "generated earlier in this conversation count as the 'visible references'."
 )
 # 舊名稱保留給既有呼叫端／測試
@@ -77,21 +80,23 @@ def _safe_slug(slug: str) -> str | None:
 
 
 AUTO = "__auto__"
+# 觸發時才載入：每一輪由 App 先判斷要用哪些技能（skill_router），只注入那幾個的全文
+LAZY = "__lazy__"
 
 
 def parse_selection(value: str | list[str] | None) -> list[str]:
     """把前端送來的技能選擇整理成 slug 清單。
 
-    接受 ""（不啟用）、"__auto__"（模型自選）、"a,b,c" 或陣列；非法 slug 略過、去重、保序。
-    含 __auto__ 時只回 [__auto__]（自動模式已涵蓋所有技能）。"""
+    接受 ""（不啟用）、"__auto__"（模型自選）、"__lazy__"（觸發時才載入）、"a,b,c" 或陣列；
+    非法 slug 略過、去重、保序。含 __auto__ / __lazy__ 時只回那一個（兩種模式都涵蓋所有技能）。"""
     if not value:
         return []
     parts = value if isinstance(value, list) else str(value).split(",")
     out: list[str] = []
     for raw in parts:
         item = str(raw or "").strip()
-        if item == AUTO:
-            return [AUTO]
+        if item in (AUTO, LAZY):
+            return [item]
         safe = _safe_slug(item)
         if safe and safe not in out:
             out.append(safe)
@@ -231,7 +236,7 @@ def tools_for(skill: str | list[str] | None) -> list[dict[str, Any]]:
     設定頁「允許技能執行腳本」開啟時，凡是有 *.py 的技能會再多一個通用的
     run_skill_script 工具（多技能共用一個、以 skill 參數區分）。"""
     selected = parse_selection(skill)
-    if not selected:
+    if not selected or selected == [LAZY]:  # 觸發時才載入：判斷完才換成實際的 slug
         return []
     slugs = [it["slug"] for it in list_skills()] if selected == [AUTO] else selected
     scripts_on = settings_store.get_skill_scripts()
@@ -373,6 +378,8 @@ def build_prompt(
     """
     max_chars = _limit(max_chars)
     slugs = parse_selection(slug)
+    if slugs == [LAZY]:
+        return ""  # 觸發時才載入：chat 判斷完才用實際的 slug 再呼叫一次
     if slugs == [AUTO]:
         return "" if adapter is not None else build_auto_prompt(max_chars)
     found = [sk for sk in (get_skill(x) for x in slugs) if sk]

@@ -14,6 +14,7 @@ import claude_client
 import codex_client
 import ollama_client
 import settings_store
+import skill_router
 import skill_tools
 import skills_store
 import strata_client
@@ -85,8 +86,8 @@ _OLLAMA_TAIL_REMINDER = (
 _OLLAMA_RETRY_NUDGE = (
     "(system reminder) Your previous reply did not call any tool, but the user's "
     "message looks like an image request. If an image is indeed wanted, call the "
-    "generate_image tool NOW (or edit_image for the attached image) with "
-    "comma-separated English danbooru tags. If no image is actually needed, reply "
+    "generate_image tool NOW (or edit_image for the attached image) with a prompt in the "
+    "format its description and your active skill give. If no image is actually needed, reply "
     "with an empty message."
 )
 
@@ -445,12 +446,38 @@ def _tool_message_with_images(result: dict[str, Any], can_see: bool) -> dict[str
     }
 
 
+_CLIENT_FIELDS = ("generated_images", "skills_loaded")
+
+
 def _strip_client_fields(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """移除只給後端用的欄位，避免送進各引擎。"""
     return [
-        {k: v for k, v in m.items() if k != "generated_images"} if "generated_images" in m else m
+        {k: v for k, v in m.items() if k not in _CLIENT_FIELDS} if any(f in m for f in _CLIENT_FIELDS) else m
         for m in messages
     ]
+
+
+async def _current_checkpoint(image_settings: dict[str, Any] | None) -> str:
+    """這一輪生圖用的 checkpoint：圖片設定指定的，沒指定就問 Forge 目前載入的；問不到回空字串。"""
+    ckpt = str((image_settings or {}).get("sd_model_checkpoint") or "")
+    if not ckpt:
+        try:
+            ckpt = await asyncio.wait_for(a1111_client.get_current_model(), 5) or ""
+        except Exception:  # noqa: BLE001 — 問不到就當不知道
+            ckpt = ""
+    return ckpt
+
+
+async def _prompt_style(skill: str | None, checkpoint: str) -> str:
+    """生圖工具說明要教哪種 prompt 寫法（tools.image_tool）：Anima checkpoint → "anima"（英文句子＋tag）；
+    有啟用技能 → "skill"（照技能寫的格式）；其他 → ""（SDXL / Pony / Illustrious 的逗號 tag）。"""
+    if checkpoint:
+        try:
+            if await asyncio.wait_for(a1111_client.checkpoint_family(checkpoint), 15) == "Anima":
+                return "anima"
+        except Exception:  # noqa: BLE001 — 查不到底模就照技能 / 預設
+            pass
+    return "skill" if skill else ""
 
 
 async def _generate_with_progress(
@@ -520,8 +547,25 @@ async def run_chat(
 ) -> AsyncIterator[str]:
     """主迴圈，yield SSE 字串。
 
-    事件型別：thinking / token / tool_call / progress / image / sources / usage / error / done
+    事件型別：skills / thinking / token / tool_call / progress / image / sources / usage / error / done
     """
+    # 觸發時才載入：先判斷這一輪要哪些技能，之後就跟手動指定那幾個一樣。
+    # 要在剝掉 skills_loaded 之前（上一輪用了哪些靠它），判斷時就把 skills 事件送出去
+    lazy = skills_store.parse_selection(skill) == [skills_store.LAZY]
+    active_skills: list[str] = []
+    ckpt: str | None = None
+    if lazy:
+        # checkpoint 也給判斷（Anima 與 SDXL 用不同的提示詞指南）
+        ckpt = await _current_checkpoint(image_settings)
+        active_skills, source = await skill_router.pick(engine, model, messages, num_ctx=num_ctx, checkpoint=ckpt)
+        yield _sse(skill_router.event(active_skills, source))
+        skill = ",".join(active_skills) or None
+    # 生圖工具說明裡的 prompt 寫法：Anima 要英文句子＋tag、有技能照技能的格式，其他用逗號 tag
+    prompt_style = ""
+    if tools_enabled:
+        if ckpt is None:
+            ckpt = await _current_checkpoint(image_settings)
+        prompt_style = await _prompt_style(skill, ckpt)
     # 技能編輯工具的來源圖（含 A1111 生成的圖）；取完就剝掉前端專用欄位
     edit_image = _last_edit_image(messages)
     # 對話裡的圖（編號給 image_numbers 用）；要在剝掉 generated_images 之前算
@@ -543,7 +587,7 @@ async def run_chat(
         async for s in _run_cli_mcp(
             engine, model, _attach_context_images(messages, recent_images),
             tools_enabled=tools_enabled, web_enabled=web_enabled,
-            skill=skill if skill_tool_defs else None, image_settings=image_settings,
+            skill=skill if skill_tool_defs else None, image_settings=image_settings, prompt_style=prompt_style,
             think=bool(think), effort=effort, edit_image=edit_image,
             png_source=(image_sources or [None])[-1], images=convo_images,
         ):
@@ -569,9 +613,20 @@ async def run_chat(
     # 工具一律經由 webui 的 MCP 閘道（tool_gateway）：清單來自它的 tools/list，執行走 tools/call
     tool_ctx = tool_gateway.ToolContext(
         image_tools=tools_enabled, web=web_enabled, skill=skill if skill_tool_defs else None,
-        image_settings=image_settings, init_image=init_image, edit_image=edit_image, png_source=png_source,
+        image_settings=image_settings, prompt_style=prompt_style,
+        init_image=init_image, edit_image=edit_image, png_source=png_source,
         images=convo_images,
     )
+    if lazy and can_tools:
+        # 後備：判斷漏掉的技能，模型可以自己用 load_skill 載入
+        load_def = skill_router.load_tool(active_skills)
+        if load_def:
+            tool_ctx.local_tools = {"load_skill": load_def}
+
+            async def _load_skill(_name: str, args: dict[str, Any]) -> str:
+                return skill_router.load_result(args.get("skill"), active_skills)
+
+            tool_ctx.call_local = _load_skill
     tool_schema = (await tool_gateway.schemas(tool_ctx) if can_tools else []) or None
 
     convo = [dict(m) for m in messages]
@@ -711,6 +766,7 @@ async def run_chat(
                     seen_calls.add(key)
                     fresh = True
 
+                loaded_before = len(active_skills)
                 async for content in tool_gateway.run(tool_ctx, name, args):
                     if isinstance(content, str):
                         convo.append({"role": "tool", "content": content})
@@ -724,6 +780,16 @@ async def run_chat(
                         convo.append(tool_msg)
                     else:
                         yield _sse(content)
+
+                if name == "load_skill" and lazy and len(active_skills) > loaded_before:
+                    # 載入了新技能：它的工具接著就能用，下一輪也沿用它；生圖說明改成照技能的格式
+                    tool_ctx.skill = ",".join(active_skills) or None
+                    tool_ctx.prompt_style = tool_ctx.prompt_style or ("skill" if tools_enabled else "")
+                    skill_tool_map = {t["name"]: t for t in skills_store.tools_for(tool_ctx.skill)}
+                    load_def = skill_router.load_tool(active_skills)
+                    tool_ctx.local_tools = {"load_skill": load_def} if load_def else {}
+                    tool_schema = (await tool_gateway.schemas(tool_ctx)) or None
+                    yield _sse(skill_router.event(active_skills, "tool"))
 
             stuck = 0 if fresh else stuck + 1
             if stuck >= STUCK_ROUNDS:
@@ -823,6 +889,7 @@ async def _run_cli_mcp(
     edit_image: str | None,
     png_source: str | None,
     images: list[dict[str, Any]] | None = None,
+    prompt_style: str = "",
 ) -> AsyncIterator[str]:
     """Claude CLI / Codex：掛上 webui 的 MCP 閘道（這次對話專用的網址），CLI 自己呼叫工具。
     CLI 的文字串流與閘道推來的畫面事件（工具呼叫、生圖進度、圖片、搜尋來源、卡片）合併輸出。"""
@@ -834,6 +901,7 @@ async def _run_cli_mcp(
 
     ctx = tool_gateway.ToolContext(
         image_tools=tools_enabled, web=web_enabled, skill=skill, image_settings=image_settings,
+        prompt_style=prompt_style,
         init_image=init_image, edit_image=edit_image, png_source=png_source or init_image, emit=emit,
         images=images or [],
     )

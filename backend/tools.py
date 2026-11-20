@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import a1111_client
 from config import DEFAULT_IMAGE_SETTINGS
 
 
@@ -29,18 +30,25 @@ def _clean_tags(text: str) -> str:
         out.append(t)
     return ", ".join(out)
 
+_GENERATE_HEAD = (
+    "Generate a NEW image from a text prompt using a local Stable Diffusion "
+    "(A1111) backend. Call this whenever the user asks to draw, paint, "
+    "create, generate, or show an image/picture/illustration from scratch."
+)
+_TAGS_EXAMPLE = (
+    "'1girl, silver hair, blue eyes, school uniform, cherry blossoms, "
+    "masterpiece, best quality'"
+)
+
 GENERATE_IMAGE_TOOL = {
     "type": "function",
     "function": {
         "name": "generate_image",
         "description": (
-            "Generate a NEW image from a text prompt using a local Stable Diffusion "
-            "(A1111) backend. Call this whenever the user asks to draw, paint, "
-            "create, generate, or show an image/picture/illustration from scratch. "
+            f"{_GENERATE_HEAD} "
             "These are SDXL / Pony / Illustrious anime models, so write the prompt "
-            "as comma-separated English danbooru-style tags (e.g. "
-            "'1girl, silver hair, blue eyes, school uniform, cherry blossoms, "
-            "masterpiece, best quality') rather than a full sentence."
+            f"as comma-separated English danbooru-style tags (e.g. {_TAGS_EXAMPLE}) "
+            "rather than a full sentence."
         ),
         "parameters": {
             "type": "object",
@@ -66,15 +74,19 @@ GENERATE_IMAGE_TOOL = {
     },
 }
 
+_EDIT_HEAD = (
+    "Redraw / transform the image the user just attached, using img2img on a "
+    "local Stable Diffusion (A1111) backend. Call this when the user asks to "
+    "modify, redraw, restyle, change, or edit the attached/previous image "
+    "(e.g. 'make this cyberpunk', 'turn it into anime style', 'add a hat')."
+)
+
 EDIT_IMAGE_TOOL = {
     "type": "function",
     "function": {
         "name": "edit_image",
         "description": (
-            "Redraw / transform the image the user just attached, using img2img on a "
-            "local Stable Diffusion (A1111) backend. Call this when the user asks to "
-            "modify, redraw, restyle, change, or edit the attached/previous image "
-            "(e.g. 'make this cyberpunk', 'turn it into anime style', 'add a hat'). "
+            f"{_EDIT_HEAD} "
             "Write the prompt as comma-separated English danbooru-style tags describing "
             "the DESIRED result."
         ),
@@ -102,6 +114,42 @@ EDIT_IMAGE_TOOL = {
         },
     },
 }
+
+
+# 生圖工具說明裡的 prompt 寫法（tool_gateway 依情境挑，見 chat._prompt_style）：
+# ""＝上面預設的 SDXL / Pony / Illustrious 逗號 tag；"anima"＝目前的 checkpoint 是 Anima
+# （Qwen3 文字編碼器，看得懂英文句子）；"skill"＝有啟用技能，照技能寫的格式（技能沒寫才用 tag）。
+_PROMPT_FORMAT = {
+    "anima": (
+        "The current checkpoint is an Anima model (Qwen3 text encoder), which understands English "
+        "sentences: when your active skill gives the prompt format for Anima, follow it exactly; "
+        "otherwise write a short head (quality tags, the character's name, `safe`), then 2-5 English "
+        "sentences describing the picture, then danbooru tags of the same picture."
+    ),
+    "skill": (
+        "Write the prompt in the format your active skill gives; only when it gives none, use "
+        f"comma-separated English danbooru-style tags (e.g. {_TAGS_EXAMPLE})."
+    ),
+}
+_PROMPT_PARAM = {
+    "anima": "Positive prompt in the format described above (head, English sentences, then tags).",
+    "skill": "Positive prompt in the format your active skill gives (otherwise comma-separated English tags).",
+}
+
+
+def image_tool(name: str, style: str = "") -> dict[str, Any]:
+    """generate_image / edit_image 的 schema；style（"anima" / "skill"）換掉 prompt 寫法那幾句，
+    其他照舊。空字串或不認得的 style 回原本的定義。"""
+    base = GENERATE_IMAGE_TOOL if name == "generate_image" else EDIT_IMAGE_TOOL
+    if style not in _PROMPT_FORMAT:
+        return base
+    fn = base["function"]
+    head = _GENERATE_HEAD if name == "generate_image" else _EDIT_HEAD
+    props = dict(fn["parameters"]["properties"])
+    props["prompt"] = {**props["prompt"], "description": _PROMPT_PARAM[style]}
+    return {"type": "function", "function": {
+        **fn, "description": f"{head} {_PROMPT_FORMAT[style]}",
+        "parameters": {**fn["parameters"], "properties": props}}}
 
 
 READ_PNG_INFO_TOOL = {
@@ -216,6 +264,7 @@ def build_call(
         sampler_name=settings["sampler_name"],
         seed=int(settings["seed"]),
         sd_model_checkpoint=settings.get("sd_model_checkpoint", "") or "",
+        sd_modules=a1111_client.normalize_modules(settings.get("sd_modules")),
     )
 
     if name == "edit_image":

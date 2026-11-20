@@ -99,10 +99,14 @@ def _strip_data_url(b64: str) -> str:
 # ---------------- Forge Neo 的額外模組（VAE / 文字編碼器） ----------------
 # 有些架構的 checkpoint 不含文字編碼器 / VAE，要在 Forge Neo 上方的「VAE / Text Encoder」另外選；
 # API 只指定 checkpoint 會失敗（Failed to load diffusion model）。依 checkpoint 的家族自動帶上。
+# 圖片設定的「VAE / 文字編碼器」（sd_modules，可多選）跟 Forge 的同名多選一樣：選了就照選的載入
+# （Anima 沒選到的那一類仍自動補上）；Forge 依序套用，後面的 VAE 會蓋掉前面的，所以 VAE 只能選一個。
 _FAMILY_MODULES: dict[str, tuple[tuple[str, str], ...]] = {
     # Anima（Anima base / WAI-ANIMA / One Obsession Anima 2.9B）：Qwen3 0.6B 文字編碼器 + Qwen-Image VAE
-    "Anima": (("文字編碼器", "qwen_3_06b_base"), ("VAE", "qwen_image_vae")),
+    "Anima": (("text_encoder", "qwen_3_06b_base"), ("vae", "qwen_image_vae")),
 }
+_MODULE_LABEL = {"text_encoder": "文字編碼器", "vae": "VAE"}
+_TE_DIRS = {"text_encoder", "text_encoders", "clip", "t5"}
 _ANIMA_NAME = re.compile(r"anima(?![a-z])", re.I)  # waiANIMA_、anima-base、oneObsession_anima29B；不含 animagine
 _family_cache: dict[str, str | None] = {}
 
@@ -179,37 +183,122 @@ async def list_checkpoints() -> dict[str, Any]:
     return {"current": data.get("current") or "", "checkpoints": out}
 
 
-async def _module_overrides(checkpoint: str) -> dict[str, Any]:
-    """這個 checkpoint 需要的 Forge 額外模組（override_settings 用）；不需要回 {}。"""
+def _module_kind(file: str) -> str:
+    """Forge 額外模組是 VAE 還是文字編碼器：看最靠近檔案的 VAE / text_encoder 資料夾
+    （Forge 掃 models/VAE、models/text_encoder 與 --vae-dirs / --text-encoder-dirs，會進子資料夾）；
+    自訂資料夾名稱看不出來時，檔名有 vae（或叫 ae，Flux 的 VAE）算 VAE。"""
+    parts = [p.lower() for p in re.split(r"[\\/]+", file or "") if p]
+    for folder in reversed(parts[:-1]):
+        if folder == "vae":
+            return "vae"
+        if folder in _TE_DIRS:
+            return "text_encoder"
+    stem = _module_stem(parts[-1] if parts else "")
+    return "vae" if "vae" in stem or stem == "ae" else "text_encoder"
+
+
+async def list_modules() -> list[dict[str, str]]:
+    """Forge 能載入的額外模組，VAE 在前、文字編碼器在後，各自依名稱排序：
+    [{"name": 檔名（含副檔名）, "kind": "vae" | "text_encoder"}]。"""
+    items = (await _mcp("list_modules")).get("items") or []
+    seen: dict[str, str] = {}
+    for m in items:
+        if m.get("name"):
+            seen.setdefault(str(m["name"]), _module_kind(m.get("file") or m["name"]))
+    order = {"vae": 0, "text_encoder": 1}
+    return [{"name": n, "kind": k} for n, k in sorted(seen.items(), key=lambda x: (order[x[1]], x[0].lower()))]
+
+
+def _module_stem(name: str) -> str:
+    """模組檔名去掉副檔名（Forge 收的副檔名），小寫。"""
+    base = re.split(r"[\\/]+", name.strip())[-1]
+    return re.sub(r"\.(safetensors|sft|ckpt|pt|pth|bin|gguf)$", "", base, flags=re.I).lower()
+
+
+def _find_module(modules: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
+    """圖片設定的模組名稱 → Forge 的那一項；可寫檔名（含副檔名）或不含副檔名的名稱。"""
+    want = name.strip()
+    hit = next((m for m in modules if m.get("name") == want), None)
+    if hit is None:
+        stem = _module_stem(want)
+        hit = next((m for m in modules if _module_stem(str(m.get("name") or "")) == stem), None)
+    return hit
+
+
+def normalize_modules(value: Any) -> list[str]:
+    """設定裡的 sd_modules → 去空白、去重複的名稱清單（也收單一字串）。"""
+    raw = [value] if isinstance(value, str) else value if isinstance(value, (list, tuple)) else []
+    out: list[str] = []
+    for v in raw:
+        v = str(v or "").strip()
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
+def _family_default(stems: dict[str, str], stem: str) -> str | None:
+    # 同名優先（qwen_image_vae 不要挑到 qwen_image_2.1_vae），其次同前綴（例如 _fp8 版）
+    return next((f for f, s in stems.items() if s == stem), None) or next(
+        (f for f, s in stems.items() if s.startswith(stem)), None
+    )
+
+
+async def _module_overrides(checkpoint: str, chosen_names: list[str] | None = None) -> dict[str, Any]:
+    """這個 checkpoint 要 Forge 另外載入的模組（override_settings 用）；不需要回 {}。
+    chosen_names＝圖片設定選的 VAE / 文字編碼器（空＝自動）：
+    - 自動：Anima 帶 qwen_3_06b_base + qwen_image_vae；其他 checkpoint 不帶（沿用 Forge 目前選的）。
+    - 有選：照選的載入（文字編碼器在前、VAE 在後）；Anima 沒選文字編碼器或 VAE 時，那一類照樣自動補上。"""
     family = await checkpoint_family(checkpoint) if checkpoint else None
     wanted = _FAMILY_MODULES.get(family or "")
-    if not wanted:
+    names = normalize_modules(chosen_names)
+    if not wanted and not names:
         return {}
     modules = (await _mcp("list_modules")).get("items") or []
-    stems = {m["file"]: _ckpt_key(os.path.basename(m.get("file") or "")).lower() for m in modules}
-    picked, missing = [], []
-    for label, stem in wanted:
-        # 同名優先（qwen_image_vae 不要挑到 qwen_image_2.1_vae），其次同前綴（例如 _fp8 版）
-        hit = next((f for f, s in stems.items() if s == stem), None) or next(
-            (f for f, s in stems.items() if s.startswith(stem)), None
+    chosen: list[tuple[str, str]] = []  # (kind, 完整路徑)
+    gone: list[str] = []
+    for n in names:
+        m = _find_module(modules, n)
+        if m is None:
+            gone.append(n)
+            continue
+        path = m.get("file") or m["name"]
+        if path not in (p for _, p in chosen):
+            chosen.append((_module_kind(path), path))
+    if gone:
+        raise A1111Error(
+            f"圖片設定選的 VAE / 文字編碼器「{'、'.join(gone)}」在 Forge 的 models/VAE、models/text_encoder "
+            "裡找不到；請把檔案放回去，或在圖片設定取消勾選（全部不勾＝自動）"
         )
+    vaes = [os.path.basename(p) for k, p in chosen if k == "vae"]
+    if len(vaes) > 1:
+        raise A1111Error(
+            f"圖片設定選了 {len(vaes)} 個 VAE（{'、'.join(vaes)}）；Forge 一次只會用一個 VAE，請只留一個"
+        )
+    missing: list[str] = []
+    stems = {m["file"]: _module_stem(os.path.basename(m.get("file") or "")) for m in modules if m.get("file")}
+    for kind, stem in wanted or ():
+        if any(k == kind for k, _ in chosen):
+            continue
+        hit = _family_default(stems, stem)
         if hit:
-            picked.append(hit)
+            chosen.append((kind, hit))
         else:
-            missing.append(f"{label} {stem}")
+            missing.append(f"{_MODULE_LABEL[kind]} {stem}")
     if missing:
         raise A1111Error(
             f"{_ckpt_key(checkpoint)} 是 {family} 模型，Forge 需要另外載入 {'、'.join(missing)}，"
             "但 Forge 的 models/text_encoder、models/VAE 裡找不到"
         )
+    # Forge 依序套用：文字編碼器在前、VAE 在後
+    picked = [p for k, p in chosen if k == "text_encoder"] + [p for k, p in chosen if k == "vae"]
     return {"forge_additional_modules": picked}
 
 
-async def _apply_modules(payload: dict[str, Any], checkpoint: str) -> None:
-    """把 checkpoint 需要的 Forge 額外模組放進 override_settings（生完還原）。
+async def _apply_modules(payload: dict[str, Any], checkpoint: str, modules: list[str] | None = None) -> None:
+    """把 checkpoint 需要的 Forge 額外模組（與圖片設定選的 VAE / 文字編碼器）放進 override_settings（生完還原）。
     checkpoint 留空＝沿用 Forge 目前選的，就先問 Forge 選的是哪個（Forge 介面選了 Anima
     卻沒選文字編碼器 / VAE 時也能生）。問不到就照舊不帶。"""
-    extra = await _module_overrides(checkpoint or await get_current_model() or "")
+    extra = await _module_overrides(checkpoint or await get_current_model() or "", modules)
     if extra:
         payload.setdefault("override_settings", {}).update(extra)
         payload["override_settings_restore_afterwards"] = True
@@ -324,6 +413,7 @@ async def txt2img(
     sampler_name: str = "Euler a",
     seed: int = -1,
     sd_model_checkpoint: str = "",
+    sd_modules: list[str] | None = None,
 ) -> dict[str, Any]:
     payload = _common_payload(
         prompt=prompt,
@@ -336,7 +426,7 @@ async def txt2img(
         seed=seed,
         sd_model_checkpoint=sd_model_checkpoint,
     )
-    await _apply_modules(payload, sd_model_checkpoint)
+    await _apply_modules(payload, sd_model_checkpoint, sd_modules)
     data = await _generate("txt2img", payload)
 
     url = _save_first_image(data)
@@ -351,6 +441,7 @@ async def txt2img(
         "sampler_name": sampler_name,
         "seed": seed,
         "sd_model_checkpoint": sd_model_checkpoint or None,
+        "sd_modules": normalize_modules(sd_modules) or None,
     }
     return _result(url, params, data)
 
@@ -368,6 +459,7 @@ async def img2img(
     sampler_name: str = "Euler a",
     seed: int = -1,
     sd_model_checkpoint: str = "",
+    sd_modules: list[str] | None = None,
 ) -> dict[str, Any]:
     payload = _common_payload(
         prompt=prompt,
@@ -382,7 +474,7 @@ async def img2img(
     )
     payload["init_images"] = [_strip_data_url(init_image_b64)]
     payload["denoising_strength"] = denoising_strength
-    await _apply_modules(payload, sd_model_checkpoint)
+    await _apply_modules(payload, sd_model_checkpoint, sd_modules)
 
     data = await _generate("img2img", payload)
 
@@ -399,6 +491,7 @@ async def img2img(
         "sampler_name": sampler_name,
         "seed": seed,
         "sd_model_checkpoint": sd_model_checkpoint or None,
+        "sd_modules": normalize_modules(sd_modules) or None,
     }
     return _result(url, params, data)
 

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { X, FolderOpen, HardDrive, Loader2, AlertTriangle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { X, FolderOpen, HardDrive, Loader2, AlertTriangle, Pencil } from "lucide-react";
 import { useChat, normEffort } from "../store/chat";
 import { useT, LANGS } from "../i18n";
 import {
@@ -14,6 +14,7 @@ import {
 import DirectoryPicker from "./DirectoryPicker";
 import SourcesPanel from "./SourcesPanel";
 import WebPanel from "./WebPanel";
+import ModulePicker from "./ModulePicker";
 
 // 各引擎可用的推理強度（統一在設定裡呈現，不需切換引擎即可分別調整）
 // ollama 的 effort 僅 gpt-oss 會用到（其他模型用上方 think 開關）
@@ -55,6 +56,9 @@ export default function SettingsModal({ onClose }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [storageErr, setStorageErr] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // 系統提示的獨立編輯視窗
+  const [promptOpen, setPromptOpen] = useState(false);
 
   // 提示詞歷史目錄（env 預設、UI 可覆寫）
   const setPromptHistoryDir = useChat((s) => s.setPromptHistoryDir);
@@ -197,15 +201,40 @@ export default function SettingsModal({ onClose }) {
               </select>
               <p className="text-xs text-gray-500">{t("sendKeyHint")}</p>
             </Field>
-            <Field label={t("systemPrompt")}>
-              <textarea
-                value={settings.systemPrompt}
-                onChange={(e) => setSettings({ systemPrompt: e.target.value })}
-                rows={3}
-                placeholder={t("systemPromptPh")}
-                className="w-full resize-none rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-sm outline-none focus:border-ink-500"
-              />
-            </Field>
+            {/* 系統提示：這裡只顯示前兩行和字數，按下去在獨立的大視窗裡編輯（設定頁的小框寫長提示不好改） */}
+            <div className="space-y-1">
+              <span className="text-sm text-gray-300">{t("systemPrompt")}</span>
+              <div className="flex items-stretch gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPromptOpen(true)}
+                  data-testid="system-prompt-preview"
+                  className="min-w-0 flex-1 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-left text-sm hover:border-ink-500"
+                >
+                  {settings.systemPrompt?.trim() ? (
+                    <span className="line-clamp-2 whitespace-pre-wrap break-words text-gray-200">
+                      {settings.systemPrompt}
+                    </span>
+                  ) : (
+                    <span className="text-gray-500">{t("systemPromptEmpty")}</span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPromptOpen(true)}
+                  data-testid="system-prompt-edit"
+                  className="flex shrink-0 items-center gap-1.5 rounded-lg border border-ink-600 px-3 py-2 text-sm hover:bg-ink-750"
+                >
+                  <Pencil size={15} />
+                  {t("systemPromptEdit")}
+                </button>
+              </div>
+              {settings.systemPrompt ? (
+                <p className="text-xs text-gray-500">
+                  {t("systemPromptChars", { n: settings.systemPrompt.length })}
+                </p>
+              ) : null}
+            </div>
             <Toggle
               label={t("showThinking")}
               checked={settings.think}
@@ -514,6 +543,12 @@ export default function SettingsModal({ onClose }) {
               </select>
             </Field>
 
+            <ModulePicker
+              testId="sd-modules"
+              value={img.sd_modules}
+              onChange={(v) => setImageSettings({ sd_modules: v })}
+            />
+
             <Field label={t("sampler")}>
               <select
                 value={img.sampler_name}
@@ -595,6 +630,128 @@ export default function SettingsModal({ onClose }) {
           />
         </div>
       )}
+
+      {promptOpen && (
+        <div onClick={(e) => e.stopPropagation()}>
+          <SystemPromptEditor
+            value={settings.systemPrompt || ""}
+            onSave={(v) => setSettings({ systemPrompt: v })}
+            onClose={() => setPromptOpen(false)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 系統提示的獨立編輯視窗：改的是草稿，按儲存（或 Ctrl / ⌘ + Enter）才寫回設定。
+// 有改過時，取消、Esc、點視窗外面都會先確認要不要放棄修改。
+function SystemPromptEditor({ value, onSave, onClose }) {
+  const t = useT();
+  const [draft, setDraft] = useState(value);
+  const areaRef = useRef(null);
+  const downOnBackdrop = useRef(false);
+  const dirty = draft !== value;
+
+  const cancel = () => {
+    if (!dirty || window.confirm(t("systemPromptDiscard"))) onClose();
+  };
+  const save = () => {
+    if (dirty) onSave(draft);
+    onClose();
+  };
+
+  useEffect(() => {
+    const onKey = (e) => {
+      // 輸入法選字中的 Esc / Enter 是給輸入法的（取消選字），不能關掉視窗
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        cancel();
+      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        save();
+      }
+    };
+    window.addEventListener("keydown", onKey, true); // capture：比其他頁面的 Esc 快捷鍵先處理
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-2 sm:p-4"
+      // 只有在外面按下、也在外面放開才算點外面（在框裡選字拖到外面放開不算）
+      onMouseDown={(e) => (downOnBackdrop.current = e.target === e.currentTarget)}
+      onClick={(e) => e.target === e.currentTarget && downOnBackdrop.current && cancel()}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="system-prompt-title"
+        data-testid="system-prompt-editor"
+        className="flex h-[92dvh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-850 sm:h-[80dvh]"
+      >
+        <div className="flex items-center justify-between border-b border-ink-700 px-5 py-3">
+          <h2 id="system-prompt-title" className="text-base font-semibold">
+            {t("systemPrompt")}
+          </h2>
+          <button
+            type="button"
+            onClick={cancel}
+            aria-label={t("cancel")}
+            className="rounded-lg p-1.5 text-gray-400 hover:bg-ink-750"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col px-5 py-4">
+          <textarea
+            ref={areaRef}
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={t("systemPromptPh")}
+            data-testid="system-prompt-textarea"
+            className="min-h-0 w-full flex-1 resize-none rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-sm leading-relaxed outline-none focus:border-ink-500"
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 border-t border-ink-700 px-5 py-3">
+          <span className="mr-auto text-xs text-gray-500" data-testid="system-prompt-count">
+            {t("systemPromptChars", { n: draft.length })}
+            <span className="hidden sm:inline"> · {t("systemPromptKeys")}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setDraft("");
+              areaRef.current?.focus();
+            }}
+            disabled={!draft}
+            className="rounded-lg border border-ink-600 px-3 py-2 text-sm hover:bg-ink-750 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            {t("systemPromptClear")}
+          </button>
+          <button
+            type="button"
+            onClick={cancel}
+            className="rounded-lg border border-ink-600 px-3 py-2 text-sm hover:bg-ink-750"
+          >
+            {t("cancel")}
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            data-testid="system-prompt-save"
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+          >
+            {t("save")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

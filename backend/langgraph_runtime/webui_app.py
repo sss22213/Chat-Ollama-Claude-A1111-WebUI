@@ -508,10 +508,13 @@ def generate_image(
     steps: int | None = None,
     cfg_scale: float | None = None,
     checkpoint: str | None = None,
+    modules: list[str] | None = None,
 ) -> dict[str, Any]:
-    """用 app 的 A1111 生一張圖（套用 app 的生圖設定，給的參數優先）。回 {"url", "info", "params"}。"""
+    """用 app 的 A1111 生一張圖（套用 app 的生圖設定，給的參數優先）。回 {"url", "info", "params"}。
+    modules＝要 Forge 另外載入的 VAE / 文字編碼器檔名（[] 是自動，VAE 只能一個）；
+    給了 checkpoint 沒給 modules 時用自動。"""
     args = {"prompt": prompt, "negative_prompt": negative_prompt, "width": width, "height": height,
-            "seed": seed, "steps": steps, "cfg_scale": cfg_scale, "checkpoint": checkpoint}
+            "seed": seed, "steps": steps, "cfg_scale": cfg_scale, "checkpoint": checkpoint, "modules": modules}
     return _call("generate_image", {k: v for k, v in args.items() if v is not None})
 
 
