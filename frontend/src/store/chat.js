@@ -1093,8 +1093,8 @@ export const useChat = create(
         const toolsEnabled = settings.toolsEnabled && canTools;
         const webEnabled = settings.webEnabled && canTools;
         // 取當前引擎自己的 effort；codex / claude 依所選模型能力修正
-        // （例如設定殘留 5.6 才有的 ultra、卻換回 5.5 → 退回 medium，避免 CLI 報錯；
-        // Haiku 4.5 宣告空清單＝不支援，後端不會送 --effort）
+        // （例如設定殘留 gpt-6-sol 才有的 ultra、卻換到 gpt-6-luna → 退回 medium，避免 CLI 報錯；
+        // claude-haiku-4-5 宣告空清單＝不支援，後端不會送 --effort）
         let effort = normEffort(settings.effort)[effortKeyFor(settings.engine)];
         if (["codex", "claude_cli", "strata"].includes(settings.engine)) {
           const supported = get().models.find((m) => m.name === model)?.efforts;

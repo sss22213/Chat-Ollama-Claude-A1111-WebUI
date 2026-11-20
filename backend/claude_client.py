@@ -37,21 +37,23 @@ _EFFORTS_FULL = ("low", "medium", "high", "xhigh", "max")  # Claude 5 系列、O
 _EFFORTS_NO_XHIGH = ("low", "medium", "high", "max")  # Opus 4.6 / Sonnet 4.6
 _NO_EFFORT: tuple[str, ...] = ()  # Haiku 4.5 與更舊的模型：CLI 不接受 --effort
 
-# Claude Code CLI（2.1.281，2026-09-25 從執行檔目錄比對）內建模型目錄：
+# Claude Code CLI（2.1.325，2026-11-15 從執行檔目錄比對）內建模型目錄：
 # 名稱 → (顯示名稱, context 視窗, 支援的推理強度)。
 # 別名由 CLI 解析成該系列最新版；也可直接填完整 ID。
-# Fable / Opus 5.5 / Opus 5 / Opus 4.7+ / Sonnet 5 原生 1M；Opus 4.6 / Sonnet 4.6 / Haiku 4.5 為 200K
-# （加 "[1m]" 後綴可開 1M，見 model_info）。Mythos 5 / 5.1 也在 CLI 目錄裡，但只開放給
-# 核准的組織，所以不列預設；填完整 ID 一樣能用。
+# Fable / Opus 5.5 / Opus 5 / Opus 4.7+ / Sonnet 5、5.5 / Haiku 5.5 原生 1M；
+# Opus 4.6 / Sonnet 4.6 / Haiku 4.5 為 200K（加 "[1m]" 後綴可開 1M，見 model_info）。
+# Mythos 5 / 5.1 / 5.2 也在 CLI 目錄裡，但只開放給核准的組織，所以不列預設；填完整 ID 一樣能用。
 MODEL_CATALOG: dict[str, tuple[str, int, tuple[str, ...]]] = {
     # 別名（永遠指向最新版）
-    "fable": ("Fable 5.1", _1M, _EFFORTS_FULL),
+    "fable": ("Fable 5.2", _1M, _EFFORTS_FULL),
     "opus": ("Opus 5.5", _1M, _EFFORTS_FULL),
-    "sonnet": ("Sonnet 5", _1M, _EFFORTS_FULL),
-    "haiku": ("Haiku 4.5", _200K, _NO_EFFORT),
+    "sonnet": ("Sonnet 5.5", _1M, _EFFORTS_FULL),
+    "haiku": ("Haiku 5.5", _1M, _EFFORTS_FULL),
     # 完整 ID（固定版本）
+    "claude-fable-5-2": ("Fable 5.2", _1M, _EFFORTS_FULL),
     "claude-fable-5-1": ("Fable 5.1", _1M, _EFFORTS_FULL),
     "claude-fable-5": ("Fable 5", _1M, _EFFORTS_FULL),
+    "claude-mythos-5-2": ("Mythos 5.2", _1M, _EFFORTS_FULL),
     "claude-mythos-5-1": ("Mythos 5.1", _1M, _EFFORTS_FULL),
     "claude-mythos-5": ("Mythos 5", _1M, _NO_EFFORT),
     "claude-opus-5-5": ("Opus 5.5", _1M, _EFFORTS_FULL),
@@ -60,9 +62,12 @@ MODEL_CATALOG: dict[str, tuple[str, int, tuple[str, ...]]] = {
     "claude-opus-4-7": ("Opus 4.7", _1M, _EFFORTS_FULL),
     "claude-opus-4-6": ("Opus 4.6", _200K, _EFFORTS_NO_XHIGH),
     "claude-opus-4-5": ("Opus 4.5", _200K, _NO_EFFORT),
+    "claude-sonnet-5-5": ("Sonnet 5.5", _1M, _EFFORTS_FULL),
     "claude-sonnet-5": ("Sonnet 5", _1M, _EFFORTS_FULL),
     "claude-sonnet-4-6": ("Sonnet 4.6", _200K, _EFFORTS_NO_XHIGH),
+    # CLI 標為 deprecated，2026-11-30 淘汰；之後請改用 sonnet 或 claude-sonnet-4-6
     "claude-sonnet-4-5": ("Sonnet 4.5", _200K, _NO_EFFORT),
+    "claude-haiku-5-5": ("Haiku 5.5", _1M, _EFFORTS_FULL),
     "claude-haiku-4-5": ("Haiku 4.5", _200K, _NO_EFFORT),
 }
 
@@ -120,7 +125,7 @@ def list_models() -> list[dict[str, Any]]:
                 "supports_tools": True,
                 "supports_vision": True,
                 "context_length": context_length_for(m),
-                # 該模型接受的推理強度（Haiku 4.5 為空＝不送 --effort）；設定頁的下拉用
+                # 該模型接受的推理強度（claude-haiku-4-5 等舊型號為空＝不送 --effort）；設定頁的下拉用
                 "efforts": list(efforts_for(m)),
                 "engine": "claude_cli",
             }

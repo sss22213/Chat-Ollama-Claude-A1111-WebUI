@@ -14,6 +14,7 @@ import base64
 import glob
 import json
 import os
+import re
 import shutil
 import tempfile
 from typing import Any, AsyncIterator
@@ -39,6 +40,16 @@ def _codex_home() -> str:
     return os.getenv("CODEX_HOME") or os.path.expanduser("~/.codex")
 
 
+def _release_key(path: str) -> tuple[int, tuple[int, ...], str]:
+    """releases/<版號>-<平台>/bin/codex 的排序鍵：版號逐段比數字（0.155.10 > 0.155.9、0.100 > 0.99），
+    字串排序會比錯。開頭解析不出版號的目錄排在所有正常版號之前，彼此再依名稱排。"""
+    name = os.path.basename(os.path.dirname(os.path.dirname(path)))
+    m = re.match(r"\d+(?:\.\d+)*", name)
+    if not m:
+        return (0, (), name)
+    return (1, tuple(int(x) for x in m.group(0).split(".")), name)
+
+
 def resolve_bin() -> str | None:
     """找出 codex 執行檔：CODEX_BIN → PATH → CODEX_HOME/packages 下的 standalone binary。"""
     if CODEX_BIN and (shutil.which(CODEX_BIN) or os.path.isfile(CODEX_BIN)):
@@ -46,9 +57,10 @@ def resolve_bin() -> str | None:
     found = shutil.which("codex")
     if found:
         return found
-    # 掛載進容器時 binary 在版本化路徑下，glob 取最新
+    # 掛載進容器時 binary 在版本化路徑下（如 0.169.0-x86_64-unknown-linux-musl），依版號取最新
     cands = sorted(
-        glob.glob(f"{_codex_home()}/packages/standalone/releases/*/bin/codex")
+        glob.glob(f"{_codex_home()}/packages/standalone/releases/*/bin/codex"),
+        key=_release_key,
     )
     return cands[-1] if cands else None
 
@@ -117,7 +129,7 @@ def list_models() -> list[dict[str, Any]]:
             "supports_tools": True,
             "supports_vision": True,  # -i 附圖
             "context_length": m.get("context_length") or CODEX_CONTEXT_LENGTH,
-            # 該模型支援的推理強度（GPT-6 / 5.6 系列多了 max/ultra）；前端下拉用
+            # 該模型支援的推理強度（GPT-6 / 6.1 / 5.6 系列多了 max/ultra）；前端下拉用
             "efforts": m.get("efforts") or [],
             "engine": "codex",
         }
@@ -203,8 +215,10 @@ def _write_images(images: list[str]) -> list[str]:
     return paths
 
 
-# CLI 接受的推理強度全集；個別模型的支援範圍見 models_cache（GPT-6 / 5.6 系列才有 max/ultra）
-_CODEX_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+# 會轉給 CLI 的推理強度（codex 0.169.0 目錄出現的全集）；個別模型的支援範圍見 models_cache
+# （max/ultra 只有部分模型有）。minimal 已經沒有模型提供，0.169.0 執行檔裡也找不到這個等級，
+# 所以不再轉送：設定殘留 minimal 時不帶 model_reasoning_effort，交給模型預設
+_CODEX_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
 
 def _reasoning_cfg(think: bool, effort: str | None) -> list[str]:
@@ -395,7 +409,7 @@ async def chat_stream(
     messages: list[dict[str, Any]],
     system: str,
     think: bool = False,  # 開啟時請 codex 吐出思考摘要（當 thinking 顯示）
-    effort: str | None = None,  # 推理強度：minimal/low/medium/high（低＝更快）
+    effort: str | None = None,  # 推理強度：low/medium/high/xhigh/max/ultra，依模型（低＝更快）
     mcp_url: str | None = None,  # webui MCP 閘道：codex 直接呼叫它的工具
 ) -> AsyncIterator[dict[str, Any]]:
     gen = _run_freeform(model, messages, system, think=think, effort=effort, mcp_url=mcp_url)

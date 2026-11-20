@@ -65,8 +65,8 @@ CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
 CLAUDE_TIMEOUT = float(os.getenv("CLAUDE_TIMEOUT", "300"))
 # 額外傳給 claude 的旗標（空白分隔），需要時可加 --effort low 之類。
 CLAUDE_EXTRA_ARGS = os.getenv("CLAUDE_EXTRA_ARGS", "").split()
-# 下拉可選的 Claude 模型。可填別名（由 CLI 解析成該系列最新版：
-# sonnet→Sonnet 5、opus→Opus 5.5、fable→Fable 5.1、haiku→Haiku 4.5）或完整 ID
+# 下拉可選的 Claude 模型。可填別名（由 CLI 解析成該系列最新版，Claude Code 2.1.325：
+# sonnet→Sonnet 5.5、opus→Opus 5.5、fable→Fable 5.2、haiku→Haiku 5.5）或完整 ID
 # （claude-opus-4-8、claude-sonnet-4-6 …）；200K 模型可加 "[1m]" 後綴開 1M 視窗。
 # 各模型的顯示名稱與 context 見 claude_client.MODEL_CATALOG。
 CLAUDE_MODELS = [
@@ -74,8 +74,8 @@ CLAUDE_MODELS = [
     for m in (os.getenv("CLAUDE_MODELS") or "sonnet,opus,fable,haiku").split(",")
     if m.strip()
 ]
-# context 視窗：0（預設）＝依模型目錄（Fable/Opus 5.5/Opus 5/Opus 4.7+/Sonnet 5 為 1M，
-# Opus 4.6/Sonnet 4.6/Haiku 4.5 為 200K）；設正整數則所有 Claude 模型一律用該值。
+# context 視窗：0（預設）＝依模型目錄（Fable/Opus 5.5/Opus 5/Opus 4.7+/Sonnet 5、5.5/Haiku 5.5
+# 為 1M，Opus 4.6/Sonnet 4.6/Haiku 4.5 為 200K）；設正整數則所有 Claude 模型一律用該值。
 CLAUDE_CONTEXT_LENGTH = int(os.getenv("CLAUDE_CONTEXT_LENGTH", "0"))
 
 # ---- OpenAI Codex CLI 引擎 ----
@@ -86,15 +86,18 @@ CODEX_BIN = os.getenv("CODEX_BIN", "")  # 空字串=自動解析（PATH 或 ~/.c
 CODEX_TIMEOUT = float(os.getenv("CODEX_TIMEOUT", "300"))
 CODEX_EXTRA_ARGS = os.getenv("CODEX_EXTRA_ARGS", "").split()
 # 平常會自動讀 ~/.codex/models_cache.json；這裡只是「cache 也讀不到」時的最終後備
-# （對應 2026-09 的 codex 模型目錄；空字串視同未設定）。
+# （對應 2026-11-15 codex 0.169.0 的模型目錄；空字串視同未設定）。
 CODEX_MODELS = [
     m.strip()
     for m in (
         os.getenv("CODEX_MODELS")
-        or "gpt-6-astra,gpt-6-sol,gpt-6-luna,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5"
+        or "gpt-6.1-sol,gpt-6-astra,gpt-6.1-terra,gpt-6-sol,gpt-6-luna,"
+        "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna"
     ).split(",")
     if m.strip()
 ]
+# 快取裡沒有該模型時的 context 後備值（0.169.0 目錄：gpt-6.1-sol / gpt-6.1-terra 為 500K、
+# 其餘 272K；有快取時一律用快取的 context_window，後備值偏小只會提早壓縮）
 CODEX_CONTEXT_LENGTH = int(os.getenv("CODEX_CONTEXT_LENGTH", "272000"))
 # 沙箱模式：read-only / workspace-write / danger-full-access / bypass
 # 容器內若因 landlock 不可用導致沙箱建立失敗，可改成 bypass（容器本身即隔離邊界）。

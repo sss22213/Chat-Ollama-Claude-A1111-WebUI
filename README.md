@@ -583,53 +583,57 @@ as Ollama**: `generate_image` / `edit_image`, web search, skill tools and the no
 **Claude CLI.** The dropdown shows whatever `CLAUDE_MODELS` contains (default
 `sonnet,opus,fable,haiku`). Aliases are resolved by the installed Claude Code CLI to the
 newest model of that family, so they never go stale; full IDs pin a specific version. The
-table reflects Claude Code 2.1.281 (catalog read from the binary on 2026-09-25):
+table reflects Claude Code 2.1.325 (catalog read from the binary on 2026-11-15):
 
 | Entry in `CLAUDE_MODELS` | Resolves to | Context | Reasoning effort |
 |---|---|---|---|
-| `fable` | Claude Fable 5.1 (`claude-fable-5-1`) | 1M | low · medium · high · xhigh · max (default high) |
+| `fable` | Claude Fable 5.2 (`claude-fable-5-2`) | 1M | low · medium · high · xhigh · max (default medium) |
 | `opus` | Claude Opus 5.5 (`claude-opus-5-5`) | 1M | low · medium · high · xhigh · max (default medium) |
-| `sonnet` | Claude Sonnet 5 (`claude-sonnet-5`) | 1M | low · medium · high · xhigh · max (default high) |
-| `haiku` | Claude Haiku 4.5 (`claude-haiku-4-5`) | 200K | — |
+| `sonnet` | Claude Sonnet 5.5 (`claude-sonnet-5-5`) | 1M | low · medium · high · xhigh · max (default medium) |
+| `haiku` | Claude Haiku 5.5 (`claude-haiku-5-5`) | 1M | low · medium · high · xhigh · max (default medium) |
 
 Full IDs accepted as well:
 
 | Full ID | Context | Reasoning effort |
 |---|---|---|
-| `claude-opus-5-5` | 1M | low · medium · high · xhigh · max (default medium) |
+| `claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` | 1M | low · medium · high · xhigh · max (default medium) |
 | `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5` | 1M | low · medium · high · xhigh · max (default high) |
 | `claude-opus-4-7` | 1M | low · medium · high · xhigh · max (default xhigh) |
 | `claude-opus-4-6`, `claude-sonnet-4-6` | 200K | low · medium · high · max (no xhigh) |
 | `claude-haiku-4-5`, `claude-opus-4-5`, `claude-sonnet-4-5` | 200K | — |
 
-Fable / Opus 5.5 / Opus 5 / Opus 4.7+ / Sonnet 5 use a native 1M window; the 200K models accept a
-`[1m]` suffix (e.g. `sonnet-4-6[1m]`, `claude-opus-4-6[1m]`, `haiku[1m]`) to turn on the
-CLI's 1M window. The dropdown shows the resolved name next to each entry (e.g.
-`opus · Opus 5.5`); set `CLAUDE_CONTEXT_LENGTH` to force one context size for every Claude
-model. The effort selector in ⚙️ Settings only offers the levels the selected model
-declares, and `--effort` is not sent for models that do not support it. `claude-mythos-5-1`
-/ `claude-mythos-5` are in the CLI catalog too but only for approved organizations, so they
-are not in the default list.
+Fable / Opus 5.5 / Opus 5 / Opus 4.7+ / Sonnet 5 and 5.5 / Haiku 5.5 use a native 1M window; the
+200K models accept a `[1m]` suffix (e.g. `claude-sonnet-4-6[1m]`, `claude-opus-4-6[1m]`,
+`claude-haiku-4-5[1m]`) to turn on the CLI's 1M window. The dropdown shows the resolved name
+next to each entry (e.g. `opus · Opus 5.5`); set `CLAUDE_CONTEXT_LENGTH` to force one context
+size for every Claude model. The effort selector in ⚙️ Settings only offers the levels the
+selected model declares, and `--effort` is not sent for models that do not support it.
+`claude-mythos-5-2` / `claude-mythos-5-1` / `claude-mythos-5` are in the CLI catalog too but
+only for approved organizations, so they are not in the default list. `claude-sonnet-4-5` is
+marked deprecated in the CLI (retiring 2026-11-30); pick `sonnet` or `claude-sonnet-4-6` instead.
 
 **Codex CLI.** The dropdown is built from `~/.codex/models_cache.json` — the models your
 account can actually use — so it updates whenever the `codex` CLI refreshes its catalog
 (run `codex debug models` or any `codex` session on the host; Docker sees the mounted
 cache). Hidden / non-chat entries (`gpt-reserve`, `codex-auto-review`) are filtered out.
-Catalog as of 2026-09-25 (codex 0.155.1; `gpt-6-sol` and `gpt-6-luna` are new):
+Catalog as of 2026-11-15 (codex 0.169.0; `gpt-6.1-sol` and `gpt-6.1-terra` are new,
+`gpt-5.5` is no longer offered):
 
 | Model | Reasoning effort | Context |
 |---|---|---|
+| `gpt-6.1-sol` | low · medium · high · xhigh · max · ultra (default low) | 500K |
 | `gpt-6-astra` | low · medium · high · xhigh · max · ultra (default low) | 272K |
+| `gpt-6.1-terra` | low · medium · high · xhigh · max · ultra (default low) | 500K |
 | `gpt-6-sol` | low · medium · high · xhigh · max · ultra (default medium) | 272K |
 | `gpt-6-luna` | low · medium · high · xhigh · max (default medium) | 272K |
 | `gpt-5.6-sol` | low · medium · high · xhigh · max · ultra (default low) | 272K |
 | `gpt-5.6-terra` | low · medium · high · xhigh · max · ultra (default medium) | 272K |
 | `gpt-5.6-luna` | low · medium · high · xhigh · max (default medium) | 272K |
-| `gpt-5.5` | low · medium · high · xhigh (default medium) | 272K |
 
 The effort selector in ⚙️ Settings only offers the levels the selected model declares. Set
-`CODEX_MODELS=gpt-6-astra,gpt-5.5` to pin the dropdown; the same list above is the built-in
-fallback when no cache exists yet.
+`CODEX_MODELS=gpt-6-astra,gpt-6-luna` to pin the dropdown; the same list above is the built-in
+fallback when no cache exists yet. That fallback knows no per-model efforts or context sizes, so
+every model in it uses `CODEX_CONTEXT_LENGTH` (default 272000).
 
 ## Replies keep running
 

@@ -18,8 +18,8 @@ import WebPanel from "./WebPanel";
 // 各引擎可用的推理強度（統一在設定裡呈現，不需切換引擎即可分別調整）
 // ollama 的 effort 僅 gpt-oss 會用到（其他模型用上方 think 開關）
 // codex / claude 的 options 是「模型能力未知時」的後備；目前引擎是它們時會改用
-// 所選模型宣告的 efforts（GPT-6 / 5.6 系列多了 max/ultra；Opus 4.6 / Sonnet 4.6 沒有 xhigh、
-// Haiku 4.5 不支援）
+// 所選模型宣告的 efforts（GPT-6 / 6.1 / 5.6 系列多了 max/ultra；Opus 4.6 / Sonnet 4.6 沒有 xhigh、
+// Haiku 4.5（完整 ID claude-haiku-4-5；haiku 別名已是 Haiku 5.5）不支援）
 const EFFORT_ENGINES = [
   { key: "claude_cli", label: "Claude", options: ["low", "medium", "high", "xhigh", "max"] },
   { key: "codex", label: "Codex", options: ["low", "medium", "high", "xhigh"] },
@@ -252,7 +252,7 @@ export default function SettingsModal({ onClose }) {
                         {label}
                       </span>
                       {opts.length === 0 ? (
-                        /* 所選模型宣告不支援推理強度（例如 Haiku 4.5）：不送 --effort */
+                        /* 所選模型宣告不支援推理強度（例如 claude-haiku-4-5）：不送 --effort */
                         <select
                           disabled
                           data-testid={`effort-${key}`}
